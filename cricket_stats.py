@@ -271,13 +271,14 @@ class PersonalStatsView(View):
             economy = (total_runs_conceded / (total_balls_bowled / 6)) if total_balls_bowled > 0 else 0
             bowl_avg = (total_runs_conceded / total_wickets) if total_wickets > 0 else 0
 
+            bowl_avg_str = f"{bowl_avg:.2f}" if total_wickets > 0 else "N/A"
             embed.add_field(
                 name="🎳 Bowling",
                 value=f"**Wickets:** {total_wickets or 0}\n"
                       f"**Runs Conceded:** {total_runs_conceded or 0}\n"
                       f"**Balls Bowled:** {total_balls_bowled or 0}\n"
                       f"**Economy:** {economy:.2f}\n"
-                      f"**Average:** {bowl_avg:.2f if total_wickets > 0 else 'N/A'}",
+                      f"**Average:** {bowl_avg_str}",
                 inline=True
             )
 
@@ -314,12 +315,13 @@ class PersonalStatsView(View):
             economy = (total_runs_conceded / (total_balls_bowled / 6)) if total_balls_bowled > 0 else 0
             bowl_avg = (total_runs_conceded / total_wickets) if total_wickets > 0 else 0
 
+            bowl_avg_str = f"{bowl_avg:.2f}" if total_wickets > 0 else "N/A"
             embed.description = (
                 f"**Total Wickets:** {total_wickets or 0}\n"
                 f"**Runs Conceded:** {total_runs_conceded or 0}\n"
                 f"**Balls Bowled:** {total_balls_bowled or 0}\n"
                 f"**Economy Rate:** {economy:.2f}\n"
-                f"**Bowling Average:** {bowl_avg:.2f if total_wickets > 0 else 'N/A'}\n"
+                f"**Bowling Average:** {bowl_avg_str}\n"
                 f"**Overs:** {(total_balls_bowled // 6)}.{(total_balls_bowled % 6)}"
             )
 

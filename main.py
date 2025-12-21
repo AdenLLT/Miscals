@@ -28,12 +28,6 @@ loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
 
 
-@bot.listen()
-async def on_command_error(ctx, error):
-    if isinstance(error, commands.CommandNotFound):
-        return
-    await ctx.send(f"❌ Error: {error}")
-
 @bot.event
 async def on_ready():
     init_db()
