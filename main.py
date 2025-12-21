@@ -1052,11 +1052,13 @@ class ApprovalView(View):
                 color=get_team_color(self.team_name)
             )
 
+
             flag = get_team_flag(self.team_name)
-            role_emoji = get_role_emoji(self.player_data['role'])
+            role_emoji = get_role_emoji(self.player_data["role"])
 
             claim_embed.set_author(
-                icon_url=player['image']
+                name=self.player_name,
+                icon_url=self.player_data['image']
             )
 
             claim_embed.add_field(
@@ -1064,6 +1066,7 @@ class ApprovalView(View):
                 value=f"**{self.player_name}**\n{role_emoji} {self.player_data['role']}",
                 inline=True
             )
+
 
             claim_embed.add_field(
                 name="👤 Representative",
