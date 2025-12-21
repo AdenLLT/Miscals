@@ -1056,8 +1056,7 @@ class ApprovalView(View):
             role_emoji = get_role_emoji(self.player_data['role'])
 
             claim_embed.set_author(
-                name=self.player_name,
-                icon_url=self.player_data['image']
+                icon_url=player['image']
             )
 
             claim_embed.add_field(
