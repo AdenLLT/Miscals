@@ -27,7 +27,6 @@ bot = commands.Bot(
 loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
 
-
 @bot.event
 async def on_ready():
     init_db()
@@ -35,6 +34,12 @@ async def on_ready():
     await bot.load_extension('cricket_stats')
     print(f'{bot.user} has connected to Discord!')
     print(f'Bot is ready! Prefix: .')
+
+@bot.listen()
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.CommandNotFound):
+        return
+    await ctx.send(f"❌ Error: {error}")
 
 # Database setup
 def init_db():
@@ -1049,6 +1054,11 @@ class ApprovalView(View):
 
             flag = get_team_flag(self.team_name)
             role_emoji = get_role_emoji(self.player_data['role'])
+
+            claim_embed.set_author(
+                name=self.player_name,
+                icon_url=self.player_data['image']
+            )
 
             claim_embed.add_field(
                 name=f"{flag} Player Info",
