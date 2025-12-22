@@ -24,6 +24,7 @@ pytz = "^2023.3.post1"
 discord-py = "^2.3.2"
 functions = "^0.7.0"
 aiohttp = "^3.13.2"
+pillow = "^12.0.0"
 
 [tool.pyright]
 # https://github.com/microsoft/pyright/blob/main/docs/configuration.md

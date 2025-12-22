@@ -4,6 +4,8 @@ import asyncio
 import time
 import aiohttp
 from typing import Dict, Optional
+from PIL import Image
+from io import BytesIO
 from discord.ext import commands, tasks
 from keep_alive import keep_alive
 from discord.ext.commands.cooldowns import BucketType
