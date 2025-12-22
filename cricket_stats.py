@@ -429,6 +429,16 @@ class CricketStats(commands.Cog):
         embed = await view.create_leaderboard_embed("runs")
         view.message = await ctx.send(embed=embed, view=view)
 
+    @commands.command(name="resetstats", help="[ADMIN] Reset all match stats")
+    @commands.has_permissions(administrator=True)
+    async def resetstats_command(self, ctx):
+        conn = sqlite3.connect('players.db')
+        c = conn.cursor()
+        c.execute("DELETE FROM match_stats")
+        conn.commit()
+        conn.close()
+        await ctx.send("✅ All match statistics have been reset!")
+
 # Setup function to load the cog
 async def setup(bot):
     await bot.add_cog(CricketStats(bot))

@@ -16,7 +16,7 @@ crsr = mydb.cursor()
 mydb.commit()
 
 bot = commands.Bot(
-    command_prefix=".",
+    command_prefix="-",
     description="TFHEx - All For TFH",
     intents=intents,
     case_insensitive=True,
@@ -1052,33 +1052,28 @@ class ApprovalView(View):
                 color=get_team_color(self.team_name)
             )
 
-
-            flag = get_team_flag(self.team_name)
-            role_emoji = get_role_emoji(self.player_data["role"])
-
+            # Set author with player's image as icon
             claim_embed.set_author(
-                name=self.player_name,
+                name=".",
                 icon_url=self.player_data['image']
             )
 
+            flag = get_team_flag(self.team_name)
+            role_emoji = get_role_emoji(self.player_data["role"])
             claim_embed.add_field(
                 name=f"{flag} Player Info",
                 value=f"**{self.player_name}**\n{role_emoji} {self.player_data['role']}",
                 inline=True
             )
-
-
             claim_embed.add_field(
                 name="👤 Representative",
                 value=f"{self.user.mention}",
                 inline=True
             )
-
             claim_embed.set_thumbnail(url=self.user.avatar.url if self.user.avatar else None)
             claim_embed.set_image(url=self.player_data['image'])
             claim_embed.set_footer(text=f"TFH Nations")
             claim_embed.timestamp = discord.utils.utcnow()
-
             await claims_channel.send(embed=claim_embed)
 
     @discord.ui.button(label="❌ Deny", style=discord.ButtonStyle.danger)
@@ -1180,7 +1175,377 @@ async def unrepresent_command(ctx):
         f"✅ You are no longer representing **{player_name}**.\n"
         f"You can use `.represent` to claim a new player."
     )
+    
+# Server IDs to upload stickers to
+STICKER_SERVERS = [
+    840094596914741248,
+    829450700764217366,
+    902537846634733665,
+    886642304335609937,
+    823884737437368340,
+    877275137009917992,
+    848977887209979985
+]
 
+# Store sticker mappings {player_name: sticker_id}
+player_stickers = {}
+
+async def download_and_process_image(session, url, player_name):
+    """Download player image and convert to sticker format (PNG, max 500KB)"""
+    try:
+        async with session.get(url) as resp:
+            if resp.status != 200:
+                return None
+
+            image_data = await resp.read()
+            img = Image.open(BytesIO(image_data))
+
+            # Convert to RGBA if needed
+            if img.mode != 'RGBA':
+                img = img.convert('RGBA')
+
+            # Resize to 320x320 (Discord sticker size)
+            img = img.resize((320, 320), Image.Resampling.LANCZOS)
+
+            # Save as PNG
+            output = BytesIO()
+            img.save(output, format='PNG', optimize=True)
+            output.seek(0)
+
+            # Check if under 500KB
+            if output.getbuffer().nbytes > 500000:
+                # Reduce quality if too large
+                output = BytesIO()
+                img.save(output, format='PNG', optimize=True, quality=85)
+                output.seek(0)
+
+            return output
+    except Exception as e:
+        print(f"❌ Error processing image for {player_name}: {e}")
+        return None
+
+async def upload_stickers_to_servers(bot):
+    """Upload player stickers to all designated servers"""
+    teams_data = load_players()
+
+    # Collect all players
+    all_players = []
+    for team_data in teams_data:
+        for player in team_data['players']:
+            all_players.append({
+                'name': player['name'],
+                'image': player['image'],
+                'team': team_data['team']
+            })
+
+    print(f"📊 Total players to process: {len(all_players)}")
+
+    # Distribute players across servers (50 per server)
+    players_per_server = 50
+    server_index = 0
+
+    async with aiohttp.ClientSession() as session:
+        for i in range(0, len(all_players), players_per_server):
+            if server_index >= len(STICKER_SERVERS):
+                print("⚠️ Not enough servers to upload all stickers!")
+                break
+
+            server_id = STICKER_SERVERS[server_index]
+            guild = bot.get_guild(server_id)
+
+            if not guild:
+                print(f"❌ Cannot access server {server_id}")
+                server_index += 1
+                continue
+
+            print(f"📤 Uploading to server: {guild.name} ({server_id})")
+
+            # Get batch of players for this server
+            batch = all_players[i:i + players_per_server]
+
+            for player in batch:
+                try:
+                    # Check if sticker already exists
+                    existing_sticker = discord.utils.get(
+                        guild.stickers, 
+                        name=player['name'][:32]  # Max 32 chars for sticker name
+                    )
+
+                    if existing_sticker:
+                        player_stickers[player['name']] = existing_sticker.id
+                        print(f"✅ Sticker already exists: {player['name']}")
+                        continue
+
+                    # Download and process image
+                    image_data = await download_and_process_image(
+                        session, 
+                        player['image'], 
+                        player['name']
+                    )
+
+                    if not image_data:
+                        print(f"❌ Failed to process image for {player['name']}")
+                        continue
+
+                    # Create sticker name (max 32 characters)
+                    sticker_name = player['name'][:32]
+
+                    # Upload sticker to server
+                    sticker = await guild.create_sticker(
+                        name=sticker_name,
+                        description=f"{player['name']} - {player['team']}",
+                        emoji="⚾",  # Related emoji (required)
+                        file=discord.File(image_data, filename=f"{sticker_name}.png")
+                    )
+
+                    player_stickers[player['name']] = sticker.id
+                    print(f"✅ Uploaded sticker: {player['name']} (ID: {sticker.id})")
+
+                    # Rate limit: wait between uploads
+                    await asyncio.sleep(2)
+
+                except discord.errors.HTTPException as e:
+                    if e.code == 30039:  # Maximum number of stickers reached
+                        print(f"⚠️ Server {guild.name} reached sticker limit")
+                        break
+                    else:
+                        print(f"❌ HTTP error uploading {player['name']}: {e}")
+                except Exception as e:
+                    print(f"❌ Error uploading {player['name']}: {e}")
+
+            server_index += 1
+            print(f"✅ Completed server {guild.name}")
+
+    # Save sticker mappings to file
+    with open('player_stickers.json', 'w') as f:
+        json.dump(player_stickers, f, indent=2)
+
+    print(f"✅ Upload complete! {len(player_stickers)} stickers uploaded")
+    return player_stickers
+
+def load_sticker_mappings():
+    """Load sticker mappings from file"""
+    try:
+        with open('player_stickers.json', 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+
+def get_player_sticker(player_name):
+    """Get sticker format for a player"""
+    global player_stickers
+    if not player_stickers:
+        player_stickers = load_sticker_mappings()
+
+    sticker_id = player_stickers.get(player_name)
+    if sticker_id:
+        return f"<:sticker:{sticker_id}>"
+    return ""
+
+# Add command to trigger sticker upload
+@bot.command(name="uploadstickers", aliases=["us"])
+@commands.has_permissions(administrator=True)
+async def upload_stickers_command(ctx):
+    """[ADMIN] Upload player stickers to designated servers"""
+    await ctx.send("🔄 Starting sticker upload process... This will take several minutes.")
+
+    try:
+        stickers = await upload_stickers_to_servers(bot)
+        await ctx.send(f"✅ Sticker upload complete! {len(stickers)} players now have stickers.")
+    except Exception as e:
+        await ctx.send(f"❌ Error during upload: {e}")
+
+# Update playerlist command to use stickers
+@bot.command(name="playerlist", aliases=["pl"], help="View all players in a paginated list")
+async def playerlist_command(ctx):
+    teams_data = load_players()
+
+    if not teams_data:
+        await ctx.send("❌ No player data available.")
+        return
+
+    # Load sticker mappings
+    global player_stickers
+    player_stickers = load_sticker_mappings()
+
+    # Create pages (10 players per page)
+    all_players = []
+    for team_data in teams_data:
+        for player in team_data['players']:
+            rep_info = get_representative(player['name'])
+            rep_text = f"@{rep_info[1]}" if rep_info else "Unclaimed"
+            all_players.append({
+                'name': player['name'],
+                'team': team_data['team'],
+                'role': player['role'],
+                'representative': rep_text
+            })
+
+    players_per_page = 10
+    pages = []
+
+    for i in range(0, len(all_players), players_per_page):
+        page_players = all_players[i:i + players_per_page]
+
+        embed = discord.Embed(
+            title="All Nation Players",
+            color=0x0066CC
+        )
+
+        description = ""
+        for idx, player in enumerate(page_players, start=i+1):
+            flag = get_team_flag(player['team'])
+            role_emoji = get_role_emoji(player['role'])
+            sticker = get_player_sticker(player['name'])
+
+            # Format: [sticker] · 🇮🇳 · Player Name · :bat:
+            description += f"**{idx}.** {sticker} · {flag} · **{player['name']}** · {role_emoji}\n"
+            description += f"    └ *{player['team']}* • {player['representative']}\n\n"
+
+        embed.description = description
+        embed.set_footer(
+            text=f"Page {len(pages)+1}/{(len(all_players)-1)//players_per_page + 1} • Total Players: {len(all_players)}"
+        )
+        pages.append(embed)
+
+    if len(pages) == 1:
+        await ctx.send(embed=pages[0])
+    else:
+        view = PlayerListView(pages, ctx)
+        view.message = await ctx.send(embed=pages[0], view=view)
+
+# Update viewteam command to use stickers
+@bot.command(name="viewteam", aliases=["vt"], help="View all players in a specific team")
+async def viewteam_command(ctx, *, team_name: str):
+    teams_data = load_players()
+
+    if not teams_data:
+        await ctx.send("❌ No player data available.")
+        return
+
+    # Find the team
+    team_data = None
+    for t in teams_data:
+        if t['team'].lower() == team_name.lower():
+            team_data = t
+            break
+
+    if not team_data:
+        available_teams = ", ".join([t['team'] for t in teams_data])
+        await ctx.send(f"❌ Team '{team_name}' not found.\n\n**Available teams:** {available_teams}")
+        return
+
+    # Load sticker mappings
+    global player_stickers
+    player_stickers = load_sticker_mappings()
+
+    flag = get_team_flag(team_data['team'])
+    flag_url = get_team_flag_url(team_data['team'])
+
+    embed = discord.Embed(
+        title=f"{flag} Official {team_data['team']} Squad",
+        color=get_team_color(team_data['team'])
+    )
+
+    # Set flag as thumbnail
+    if flag_url:
+        embed.set_thumbnail(url=flag_url)
+
+    # Categorize players by role
+    batsmen = []
+    bowlers = []
+    allrounders = []
+    wicketkeepers = []
+
+    for player in team_data['players']:
+        rep_info = get_representative(player['name'])
+        rep_text = f" • **@{rep_info[1]}**" if rep_info else " • *Unclaimed*"
+        sticker = get_player_sticker(player['name'])
+
+        player_line = f"{sticker} · {player['name']}{rep_text}"
+
+        if "Wicketkeeper" in player['role']:
+            wicketkeepers.append(player_line)
+        elif "Batsman" in player['role']:
+            batsmen.append(player_line)
+        elif "Bowler" in player['role']:
+            bowlers.append(player_line)
+        elif "All-Rounder" in player['role'] or "All-rounder" in player['role']:
+            allrounders.append(player_line)
+
+    # Add fields for each category
+    if wicketkeepers:
+        embed.add_field(
+            name=f"<:wicketkeeper:1451994159668920330> Wicketkeepers ({len(wicketkeepers)})",
+            value="\n".join(wicketkeepers),
+            inline=False
+        )
+
+    if batsmen:
+        embed.add_field(
+            name=f"<:bat:1451967322146213980> Batsmen ({len(batsmen)})",
+            value="\n".join(batsmen),
+            inline=False
+        )
+
+    if allrounders:
+        embed.add_field(
+            name=f"<:allrounder:1451978476033671279> All-Rounders ({len(allrounders)})",
+            value="\n".join(allrounders),
+            inline=False
+        )
+
+    if bowlers:
+        embed.add_field(
+            name=f"<:ball:1451974295793172547> Bowlers ({len(bowlers)})",
+            value="\n".join(bowlers),
+            inline=False
+        )
+
+    total_players = len(team_data['players'])
+    claimed = sum(1 for p in team_data['players'] if get_representative(p['name']))
+
+    embed.set_footer(
+        text=f"Total Players: {total_players} • Claimed: {claimed} • Unclaimed: {total_players - claimed}"
+    )
+
+    await ctx.send(embed=embed)
+
+# Command to check sticker status
+@bot.command(name="checkstickers", aliases=["cs"])
+@commands.has_permissions(administrator=True)
+async def check_stickers_command(ctx):
+    """[ADMIN] Check how many stickers are uploaded"""
+    player_stickers = load_sticker_mappings()
+    teams_data = load_players()
+
+    total_players = sum(len(team['players']) for team in teams_data)
+    uploaded = len(player_stickers)
+
+    embed = discord.Embed(
+        title="📊 Sticker Upload Status",
+        color=0x0066CC
+    )
+
+    embed.add_field(
+        name="Progress",
+        value=f"**{uploaded}** / **{total_players}** players have stickers\n"
+              f"({(uploaded/total_players*100):.1f}% complete)",
+        inline=False
+    )
+
+    # Check each server's sticker count
+    for server_id in STICKER_SERVERS:
+        guild = bot.get_guild(server_id)
+        if guild:
+            sticker_count = len(guild.stickers)
+            embed.add_field(
+                name=f"{guild.name}",
+                value=f"{sticker_count}/50 stickers",
+                inline=True
+            )
+
+    await ctx.send(embed=embed)
 
 token = os.getenv('TOKEN')
 if token:
