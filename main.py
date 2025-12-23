@@ -651,6 +651,12 @@ class PlayerSelectView(View):
 
             role_emoji = get_role_emoji(player['role'])
 
+            # Check if player is elite and use elite emoji instead
+            if player['name'] in elite_players:
+                elite_emoji = bot.get_emoji(1452949859412738110)
+                if elite_emoji:
+                    role_emoji = elite_emoji
+
             options.append(
                 discord.SelectOption(
                     label=player['name'],
@@ -1531,7 +1537,7 @@ async def elite_command(ctx, *, players: str):
 
             # Send auction rules in the thread
             auction_message = (
-                "**RULES**\n"
+                "**RULES\n"
                 "> - INCREASE BY 100K EVERYTIME (E.G 100K --> 200K)\n"
                 ">                                                            (E.G 1.1M - 1.2M)\n"
                 "> \n"
