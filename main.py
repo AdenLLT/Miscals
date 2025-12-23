@@ -1578,7 +1578,7 @@ async def elite_command(ctx, *, players: str):
 
     await ctx.send(embed=embed)
 
-@bot.command(name="unelite", aliases=["ue"], help="[ADMIN] Remove elite status from players")
+@bot.command(name="unelite", aliases=["une"], help="[ADMIN] Remove elite status from players")
 @commands.has_permissions(administrator=True)
 async def unelite_command(ctx, *, players: str):
     """
@@ -1636,7 +1636,7 @@ async def unelite_command(ctx, *, players: str):
 
     await ctx.send(embed=embed)
 
-@bot.command(name="listelite", aliases=["le"], help="List all elite players")
+@bot.command(name="listelite", aliases=["lse"], help="List all elite players")
 async def listelite_command(ctx):
     """List all players marked as elite"""
     if not elite_players:
