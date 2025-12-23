@@ -423,7 +423,7 @@ async def claim_command(ctx, user: discord.Member, *, player_name: str):
 
     if existing:
         await ctx.send(
-            f"⚠️ {player['name']} is already represented by @{existing[0]}. Use `.unclaim` first to remove them."
+            f"⚠️ {player['name']} is already represented by @{existing[0]}. Use `-unclaim` first to remove them."
         )
         conn.close()
         return
@@ -694,7 +694,7 @@ class PlayerSelectView(View):
         if existing:
             await interaction.response.send_message(
                 f"❌ You already represent **{existing[0]}**!\n"
-                f"Use `.unrepresent` to remove your current player before claiming another.",
+                f"Use `-unrepresent / -unrep` to remove your current player before claiming another.",
                 ephemeral=True
             )
             return
@@ -760,6 +760,23 @@ class PlayerSelectView(View):
                 f"You'll receive a DM once an admin reviews your request.",
                 ephemeral=True
             )
+
+            # Check if selected player is elite and send DM
+            if selected_player_name in elite_players:
+                try:
+                    elite_emoji = interaction.client.get_emoji(1452949859412738110)
+                    emoji_str = f"<:elite:{elite_emoji.id}>" if elite_emoji else "<:elite:1452949859412738110>"
+                    auction_channel = interaction.client.get_channel(1452950205715714120)
+                    channel_mention = auction_channel.mention if auction_channel else "<#1452950205715714120>"
+                    
+                    dm_embed = discord.Embed(
+                        title="⭐ Elite Player Selected",
+                        description=f"This is an elite {emoji_str} player, you will have to buy elite players in {channel_mention}",
+                        color=0xFFD700
+                    )
+                    await interaction.user.send(embed=dm_embed)
+                except discord.Forbidden:
+                    pass
         else:
             await interaction.response.send_message(
                 "❌ Error: Approval channel not found!",
@@ -857,7 +874,7 @@ class ApprovalView(View):
             )
 
             dm_embed.set_thumbnail(url=self.player_data['image'])
-            dm_embed.set_footer(text="Use .me to view your player anytime!")
+            dm_embed.set_footer(text="Use -me to view your player anytime!")
 
             await self.user.send(embed=dm_embed)
         except discord.Forbidden:
@@ -952,7 +969,7 @@ async def represent_command(ctx):
     if existing:
         await ctx.send(
             f"❌ You already represent **{existing[0]}**!\n"
-            f"Use `.unrepresent` to remove your current player before claiming another."
+            f"Use `-unrepresent` to remove your current player before claiming another."
         )
         return
 
@@ -993,7 +1010,7 @@ async def unrepresent_command(ctx):
 
     await ctx.send(
         f"✅ You are no longer representing **{player_name}**.\n"
-        f"You can use `.represent` to claim a new player."
+        f"You can use `-represent` to claim a new player."
     )
     
 # Server IDs to upload emojis to
