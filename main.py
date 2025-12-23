@@ -17,13 +17,20 @@ mydb = sqlite3.connect("players.db")
 crsr = mydb.cursor()
 mydb.commit()
 
+class MyHelp(commands.MinimalHelpCommand):
+    async def send_pages(self):
+        destination = self.get_destination()
+        for page in self.paginator.pages:
+            emby = discord.Embed(description=page, color=discord.Color.blue())
+            await destination.send(embed=emby)
+
 bot = commands.Bot(
     command_prefix="-",
-    description="TFHEx - All For TFH",
+    description="**STATS IN DEVELOPMENT**",
     intents=intents,
     case_insensitive=True,
     strip_after_prefix=True,
-    help_command=None  # Disable default help to use custom
+    help_command=MyHelp()
 )
 
 loop = asyncio.new_event_loop()
@@ -517,7 +524,7 @@ async def unclaim_command(ctx, *, player_name: str):
         f"✅ Removed @{existing[0]} as the representative of **{player['name']}**."
     )
 
-@bot.command(name="myclaim", aliases=["mc"], help="View the player you represent")
+@bot.command(name="me", aliases=["myrep"], help="View the player you represent")
 async def myclaim_command(ctx):
     conn = sqlite3.connect('players.db')
     c = conn.cursor()
@@ -545,65 +552,6 @@ async def myclaim_command(ctx):
             f"⚠️ Error: Player data for {player_name} not found."
         )
 
-@bot.command(name="help", aliases=["h", "commands"], help="Show all available commands")
-async def help_command(ctx):
-    embed = discord.Embed(
-        title="TFHEx - Commands",
-        description="Manage and view cricket player information",
-        color=0x0066CC
-    )
-
-    embed.add_field(
-        name="📋 General Commands",
-        value=(
-            "`.view <name>` or `.v <name>`\n"
-            "└ Search and view a cricket player\n"
-            "└ Example: `.view Virat Kohli` or `.v kohli`\n\n"
-            "`.myclaim` or `.mc`\n"
-            "└ View the player you represent\n\n"
-            "`.stats [@user]` or `.s [@user]`\n"
-            "└ View your or another user's statistics\n"
-            "└ Example: `.stats` or `.stats @john`\n\n"
-            "`.leaderboard` or `.lb`\n"
-            "└ View tournament leaderboards\n\n"
-            "`.playerlist` or `.pl`\n"
-            "└ View all players in a paginated list\n\n"
-            "`.viewteam <team_name>` or `.vt <team_name>`\n"
-            "└ View all players in a specific team\n"
-            "└ Example: `.viewteam Pakistan`"
-        ),
-        inline=False
-    )
-
-    embed.add_field(
-        name="👑 Admin Commands",
-        value=(
-            "`.claim @user <player_name>` or `.c @user <player_name>`\n"
-            "└ Assign a player to a Discord user\n"
-            "└ Example: `.claim @john Virat Kohli`\n\n"
-            "`.unclaim <player_name>` or `.uc <player_name>`\n"
-            "└ Remove a player's representative\n"
-            "└ Example: `.unclaim Virat Kohli`\n\n"
-            "`.addstats` or `.as`\n"
-            "└ Reply to a bot message with raw stats to add them\n"
-            "└ Example: Reply to stats message with `.addstats`"
-        ),
-        inline=False
-    )
-
-    embed.add_field(
-        name="ℹ️ Info",
-        value=(
-            "• All player names are case-insensitive\n"
-            "• Admin commands require Administrator permission\n"
-            "• Use `.help` or `.h` to view this message again"
-        ),
-        inline=False
-    )
-
-    embed.set_footer(text="TourneyFanHub")
-
-    await ctx.send(embed=embed)
 
 # Add this to your main.py file
 
@@ -901,7 +849,7 @@ class ApprovalView(View):
             )
 
             dm_embed.set_thumbnail(url=self.player_data['image'])
-            dm_embed.set_footer(text="Use .myclaim to view your player anytime!")
+            dm_embed.set_footer(text="Use .me to view your player anytime!")
 
             await self.user.send(embed=dm_embed)
         except discord.Forbidden:
@@ -1040,8 +988,8 @@ async def unrepresent_command(ctx):
         f"You can use `.represent` to claim a new player."
     )
     
-# Server IDs to upload stickers to
-STICKER_SERVERS = [
+# Server IDs to upload emojis to
+EMOJI_SERVERS = [
     840094596914741248,
     829450700764217366,
     902537846634733665,
@@ -1051,11 +999,11 @@ STICKER_SERVERS = [
     848977887209979985
 ]
 
-# Store sticker mappings {player_name: sticker_id}
-player_stickers = {}
+# Store emoji mappings {player_name: emoji_id}
+player_emojis = {}
 
 async def download_and_process_image(session, url, player_name):
-    """Download player image and convert to sticker format (PNG, max 500KB)"""
+    """Download player image and convert to emoji format (PNG, max 256KB)"""
     try:
         async with session.get(url) as resp:
             if resp.status != 200:
@@ -1068,19 +1016,20 @@ async def download_and_process_image(session, url, player_name):
             if img.mode != 'RGBA':
                 img = img.convert('RGBA')
 
-            # Resize to 320x320 (Discord sticker size)
-            img = img.resize((320, 320), Image.Resampling.LANCZOS)
+            # Resize to 128x128 (Discord emoji recommended size)
+            img = img.resize((128, 128), Image.Resampling.LANCZOS)
 
             # Save as PNG
             output = BytesIO()
             img.save(output, format='PNG', optimize=True)
             output.seek(0)
 
-            # Check if under 500KB
-            if output.getbuffer().nbytes > 500000:
-                # Reduce quality if too large
+            # Check if under 256KB (Discord emoji limit)
+            if output.getbuffer().nbytes > 256000:
+                # Reduce size if too large
+                img = img.resize((64, 64), Image.Resampling.LANCZOS)
                 output = BytesIO()
-                img.save(output, format='PNG', optimize=True, quality=85)
+                img.save(output, format='PNG', optimize=True)
                 output.seek(0)
 
             return output
@@ -1088,8 +1037,8 @@ async def download_and_process_image(session, url, player_name):
         print(f"❌ Error processing image for {player_name}: {e}")
         return None
 
-async def upload_stickers_to_servers(bot):
-    """Upload player stickers to all designated servers"""
+async def upload_emojis_to_servers(bot):
+    """Upload player emojis to all designated servers"""
     teams_data = load_players()
 
     # Collect all players
@@ -1104,17 +1053,17 @@ async def upload_stickers_to_servers(bot):
 
     print(f"📊 Total players to process: {len(all_players)}")
 
-    # Distribute players across servers (50 per server)
-    players_per_server = 50
+    # Distribute players across servers (50 per server for regular, 25 for boosted servers)
+    emojis_per_server = 50
     server_index = 0
 
     async with aiohttp.ClientSession() as session:
-        for i in range(0, len(all_players), players_per_server):
-            if server_index >= len(STICKER_SERVERS):
-                print("⚠️ Not enough servers to upload all stickers!")
+        for i in range(0, len(all_players), emojis_per_server):
+            if server_index >= len(EMOJI_SERVERS):
+                print("⚠️ Not enough servers to upload all emojis!")
                 break
 
-            server_id = STICKER_SERVERS[server_index]
+            server_id = EMOJI_SERVERS[server_index]
             guild = bot.get_guild(server_id)
 
             if not guild:
@@ -1125,19 +1074,23 @@ async def upload_stickers_to_servers(bot):
             print(f"📤 Uploading to server: {guild.name} ({server_id})")
 
             # Get batch of players for this server
-            batch = all_players[i:i + players_per_server]
+            batch = all_players[i:i + emojis_per_server]
 
             for player in batch:
                 try:
-                    # Check if sticker already exists
-                    existing_sticker = discord.utils.get(
-                        guild.stickers, 
-                        name=player['name'][:32]  # Max 32 chars for sticker name
+                    # Create emoji name (alphanumeric + underscores only, max 32 chars)
+                    emoji_name = ''.join(c if c.isalnum() or c == '_' else '_' for c in player['name'])
+                    emoji_name = emoji_name[:32]
+
+                    # Check if emoji already exists
+                    existing_emoji = discord.utils.get(
+                        guild.emojis, 
+                        name=emoji_name
                     )
 
-                    if existing_sticker:
-                        player_stickers[player['name']] = existing_sticker.id
-                        print(f"✅ Sticker already exists: {player['name']}")
+                    if existing_emoji:
+                        player_emojis[player['name']] = existing_emoji.id
+                        print(f"✅ Emoji already exists: {player['name']}")
                         continue
 
                     # Download and process image
@@ -1151,26 +1104,21 @@ async def upload_stickers_to_servers(bot):
                         print(f"❌ Failed to process image for {player['name']}")
                         continue
 
-                    # Create sticker name (max 32 characters)
-                    sticker_name = player['name'][:32]
-
-                    # Upload sticker to server
-                    sticker = await guild.create_sticker(
-                        name=sticker_name,
-                        description=f"{player['name']} - {player['team']}",
-                        emoji="⚾",  # Related emoji (required)
-                        file=discord.File(image_data, filename=f"{sticker_name}.png")
+                    # Upload emoji to server
+                    emoji = await guild.create_custom_emoji(
+                        name=emoji_name,
+                        image=image_data.read()
                     )
 
-                    player_stickers[player['name']] = sticker.id
-                    print(f"✅ Uploaded sticker: {player['name']} (ID: {sticker.id})")
+                    player_emojis[player['name']] = emoji.id
+                    print(f"✅ Uploaded emoji: {player['name']} (ID: {emoji.id})")
 
                     # Rate limit: wait between uploads
                     await asyncio.sleep(2)
 
                 except discord.errors.HTTPException as e:
-                    if e.code == 30039:  # Maximum number of stickers reached
-                        print(f"⚠️ Server {guild.name} reached sticker limit")
+                    if e.code == 30008:  # Maximum number of emojis reached
+                        print(f"⚠️ Server {guild.name} reached emoji limit")
                         break
                     else:
                         print(f"❌ HTTP error uploading {player['name']}: {e}")
@@ -1180,46 +1128,55 @@ async def upload_stickers_to_servers(bot):
             server_index += 1
             print(f"✅ Completed server {guild.name}")
 
-    # Save sticker mappings to file
-    with open('player_stickers.json', 'w') as f:
-        json.dump(player_stickers, f, indent=2)
+    # Save emoji mappings to file
+    with open('player_emojis.json', 'w') as f:
+        json.dump(player_emojis, f, indent=2)
 
-    print(f"✅ Upload complete! {len(player_stickers)} stickers uploaded")
-    return player_stickers
+    print(f"✅ Upload complete! {len(player_emojis)} emojis uploaded")
+    return player_emojis
 
-def load_sticker_mappings():
-    """Load sticker mappings from file"""
+def load_emoji_mappings():
+    """Load emoji mappings from file"""
     try:
-        with open('player_stickers.json', 'r') as f:
+        with open('player_emojis.json', 'r') as f:
             return json.load(f)
     except FileNotFoundError:
         return {}
 
-def get_player_sticker(player_name):
-    """Get sticker format for a player"""
-    global player_stickers
-    if not player_stickers:
-        player_stickers = load_sticker_mappings()
+def get_player_emoji(player_name, bot=None):
+    """Get emoji format for a player"""
+    if not bot:
+        return "👤"
 
-    sticker_id = player_stickers.get(player_name)
-    if sticker_id:
-        return f"<:sticker:{sticker_id}>"
-    return ""
+    # Create the expected emoji name format
+    emoji_name = ''.join(c if c.isalnum() or c == '_' else '_' for c in player_name)[:32]
 
-# Add command to trigger sticker upload
-@bot.command(name="uploadstickers", aliases=["us"])
+    # Search for emoji across all emoji servers
+    for guild_id in EMOJI_SERVERS:
+        guild = bot.get_guild(guild_id)
+        if guild:
+            # Try to find emoji by name
+            emoji_obj = discord.utils.get(guild.emojis, name=emoji_name)
+            if emoji_obj:
+                return str(emoji_obj)  # Returns <:emoji_name:emoji_id>
+
+    # Fallback if emoji not found
+    return "👤"
+
+# Add command to trigger emoji upload
+@bot.command(name="uploademojis", aliases=["ue"])
 @commands.has_permissions(administrator=True)
-async def upload_stickers_command(ctx):
-    """[ADMIN] Upload player stickers to designated servers"""
-    await ctx.send("🔄 Starting sticker upload process... This will take several minutes.")
+async def upload_emojis_command(ctx):
+    """[ADMIN] Upload player emojis to designated servers"""
+    await ctx.send("🔄 Starting emoji upload process... This will take several minutes.")
 
     try:
-        stickers = await upload_stickers_to_servers(bot)
-        await ctx.send(f"✅ Sticker upload complete! {len(stickers)} players now have stickers.")
+        emojis = await upload_emojis_to_servers(bot)
+        await ctx.send(f"✅ Emoji upload complete! {len(emojis)} players now have emojis.")
     except Exception as e:
         await ctx.send(f"❌ Error during upload: {e}")
 
-# Update playerlist command to use stickers
+# Update playerlist command to use emojis
 @bot.command(name="playerlist", aliases=["pl"], help="View all players in a paginated list")
 async def playerlist_command(ctx):
     teams_data = load_players()
@@ -1227,10 +1184,6 @@ async def playerlist_command(ctx):
     if not teams_data:
         await ctx.send("❌ No player data available.")
         return
-
-    # Load sticker mappings
-    global player_stickers
-    player_stickers = load_sticker_mappings()
 
     # Create pages (10 players per page)
     all_players = []
@@ -1260,10 +1213,10 @@ async def playerlist_command(ctx):
         for idx, player in enumerate(page_players, start=i+1):
             flag = get_team_flag(player['team'])
             role_emoji = get_role_emoji(player['role'])
-            sticker = get_player_sticker(player['name'])
+            emoji = get_player_emoji(player['name'], bot)
 
-            # Format: [sticker] · 🇮🇳 · Player Name · :bat:
-            description += f"**{idx}.** {sticker} · {flag} · **{player['name']}** · {role_emoji}\n"
+            # Format: 1. [emoji] · 🇮🇳 · Rohit Sharma · 🏏
+            description += f"**{idx}.** {emoji} · {flag} · **{player['name']}** · {role_emoji}\n"
             description += f"    └ *{player['team']}* • {player['representative']}\n\n"
 
         embed.description = description
@@ -1278,7 +1231,7 @@ async def playerlist_command(ctx):
         view = PlayerListView(pages, ctx)
         view.message = await ctx.send(embed=pages[0], view=view)
 
-# Update viewteam command to use stickers
+# Update viewteam command to use emojis
 @bot.command(name="viewteam", aliases=["vt"], help="View all players in a specific team")
 async def viewteam_command(ctx, *, team_name: str):
     teams_data = load_players()
@@ -1298,10 +1251,6 @@ async def viewteam_command(ctx, *, team_name: str):
         available_teams = ", ".join([t['team'] for t in teams_data])
         await ctx.send(f"❌ Team '{team_name}' not found.\n\n**Available teams:** {available_teams}")
         return
-
-    # Load sticker mappings
-    global player_stickers
-    player_stickers = load_sticker_mappings()
 
     flag = get_team_flag(team_data['team'])
     flag_url = get_team_flag_url(team_data['team'])
@@ -1323,10 +1272,11 @@ async def viewteam_command(ctx, *, team_name: str):
 
     for player in team_data['players']:
         rep_info = get_representative(player['name'])
-        rep_text = f" • **@{rep_info[1]}**" if rep_info else " • *Unclaimed*"
-        sticker = get_player_sticker(player['name'])
+        rep_text = f"**@{rep_info[1]}**" if rep_info else "*Unclaimed*"
+        emoji = get_player_emoji(player['name'], bot)
 
-        player_line = f"{sticker} · {player['name']}{rep_text}"
+        # Format: [emoji] · Player Name · Representative
+        player_line = f"{emoji} · {player['name']} · {rep_text}"
 
         if "Wicketkeeper" in player['role']:
             wicketkeepers.append(player_line)
@@ -1375,39 +1325,349 @@ async def viewteam_command(ctx, *, team_name: str):
 
     await ctx.send(embed=embed)
 
-# Command to check sticker status
-@bot.command(name="checkstickers", aliases=["cs"])
+# Command to check emoji status
+@bot.command(name="checkemojis", aliases=["ce"])
 @commands.has_permissions(administrator=True)
-async def check_stickers_command(ctx):
-    """[ADMIN] Check how many stickers are uploaded"""
-    player_stickers = load_sticker_mappings()
+async def check_emojis_command(ctx):
+    """[ADMIN] Check how many emojis are uploaded"""
+    player_emojis = load_emoji_mappings()
     teams_data = load_players()
 
     total_players = sum(len(team['players']) for team in teams_data)
-    uploaded = len(player_stickers)
+    uploaded = len(player_emojis)
 
     embed = discord.Embed(
-        title="📊 Sticker Upload Status",
+        title="📊 Emoji Upload Status",
         color=0x0066CC
     )
 
     embed.add_field(
         name="Progress",
-        value=f"**{uploaded}** / **{total_players}** players have stickers\n"
+        value=f"**{uploaded}** / **{total_players}** players have emojis\n"
               f"({(uploaded/total_players*100):.1f}% complete)",
         inline=False
     )
 
-    # Check each server's sticker count
-    for server_id in STICKER_SERVERS:
+    # Check each server's emoji count
+    for server_id in EMOJI_SERVERS:
         guild = bot.get_guild(server_id)
         if guild:
-            sticker_count = len(guild.stickers)
+            emoji_count = len(guild.emojis)
+            emoji_limit = guild.emoji_limit
             embed.add_field(
                 name=f"{guild.name}",
-                value=f"{sticker_count}/50 stickers",
+                value=f"{emoji_count}/{emoji_limit} emojis",
                 inline=True
             )
+
+    await ctx.send(embed=embed)
+
+# Debug command to test emoji retrieval
+@bot.command(name="testemoji", aliases=["te"])
+@commands.has_permissions(administrator=True)
+async def test_emoji_command(ctx, *, player_name: str):
+    """[ADMIN] Test emoji retrieval for a specific player"""
+    emoji = get_player_emoji(player_name, bot)
+
+    # Also check all servers
+    found_emojis = []
+    emoji_name = ''.join(c if c.isalnum() or c == '_' else '_' for c in player_name)[:32]
+
+    for guild_id in EMOJI_SERVERS:
+        guild = bot.get_guild(guild_id)
+        if guild:
+            emoji_obj = discord.utils.get(guild.emojis, name=emoji_name)
+            if emoji_obj:
+                found_emojis.append(f"{guild.name}: {emoji_obj} (ID: {emoji_obj.id})")
+
+    embed = discord.Embed(
+        title=f"Emoji Test: {player_name}",
+        color=0x0066CC
+    )
+
+    embed.add_field(
+        name="Searched Name",
+        value=f"`{emoji_name}`",
+        inline=False
+    )
+
+    embed.add_field(
+        name="Result",
+        value=f"{emoji} (This is what shows in embeds)",
+        inline=False
+    )
+
+    if found_emojis:
+        embed.add_field(
+            name="Found in Servers",
+            value="\n".join(found_emojis),
+            inline=False
+        )
+    else:
+        embed.add_field(
+            name="Found in Servers",
+            value="❌ No emoji found with this name",
+            inline=False
+        )
+
+    await ctx.send(embed=embed)
+
+# Command to list all emojis in emoji servers
+@bot.command(name="listemojis", aliases=["le"])
+@commands.has_permissions(administrator=True)
+async def list_emojis_command(ctx, server_index: int = 0):
+    """[ADMIN] List all emojis in a specific emoji server"""
+    if server_index >= len(EMOJI_SERVERS):
+        await ctx.send(f"❌ Server index must be between 0 and {len(EMOJI_SERVERS)-1}")
+        return
+
+    server_id = EMOJI_SERVERS[server_index]
+    guild = bot.get_guild(server_id)
+
+    if not guild:
+        await ctx.send(f"❌ Cannot access server {server_id}")
+        return
+
+    emojis = guild.emojis
+
+    embed = discord.Embed(
+        title=f"Emojis in {guild.name}",
+        description=f"Total: {len(emojis)}/{guild.emoji_limit}",
+        color=0x0066CC
+    )
+
+    # Show first 25 emojis as example
+    emoji_list = []
+    for emoji in emojis[:25]:
+        emoji_list.append(f"{emoji} `:{emoji.name}:` (ID: {emoji.id})")
+
+    if emoji_list:
+        embed.add_field(
+            name="Sample Emojis",
+            value="\n".join(emoji_list),
+            inline=False
+        )
+
+    if len(emojis) > 25:
+        embed.set_footer(text=f"Showing first 25 of {len(emojis)} emojis")
+
+    await ctx.send(embed=embed)
+
+# Elite players storage
+elite_players = set()
+
+def load_elite_players():
+    """Load elite players from file"""
+    try:
+        with open('elite_players.json', 'r') as f:
+            return set(json.load(f))
+    except FileNotFoundError:
+        return set()
+
+def save_elite_players():
+    """Save elite players to file"""
+    with open('elite_players.json', 'w') as f:
+        json.dump(list(elite_players), f, indent=2)
+
+def is_elite_player(player_name):
+    """Check if a player is marked as elite"""
+    return player_name in elite_players
+
+def get_player_emoji_with_elite(player_name, bot=None):
+    """Get emoji for a player, using elite emoji if applicable"""
+    if is_elite_player(player_name):
+        return "<:elite:1452949859412738110>"
+    return get_player_emoji(player_name, bot)
+
+@bot.command(name="elite", aliases=["e"], help="[ADMIN] Mark players as elite and create auction threads")
+@commands.has_permissions(administrator=True)
+async def elite_command(ctx, *, players: str):
+    """
+    Mark players as elite and create auction threads
+    Usage: -elite player1, player2, player3
+    """
+    # Parse player names (split by comma)
+    player_names = [name.strip() for name in players.split(',')]
+
+    if not player_names:
+        await ctx.send("❌ Please provide at least one player name.\nUsage: `-elite player1, player2, player3`")
+        return
+
+    # Get the auction channel
+    auction_channel = bot.get_channel(1452950205715714120)
+    if not auction_channel:
+        await ctx.send("❌ Auction channel not found!")
+        return
+
+    success_count = 0
+    failed_players = []
+    created_threads = []
+
+    for player_name in player_names:
+        # Find the player
+        found_players, team_names = find_player(player_name)
+
+        if not found_players:
+            failed_players.append(f"{player_name} (not found)")
+            continue
+
+        if len(found_players) > 1:
+            failed_players.append(f"{player_name} (multiple matches - be more specific)")
+            continue
+
+        player = found_players[0]
+        team_name = team_names[0]
+
+        # Mark as elite
+        elite_players.add(player['name'])
+
+        # Create auction thread
+        try:
+            thread = await auction_channel.create_thread(
+                name=f"{player['name']}",
+                type=discord.ChannelType.public_thread,
+                reason=f"Elite player auction created by {ctx.author}"
+            )
+
+            # Send auction rules in the thread
+            auction_message = (
+                "**RULES**\n"
+                "> - INCREASE BY 100K EVERYTIME (E.G 100K --> 200K)\n"
+                ">                                                            (E.G 1.1M - 1.2M)\n"
+                "> \n"
+                "> - TROLLING / MESSING AROUND -> INSTANT BAN\n"
+                "> \n"
+                "> - AUCTION ENDS AT 30TH DECEMBER \n"
+                "> - / / HOWEVER IF NO ONE BIDS FOR 3 DAYS -> LAST HIGHER BIDDER GETS THE PLAYER **\n"
+                "*SEND YOUR BID AS A MESSAGE AFTER A PERSON E.G 200K, PAYMENT WILL BE COLLECTED IN THE END IF YOU WIN*\n"
+                "__**BASE PRICE 100K**__"
+            )
+
+            await thread.send(auction_message)
+
+            success_count += 1
+            created_threads.append(f"{player['name']} ({team_name})")
+
+        except discord.HTTPException as e:
+            failed_players.append(f"{player['name']} (thread creation failed: {e})")
+
+    # Save elite players to file
+    save_elite_players()
+
+    # Send confirmation message
+    embed = discord.Embed(
+        title="<:elite:1452949859412738110> Elite Players Marked",
+        color=0xFFD700
+    )
+
+    if success_count > 0:
+        embed.add_field(
+            name=f"✅ Successfully Created ({success_count})",
+            value="\n".join([f"• {p}" for p in created_threads]),
+            inline=False
+        )
+
+    if failed_players:
+        embed.add_field(
+            name=f"❌ Failed ({len(failed_players)})",
+            value="\n".join([f"• {p}" for p in failed_players]),
+            inline=False
+        )
+
+    embed.set_footer(text="Elite players will now show the elite emoji in dropdowns")
+
+    await ctx.send(embed=embed)
+
+@bot.command(name="unelite", aliases=["ue"], help="[ADMIN] Remove elite status from players")
+@commands.has_permissions(administrator=True)
+async def unelite_command(ctx, *, players: str):
+    """
+    Remove elite status from players
+    Usage: -unelite player1, player2, player3
+    """
+    player_names = [name.strip() for name in players.split(',')]
+
+    if not player_names:
+        await ctx.send("❌ Please provide at least one player name.")
+        return
+
+    removed = []
+    not_found = []
+
+    for player_name in player_names:
+        found_players, _ = find_player(player_name)
+
+        if not found_players:
+            not_found.append(player_name)
+            continue
+
+        if len(found_players) > 1:
+            not_found.append(f"{player_name} (multiple matches)")
+            continue
+
+        player = found_players[0]
+
+        if player['name'] in elite_players:
+            elite_players.remove(player['name'])
+            removed.append(player['name'])
+        else:
+            not_found.append(f"{player['name']} (not elite)")
+
+    save_elite_players()
+
+    embed = discord.Embed(
+        title="Elite Status Removed",
+        color=0x808080
+    )
+
+    if removed:
+        embed.add_field(
+            name="✅ Removed",
+            value="\n".join([f"• {p}" for p in removed]),
+            inline=False
+        )
+
+    if not_found:
+        embed.add_field(
+            name="❌ Not Removed",
+            value="\n".join([f"• {p}" for p in not_found]),
+            inline=False
+        )
+
+    await ctx.send(embed=embed)
+
+@bot.command(name="listelite", aliases=["le"], help="List all elite players")
+async def listelite_command(ctx):
+    """List all players marked as elite"""
+    if not elite_players:
+        await ctx.send("❌ No elite players have been marked yet.")
+        return
+
+    embed = discord.Embed(
+        title="<:elite:1452949859412738110> Elite Players",
+        description=f"Total: {len(elite_players)} players",
+        color=0xFFD700
+    )
+
+    # Group by team
+    teams_data = load_players()
+    elite_by_team = {}
+
+    for player_name in elite_players:
+        found_players, team_names = find_player(player_name)
+        if found_players:
+            team = team_names[0]
+            if team not in elite_by_team:
+                elite_by_team[team] = []
+            elite_by_team[team].append(player_name)
+
+    for team, players_list in sorted(elite_by_team.items()):
+        flag = get_team_flag(team)
+        embed.add_field(
+            name=f"{flag} {team}",
+            value="\n".join([f"• {p}" for p in players_list]),
+            inline=True
+        )
 
     await ctx.send(embed=embed)
 
