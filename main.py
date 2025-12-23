@@ -807,6 +807,14 @@ class ApprovalView(View):
             )
             return
 
+        # Check if player is elite
+        if self.player_name in elite_players:
+            await interaction.response.send_message(
+                f"❌ **{self.player_name}** is an elite player and can only be purchased at auction!",
+                ephemeral=True
+            )
+            return
+
         # Check if player is still unclaimed
         rep_info = get_representative(self.player_name)
         if rep_info:
