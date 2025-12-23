@@ -38,7 +38,9 @@ asyncio.set_event_loop(loop)
 
 @bot.event
 async def on_ready():
+    global elite_players
     init_db()
+    elite_players = load_elite_players()
     # Load the stats cog
     await bot.load_extension('cricket_stats')
     print(f'{bot.user} has connected to Discord!')
