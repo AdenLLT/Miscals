@@ -717,6 +717,29 @@ class PlayerSelectView(View):
         player = players[0]
         team_name = team_names[0]
 
+        # Check if player is elite - don't send approval request for elite players
+        if selected_player_name in elite_players:
+            try:
+                elite_emoji = interaction.client.get_emoji(1452949859412738110)
+                emoji_str = f"<:elite:{elite_emoji.id}>" if elite_emoji else "<:elite:1452949859412738110>"
+                auction_channel = interaction.client.get_channel(1452950205715714120)
+                channel_mention = auction_channel.mention if auction_channel else "<#1452950205715714120>"
+                
+                dm_embed = discord.Embed(
+                    title="⭐ Elite Player Selected",
+                    description=f"This is an elite {emoji_str} player, you will have to buy elite players in {channel_mention}",
+                    color=0xFFD700
+                )
+                await interaction.user.send(embed=dm_embed)
+            except discord.Forbidden:
+                pass
+            
+            await interaction.response.send_message(
+                f"❌ **{selected_player_name}** is an elite player and can only be purchased at auction, not through the regular mod approval system!",
+                ephemeral=True
+            )
+            return
+
         # Send approval request to admin channel
         approval_channel = interaction.client.get_channel(1452272794560757810)
 
@@ -760,23 +783,6 @@ class PlayerSelectView(View):
                 f"You'll receive a DM once an admin reviews your request.",
                 ephemeral=True
             )
-
-            # Check if selected player is elite and send DM
-            if selected_player_name in elite_players:
-                try:
-                    elite_emoji = interaction.client.get_emoji(1452949859412738110)
-                    emoji_str = f"<:elite:{elite_emoji.id}>" if elite_emoji else "<:elite:1452949859412738110>"
-                    auction_channel = interaction.client.get_channel(1452950205715714120)
-                    channel_mention = auction_channel.mention if auction_channel else "<#1452950205715714120>"
-                    
-                    dm_embed = discord.Embed(
-                        title="⭐ Elite Player Selected",
-                        description=f"This is an elite {emoji_str} player, you will have to buy elite players in {channel_mention}",
-                        color=0xFFD700
-                    )
-                    await interaction.user.send(embed=dm_embed)
-                except discord.Forbidden:
-                    pass
         else:
             await interaction.response.send_message(
                 "❌ Error: Approval channel not found!",
@@ -803,14 +809,6 @@ class ApprovalView(View):
         if not interaction.user.guild_permissions.administrator:
             await interaction.response.send_message(
                 "❌ Only administrators can approve requests!",
-                ephemeral=True
-            )
-            return
-
-        # Check if player is elite
-        if self.player_name in elite_players:
-            await interaction.response.send_message(
-                f"❌ **{self.player_name}** is an elite player and can only be purchased at auction!",
                 ephemeral=True
             )
             return
