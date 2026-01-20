@@ -34,6 +34,7 @@ args = "Discord Bot"
 [[workflows.workflow]]
 name = "Discord Bot"
 author = "agent"
+mode = "sequential"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
