@@ -1,5 +1,6 @@
 import discord
 import sqlite3
+import re
 from discord.ext import commands
 from discord.ui import View, Button
 
@@ -108,6 +109,105 @@ def get_player_name_by_user_id(user_id):
     result = c.fetchone()
     conn.close()
     return result[0] if result else None
+
+def get_user_team(user_id):
+    """Get the team a user belongs to based on their claimed player"""
+    import json
+
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (user_id,))
+    result = c.fetchone()
+    conn.close()
+
+    if not result:
+        return None
+
+    player_name = result[0]
+
+    try:
+        with open('players.json', 'r', encoding='utf-8') as f:
+            teams_data = json.load(f)
+
+        for team_data in teams_data:
+            for player in team_data['players']:
+                if player['name'] == player_name:
+                    return team_data['team']
+    except:
+        pass
+
+    return None
+
+def get_active_tournament():
+    """Get the currently active tournament"""
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute("SELECT id, name, current_round FROM tournaments WHERE is_active = 1 LIMIT 1")
+    result = c.fetchone()
+    conn.close()
+    return result
+
+def update_tournament_stats(team1, team2, winner, team1_runs, team1_balls, team2_runs, team2_balls):
+    """Update tournament points table based on match result"""
+    tournament = get_active_tournament()
+    if not tournament:
+        return
+
+    tournament_id = tournament[0]
+
+    # Calculate Net Run Rate
+    team1_rr = (team1_runs / team1_balls) * 6 if team1_balls > 0 else 0
+    team2_rr = (team2_runs / team2_balls) * 6 if team2_balls > 0 else 0
+
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+
+    # Update winner
+    if winner == team1:
+        # Team1 wins
+        c.execute("""UPDATE tournament_teams 
+                    SET points = points + 2,
+                        matches_played = matches_played + 1,
+                        wins = wins + 1,
+                        nrr = nrr + ?
+                    WHERE tournament_id = ? AND team_name = ?""",
+                 (team1_rr - team2_rr, tournament_id, team1))
+
+        # Team2 loses
+        c.execute("""UPDATE tournament_teams 
+                    SET matches_played = matches_played + 1,
+                        losses = losses + 1,
+                        nrr = nrr + ?
+                    WHERE tournament_id = ? AND team_name = ?""",
+                 (team2_rr - team1_rr, tournament_id, team2))
+    else:
+        # Team2 wins
+        c.execute("""UPDATE tournament_teams 
+                    SET points = points + 2,
+                        matches_played = matches_played + 1,
+                        wins = wins + 1,
+                        nrr = nrr + ?
+                    WHERE tournament_id = ? AND team_name = ?""",
+                 (team2_rr - team1_rr, tournament_id, team2))
+
+        # Team1 loses
+        c.execute("""UPDATE tournament_teams 
+                    SET matches_played = matches_played + 1,
+                        losses = losses + 1,
+                        nrr = nrr + ?
+                    WHERE tournament_id = ? AND team_name = ?""",
+                 (team1_rr - team2_rr, tournament_id, team1))
+
+    # Mark fixture as played
+    c.execute("""UPDATE fixtures 
+                SET is_played = 1, winner = ?
+                WHERE tournament_id = ? 
+                AND ((team1 = ? AND team2 = ?) OR (team1 = ? AND team2 = ?))
+                AND is_played = 0""",
+             (winner, tournament_id, team1, team2, team2, team1))
+
+    conn.commit()
+    conn.close()
 
 # Leaderboard View with category buttons
 class LeaderboardView(View):
@@ -253,7 +353,6 @@ class PersonalStatsView(View):
                 color=0x0066CC
             )
 
-            # Batting stats
             batting_avg = total_runs / (matches_played - times_not_out) if (matches_played - times_not_out) > 0 else total_runs
             strike_rate = (total_runs / total_balls_faced * 100) if total_balls_faced > 0 else 0
 
@@ -267,7 +366,6 @@ class PersonalStatsView(View):
                 inline=True
             )
 
-            # Bowling stats
             economy = (total_runs_conceded / (total_balls_bowled / 6)) if total_balls_bowled > 0 else 0
             bowl_avg = (total_runs_conceded / total_wickets) if total_wickets > 0 else 0
 
@@ -369,19 +467,14 @@ class CricketStats(commands.Cog):
     @commands.command(name="addstats", aliases=["as"], help="[ADMIN] Add match stats from bot message")
     @commands.has_permissions(administrator=True)
     async def addstats_command(self, ctx):
-        # Check if this is a reply to a message
         if not ctx.message.reference:
             await ctx.send("❌ Please reply to a message containing match statistics!")
             return
 
-        # Get the message being replied to
         replied_msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
-
-        # Extract stats from the message content
         content = replied_msg.content
 
-        # Find all lines that contain stats (format: user_id, runs, balls, etc.)
-        import re
+        # Extract stats (format: user_id, runs, balls, runs_conceded, balls_bowled, wickets, not_out)
         pattern = r'(\d+),\s*(\d+),\s*(\d+),\s*(\d+),\s*(\d+),\s*(\d+),\s*(\d+)'
         matches = re.findall(pattern, content)
 
@@ -389,11 +482,13 @@ class CricketStats(commands.Cog):
             await ctx.send("❌ No valid statistics found in the replied message!")
             return
 
-        # Add stats to database
+        # Collect team stats
+        team_stats = {}
+        user_teams = {}
+
         conn = sqlite3.connect('players.db')
         c = conn.cursor()
 
-        added_count = 0
         for match in matches:
             user_id, runs, balls_faced, runs_conceded, balls_bowled, wickets, not_out = map(int, match)
 
@@ -401,12 +496,44 @@ class CricketStats(commands.Cog):
                 INSERT INTO match_stats (user_id, runs, balls_faced, runs_conceded, balls_bowled, wickets, not_out)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
             """, (user_id, runs, balls_faced, runs_conceded, balls_bowled, wickets, not_out))
-            added_count += 1
+
+            # Get user's team
+            team = get_user_team(user_id)
+            if team:
+                user_teams[user_id] = team
+                if team not in team_stats:
+                    team_stats[team] = {'runs': 0, 'balls': 0}
+                team_stats[team]['runs'] += runs
+                team_stats[team]['balls'] += balls_faced
 
         conn.commit()
         conn.close()
 
-        await ctx.send(f"✅ Successfully added statistics for **{added_count}** players!")
+        # Determine which teams played
+        teams_involved = list(team_stats.keys())
+
+        if len(teams_involved) == 2:
+            team1, team2 = teams_involved
+            team1_runs = team_stats[team1]['runs']
+            team1_balls = team_stats[team1]['balls']
+            team2_runs = team_stats[team2]['runs']
+            team2_balls = team_stats[team2]['balls']
+
+            # Determine winner
+            winner = team1 if team1_runs > team2_runs else team2
+
+            # Update tournament stats
+            update_tournament_stats(team1, team2, winner, team1_runs, team1_balls, team2_runs, team2_balls)
+
+            await ctx.send(
+                f"✅ Successfully added statistics for **{len(matches)}** players!\n\n"
+                f"**Match Result:**\n"
+                f"{team1}: {team1_runs}/{team1_balls} balls\n"
+                f"{team2}: {team2_runs}/{team2_balls} balls\n\n"
+                f"**Winner:** {winner} 🏆"
+            )
+        else:
+            await ctx.send(f"✅ Successfully added statistics for **{len(matches)}** players!")
 
     @commands.command(name="stats", aliases=["s"], help="View your cricket statistics")
     async def stats_command(self, ctx, member: discord.Member = None):
@@ -439,6 +566,5 @@ class CricketStats(commands.Cog):
         conn.close()
         await ctx.send("✅ All match statistics have been reset!")
 
-# Setup function to load the cog
 async def setup(bot):
     await bot.add_cog(CricketStats(bot))
