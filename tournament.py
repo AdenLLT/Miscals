@@ -264,8 +264,8 @@ async def create_vs_image(team1, team2, stadium_name):
         # Add stadium name at the bottom
         draw_final = ImageDraw.Draw(img, 'RGBA')
 
-        try:
-            font = ImageFont.truetype("arial.ttf", 50)
+        try: 
+            font = ImageFont.truetype("nor.otf", 80)
         except:
             font = ImageFont.load_default()
 
@@ -274,7 +274,7 @@ async def create_vs_image(team1, team2, stadium_name):
         text_height = bbox[3] - bbox[1]
 
         text_x = (width - text_width) // 2
-        text_y = height - text_height - 40
+        text_y = height - text_height - 120
 
         # Draw text with outline
         for offset_x in [-2, 0, 2]:
@@ -1145,6 +1145,22 @@ class Tournament(commands.Cog):
             view.message = await ctx.send(embed=embed, view=view)
         else:
             await ctx.send("✅ All teams already have fixtures for this round!")
+)
+                    available_teams.remove(team2)
+                    matched = True
+                    
+
+            if not matched:
+                available_teams.remove(team1)
+
+        if not fixtures:
+            await ctx.send("✅ All teams have already played against each other! Tournament complete.")
+            return
+
+        embed = await FixtureEditView(ctx, self.bot, tournament_id, fixtures, next_round, teams).create_fixture_embed()
+
+        view = FixtureEditView(ctx, self.bot, tournament_id, fixtures, next_round, teams)
+        view.message = await ctx.send(embed=embed, view=view)
 
     @commands.command(name="setfpp", help="[ADMIN] Set FPP for a team")
     @commands.has_permissions(administrator=True)
