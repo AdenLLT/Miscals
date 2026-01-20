@@ -146,24 +146,24 @@ class LeaderboardView(View):
 
             player_display = f"{player_name} (@{username})" if player_name else f"@{username}"
 
+            line = ""
             if stat_type == "runs":
-                description += f"**{idx}.** {player_display}\n"
-                description += f"    └ {row[1]} runs ({row[2]} balls)\n\n"
+                line = f"**{idx}.** {player_display}\n    └ {row[1]} runs ({row[2]} balls)\n\n"
             elif stat_type == "wickets":
-                description += f"**{idx}.** {player_display}\n"
-                description += f"    └ {row[1]} wickets ({row[2]} balls)\n\n"
+                line = f"**{idx}.** {player_display}\n    └ {row[1]} wickets ({row[2]} balls)\n\n"
             elif stat_type == "economy":
-                description += f"**{idx}.** {player_display}\n"
-                description += f"    └ {row[3]:.2f} economy ({row[0]} runs in {row[1]} balls)\n\n"
+                line = f"**{idx}.** {player_display}\n    └ {row[3]:.2f} economy ({row[0]} runs in {row[1]} balls)\n\n"
             elif stat_type == "strike_rate":
-                description += f"**{idx}.** {player_display}\n"
-                description += f"    └ {row[3]:.2f} SR ({row[1]} runs off {row[2]} balls)\n\n"
+                line = f"**{idx}.** {player_display}\n    └ {row[3]:.2f} SR ({row[1]} runs off {row[2]} balls)\n\n"
             elif stat_type == "average":
-                description += f"**{idx}.** {player_display}\n"
-                description += f"    └ {row[3]:.2f} average ({row[1]} runs, {int(row[2])} dismissals)\n\n"
+                line = f"**{idx}.** {player_display}\n    └ {row[3]:.2f} average ({row[1]} runs, {int(row[2])} dismissals)\n\n"
             elif stat_type == "bowling_average":
-                description += f"**{idx}.** {player_display}\n"
-                description += f"    └ {row[3]:.2f} average ({row[1]} runs, {int(row[2])} wickets)\n\n"
+                line = f"**{idx}.** {player_display}\n    └ {row[3]:.2f} average ({row[1]} runs, {int(row[2])} wickets)\n\n"
+
+            if len(description) + len(line) > 4000:
+                description += "... (truncated)"
+                break
+            description += line
 
         embed.description = description
         embed.set_footer(text="Tournament Statistics")

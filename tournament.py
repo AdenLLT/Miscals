@@ -483,7 +483,11 @@ class Tournament(commands.Cog):
             channel_mention = channel.mention if channel else f"<#{channel_id}>"
             flag1 = get_team_flag(team1)
             flag2 = get_team_flag(team2)
-            fixture_text += f"**{idx}.** {flag1} {team1} vs {flag2} {team2} - {channel_mention}\n"
+            line = f"**{idx}.** {flag1} {team1} vs {flag2} {team2} - {channel_mention}\n"
+            if len(embed.description) + len(fixture_text) + len(line) > 4000:
+                fixture_text += "... and more matches (list truncated due to size)"
+                break
+            fixture_text += line
 
         embed.description += f"\n{fixture_text}"
         embed.set_footer(text="Review and click Confirm to post these fixtures")
