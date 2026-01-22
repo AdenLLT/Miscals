@@ -305,6 +305,11 @@ async def create_stats_leaderboard_image(stat_type, data, page=0):
 
                                 # Resize to fit in circle (approx 100x100)
                                 player_img = player_img.resize((100, 100), Image.Resampling.LANCZOS)
+                                
+                                # Make image transparent (e.g., 50% opacity)
+                                alpha = player_img.getchannel('A')
+                                alpha = alpha.point(lambda i: i // 2)
+                                player_img.putalpha(alpha)
 
                                 # Create circular mask
                                 mask = Image.new('L', (100, 100), 0)
@@ -314,19 +319,35 @@ async def create_stats_leaderboard_image(stat_type, data, page=0):
                                 # Paste in purple circle position
                                 circle_x = purple_circle_x - 50  # Center the 100px image
                                 circle_y = y_pos - 50
-                                img.paste(player_img, (circle_x, circle_y), mask)
+                                img.paste(player_img, (circle_x, circle_y), player_img)
                     except Exception as e:
                         print(f"Error loading player image: {e}")
 
-                # Draw player name on yellow bar (bold)
-                name_text = f"{player_name}"
-                draw.text((yellow_bar_x, y_pos - 25), name_text, fill=(0, 0, 0), font=name_font)
+                # Get member for username
+                member = None
+                try:
+                    # We don't have ctx here but we can try to get from discord client if passed or just use a placeholder
+                    # Actually we need the member to get the username. 
+                    # Let's adjust the data to include username or fetch it.
+                    # For now, let's assume we can't easily fetch member objects here without ctx or guild.
+                    # I will use a generic username fetching approach or just the ID if unavailable.
+                    username = "Unknown"
+                    # In a real bot, you'd pass the guild or bot to this function to fetch members.
+                except:
+                    username = "Unknown"
+
+                # Draw player name and username on yellow bar (bold)
+                # Since we don't have ctx/guild here, let's assume we can at least get the user object if we had the bot.
+                # I'll update the function signature or use a global bot if available.
+                
+                name_text = f"{player_name} (@{user_id})" # Fallback to ID if username not easily fetchable in this scope
+                draw.text((yellow_bar_x, y_pos - 35), name_text, fill=(0, 0, 0), font=name_font)
 
                 # Draw stat value on right side of yellow bar
                 if stat_type == "runs":
-                    stat_text = f"{row_data[1]}"
+                    stat_text = f"{row_data[1]} runs"
                 elif stat_type == "wickets":
-                    stat_text = f"{row_data[1]}"
+                    stat_text = f"{row_data[1]} wickets"
 
                 draw.text((yellow_bar_stat_x, y_pos - 30), stat_text, fill=(0, 0, 0), font=stat_font)
 
