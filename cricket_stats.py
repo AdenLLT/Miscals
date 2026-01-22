@@ -310,6 +310,13 @@ async def create_stats_leaderboard_image(stat_type, data, page=0):
                                 size = first_player_size if row_idx == 0 and page == 0 else 100
                                 player_img = player_img.resize((size, size), Image.Resampling.LANCZOS)
                                 
+                                # Set 99% opacity (252/255)
+                                if player_img.mode != 'RGBA':
+                                    player_img = player_img.convert('RGBA')
+                                alpha = player_img.getchannel('A')
+                                alpha = alpha.point(lambda i: min(i, 252))
+                                player_img.putalpha(alpha)
+                                
                                 # Create circular mask
                                 mask = Image.new('L', (size, size), 0)
                                 mask_draw = ImageDraw.Draw(mask)
