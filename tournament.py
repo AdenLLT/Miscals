@@ -1077,7 +1077,7 @@ class Tournament(commands.Cog):
         max_round = max_round_row[0] if max_round_row[0] is not None else 0
         
         if max_round > 0:
-            c.execute("SELECT COUNT(*) FROM fixtures WHERE tournament_id = ? AND round_number = ? AND is_played = 0",
+            c.execute("SELECT COUNT(*) FROM fixtures WHERE tournament_id = ? AND round_number = ? AND is_played = 0 AND is_reserved = 0",
                      (tournament_id, max_round))
             unplayed_in_max = c.fetchone()[0]
             
