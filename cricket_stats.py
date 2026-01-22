@@ -635,6 +635,29 @@ class LeaderboardView(View):
             self.update_buttons()
             await interaction.response.edit_message(embed=embed, view=self)
 
+    async def show_current_page_initial(self, ctx):
+        """Display the initial page (for command startup)"""
+        if self.is_image_mode:
+            # Show image version
+            img = await create_stats_leaderboard_image(self.current_stat_type, self.data, 0)
+            if img:
+                file = discord.File(img, filename=f"{self.current_stat_type}_page_1.png")
+                embed = discord.Embed(
+                    title=self.get_title(self.current_stat_type),
+                    color=0x00FF00
+                )
+                embed.set_image(url=f"attachment://{self.current_stat_type}_page_1.png")
+                embed.set_footer(text="Page 1/2 (Image) | Click Next to see all stats")
+                self.update_buttons()
+                self.message = await ctx.send(embed=embed, file=file, view=self)
+            else:
+                await ctx.send("❌ Failed to create leaderboard image!")
+        else:
+            # Show text version
+            embed, total_pages = await self.create_leaderboard_embed(self.current_stat_type, self.current_page)
+            self.update_buttons()
+            self.message = await ctx.send(embed=embed, view=self)
+
     def get_title(self, stat_type):
         """Get title for stat type"""
         titles = {
@@ -883,8 +906,10 @@ class CricketStats(commands.Cog):
     @commands.command(name="leaderboard", aliases=["lb"], help="View tournament leaderboards")
     async def leaderboard_command(self, ctx):
         view = LeaderboardView(ctx)
-        embed = await view.create_leaderboard_embed("runs")
-        view.message = await ctx.send(embed=embed, view=view)
+        view.current_stat_type = "runs"
+        view.data = get_leaderboard_data("runs")
+        view.is_image_mode = True
+        await view.show_current_page_initial(ctx)
 
     @commands.command(name="resetstats", help="[ADMIN] Reset all match stats")
     @commands.has_permissions(administrator=True)
