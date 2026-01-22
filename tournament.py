@@ -980,14 +980,15 @@ class Tournament(commands.Cog):
             conn.close()
             return
 
-        # Check if this matchup already exists
-        c.execute("""SELECT id FROM fixtures 
+        # Check if this matchup already exists in any round
+        c.execute("""SELECT id, round_number FROM fixtures 
                     WHERE tournament_id = ? 
                     AND ((team1 = ? AND team2 = ?) OR (team1 = ? AND team2 = ?))""",
                  (tournament_id, team1, team2, team2, team1))
-
-        if c.fetchone():
-            await ctx.send(f"❌ A fixture between {team1} and {team2} already exists!")
+        
+        existing = c.fetchone()
+        if existing:
+            await ctx.send(f"❌ A fixture between {team1} and {team2} already exists in Round {existing[1]}!")
             conn.close()
             return
 
@@ -1000,15 +1001,6 @@ class Tournament(commands.Cog):
                    (tournament_id, round_number, team1, team2, channel_id)
                    VALUES (?, ?, ?, ?, ?)""",
                  (tournament_id, next_round, team1, team2, channel_id))
-
-        # Update tournament round if this is the first fixture for this round
-        c.execute("SELECT COUNT(*) FROM fixtures WHERE tournament_id = ? AND round_number = ?",
-                 (tournament_id, next_round))
-        fixture_count = c.fetchone()[0]
-
-        if fixture_count == 1:  # First fixture of this round
-            c.execute("UPDATE tournaments SET current_round = ? WHERE id = ?",
-                     (next_round, tournament_id))
 
         conn.commit()
         conn.close()
@@ -1075,17 +1067,39 @@ class Tournament(commands.Cog):
             return
 
         tournament_id, tournament_name, current_round = tournament
-        next_round = current_round + 1
-
+        
         conn = sqlite3.connect('players.db')
         c = conn.cursor()
+        
+        # Determine the target round based on unplayed matches
+        c.execute("SELECT MAX(round_number) FROM fixtures WHERE tournament_id = ?", (tournament_id,))
+        max_round_row = c.fetchone()
+        max_round = max_round_row[0] if max_round_row[0] is not None else 0
+        
+        if max_round > 0:
+            c.execute("SELECT COUNT(*) FROM fixtures WHERE tournament_id = ? AND round_number = ? AND is_played = 0",
+                     (tournament_id, max_round))
+            unplayed_in_max = c.fetchone()[0]
+            
+            if unplayed_in_max > 0:
+                target_round = max_round
+            else:
+                target_round = max_round + 1
+        else:
+            target_round = 1
+
+        # Update current_round if needed
+        if current_round != target_round:
+            c.execute("UPDATE tournaments SET current_round = ? WHERE id = ?", (target_round, tournament_id))
+            current_round = target_round
+
         c.execute("SELECT team_name FROM tournament_teams WHERE tournament_id = ?", (tournament_id,))
         all_teams = [row[0] for row in c.fetchall()]
 
-        # Get teams that already have fixtures in this round (from manual fixtures)
+        # Get teams that already have fixtures in this target round
         c.execute("""SELECT DISTINCT team1, team2 FROM fixtures 
                     WHERE tournament_id = ? AND round_number = ?""",
-                 (tournament_id, next_round))
+                 (tournament_id, target_round))
         existing_fixtures = c.fetchall()
         conn.close()
 
@@ -1095,11 +1109,10 @@ class Tournament(commands.Cog):
             teams_with_fixtures.add(t2)
 
         if len(teams_with_fixtures) < len(all_teams):
-            # There are teams without fixtures, continue generating
             available_teams = [t for t in all_teams if t not in teams_with_fixtures]
 
             if len(available_teams) < 2:
-                await ctx.send("✅ All teams already have fixtures for this round!")
+                await ctx.send(f"✅ All teams already have fixtures for Round {target_round}!")
                 return
 
             played_matchups = get_played_matchups(tournament_id)
@@ -1107,7 +1120,6 @@ class Tournament(commands.Cog):
 
             random.shuffle(available_teams)
 
-            # Maximum 6 matches per round
             max_matches = 6 - len(existing_fixtures)
             matches_created = 0
 
@@ -1135,16 +1147,16 @@ class Tournament(commands.Cog):
 
             if not fixtures:
                 if existing_fixtures:
-                    await ctx.send("✅ Manual fixtures already created for this round!")
+                    await ctx.send(f"✅ Manual fixtures already created for Round {target_round}!")
                 else:
                     await ctx.send("✅ All possible matchups have been played!")
                 return
 
-            embed = await FixtureEditView(ctx, self.bot, tournament_id, fixtures, next_round, all_teams).create_fixture_embed()
-            view = FixtureEditView(ctx, self.bot, tournament_id, fixtures, next_round, all_teams)
+            embed = await FixtureEditView(ctx, self.bot, tournament_id, fixtures, target_round, all_teams).create_fixture_embed()
+            view = FixtureEditView(ctx, self.bot, tournament_id, fixtures, target_round, all_teams)
             view.message = await ctx.send(embed=embed, view=view)
         else:
-            await ctx.send("✅ All teams already have fixtures for this round!")
+            await ctx.send(f"✅ All teams already have fixtures for Round {target_round}!")
 
     @commands.command(name="setfpp", help="[ADMIN] Set FPP for a team")
     @commands.has_permissions(administrator=True)
