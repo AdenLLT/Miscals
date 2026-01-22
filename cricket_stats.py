@@ -1,8 +1,11 @@
 import discord
 import sqlite3
 import re
+import io
+import aiohttp
 from discord.ext import commands
 from discord.ui import View, Button
+from PIL import Image, ImageDraw, ImageFont
 
 # Stats calculation functions
 def get_user_stats(user_id):
@@ -35,7 +38,6 @@ def get_leaderboard_data(stat_type):
             GROUP BY user_id
             HAVING total > 0
             ORDER BY total DESC
-            LIMIT 20
         """)
     elif stat_type == "wickets":
         c.execute("""
@@ -44,7 +46,6 @@ def get_leaderboard_data(stat_type):
             GROUP BY user_id
             HAVING total > 0
             ORDER BY total DESC
-            LIMIT 20
         """)
     elif stat_type == "economy":
         c.execute("""
@@ -57,7 +58,6 @@ def get_leaderboard_data(stat_type):
             GROUP BY user_id
             HAVING balls >= 6
             ORDER BY economy ASC
-            LIMIT 20
         """)
     elif stat_type == "strike_rate":
         c.execute("""
@@ -70,7 +70,6 @@ def get_leaderboard_data(stat_type):
             GROUP BY user_id
             HAVING balls >= 10
             ORDER BY sr DESC
-            LIMIT 20
         """)
     elif stat_type == "average":
         c.execute("""
@@ -83,7 +82,6 @@ def get_leaderboard_data(stat_type):
             GROUP BY user_id
             HAVING dismissals > 0
             ORDER BY avg DESC
-            LIMIT 20
         """)
     elif stat_type == "bowling_average":
         c.execute("""
@@ -95,7 +93,6 @@ def get_leaderboard_data(stat_type):
             WHERE wickets > 0
             GROUP BY user_id
             ORDER BY avg ASC
-            LIMIT 20
         """)
 
     results = c.fetchall()
@@ -109,6 +106,21 @@ def get_player_name_by_user_id(user_id):
     result = c.fetchone()
     conn.close()
     return result[0] if result else None
+
+def get_player_image_by_name(player_name):
+    """Get player image URL from players.json"""
+    import json
+    try:
+        with open('players.json', 'r', encoding='utf-8') as f:
+            teams_data = json.load(f)
+
+        for team_data in teams_data:
+            for player in team_data['players']:
+                if player['name'] == player_name:
+                    return player['image']
+    except:
+        pass
+    return None
 
 def get_user_team(user_id):
     """Get the team a user belongs to based on their claimed player"""
@@ -137,6 +149,29 @@ def get_user_team(user_id):
         pass
 
     return None
+
+def get_team_flag(team_name):
+    """Get team flag emoji"""
+    flags = {
+        "India": "🇮🇳",
+        "Pakistan": "🇵🇰",
+        "Australia": "🇦🇺",
+        "England": "🏴󠁧󠁢󠁥󠁮󠁧󠁿",
+        "New Zealand": "🇳🇿",
+        "South Africa": "🇿🇦",
+        "West Indies": "🏝️",
+        "Sri Lanka": "🇱🇰",
+        "Bangladesh": "🇧🇩",
+        "Afghanistan": "🇦🇫",
+        "Netherlands": "🇳🇱",
+        "Scotland": "🏴󠁧󠁢󠁳󠁣󠁴󠁿",
+        "Ireland": "🇮🇪",
+        "Zimbabwe": "🇿🇼",
+        "UAE": "🇦🇪",
+        "Canada": "🇨🇦",
+        "USA": "🇺🇸"
+    }
+    return flags.get(team_name, "🏳️")
 
 def get_active_tournament():
     """Get the currently active tournament"""
@@ -209,6 +244,179 @@ def update_tournament_stats(team1, team2, winner, team1_runs, team1_balls, team2
     conn.commit()
     conn.close()
 
+async def create_stats_leaderboard_image(stat_type, data, page=0):
+    """Create stats leaderboard image based on stats.webp template"""
+    try:
+        # Load the background template
+        img = Image.open("stats.webp").convert('RGBA')
+        width, height = img.size
+
+        # Load font
+        try:
+            name_font = ImageFont.truetype("nor.otf", 50)
+            stat_font = ImageFont.truetype("nor.otf", 55)
+        except:
+            name_font = ImageFont.load_default()
+            stat_font = ImageFont.load_default()
+
+        # Define positions (based on your image layout)
+        # Purple circles on left, yellow bars on right
+        entries_per_page = 5
+        start_idx = page * entries_per_page
+        end_idx = min(start_idx + entries_per_page, len(data))
+
+        # Vertical positions for each row (adjust based on your stats.webp)
+        row_positions = [
+            130,   # Row 1
+            260,   # Row 2
+            390,   # Row 3
+            520,   # Row 4
+            650    # Row 5
+        ]
+
+        purple_circle_x = 140  # X position for center of purple circle
+        yellow_bar_x = 350  # X position for start of yellow bar (player name)
+        yellow_bar_stat_x = width - 150  # X position for stat value (right side)
+
+        draw = ImageDraw.Draw(img)
+
+        async with aiohttp.ClientSession() as session:
+            for idx, row_data in enumerate(data[start_idx:end_idx]):
+                row_idx = idx
+                user_id = row_data[0]
+
+                # Get player info
+                player_name = get_player_name_by_user_id(user_id)
+                if not player_name:
+                    continue
+
+                player_image_url = get_player_image_by_name(player_name)
+
+                # Calculate Y position for this row
+                y_pos = row_positions[row_idx]
+
+                # Download and paste player headshot in purple circle
+                if player_image_url and player_image_url.strip():
+                    try:
+                        async with session.get(player_image_url) as resp:
+                            if resp.status == 200:
+                                img_data = await resp.read()
+                                player_img = Image.open(io.BytesIO(img_data)).convert('RGBA')
+
+                                # Resize to fit in circle (approx 100x100)
+                                player_img = player_img.resize((100, 100), Image.Resampling.LANCZOS)
+
+                                # Create circular mask
+                                mask = Image.new('L', (100, 100), 0)
+                                mask_draw = ImageDraw.Draw(mask)
+                                mask_draw.ellipse((0, 0, 100, 100), fill=255)
+
+                                # Paste in purple circle position
+                                circle_x = purple_circle_x - 50  # Center the 100px image
+                                circle_y = y_pos - 50
+                                img.paste(player_img, (circle_x, circle_y), mask)
+                    except Exception as e:
+                        print(f"Error loading player image: {e}")
+
+                # Draw player name on yellow bar (bold)
+                name_text = f"{player_name}"
+                draw.text((yellow_bar_x, y_pos - 25), name_text, fill=(0, 0, 0), font=name_font)
+
+                # Draw stat value on right side of yellow bar
+                if stat_type == "runs":
+                    stat_text = f"{row_data[1]}"
+                elif stat_type == "wickets":
+                    stat_text = f"{row_data[1]}"
+
+                draw.text((yellow_bar_stat_x, y_pos - 30), stat_text, fill=(0, 0, 0), font=stat_font)
+
+        # Convert to bytes
+        output = io.BytesIO()
+        img = img.convert('RGB')
+        img.save(output, format='PNG', quality=95)
+        output.seek(0)
+
+        return output
+    except Exception as e:
+        print(f"Error creating stats leaderboard image: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+# Stats Image View with pagination
+class StatsImageView(View):
+    def __init__(self, ctx, stat_type, data):
+        super().__init__(timeout=180)
+        self.ctx = ctx
+        self.stat_type = stat_type
+        self.data = data
+        self.current_page = 0
+        self.total_pages = (len(data) + 4) // 5  # 5 per page
+        self.message = None
+
+        self.update_buttons()
+
+    def update_buttons(self):
+        # Disable/enable buttons based on current page
+        self.children[0].disabled = self.current_page == 0
+        self.children[1].disabled = self.current_page >= self.total_pages - 1
+
+    @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.primary)
+    async def previous_button(self, interaction: discord.Interaction, button: Button):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("❌ This is not your menu!", ephemeral=True)
+            return
+
+        self.current_page -= 1
+        self.update_buttons()
+
+        # Create new image for this page
+        img = await create_stats_leaderboard_image(self.stat_type, self.data, self.current_page)
+        if img:
+            file = discord.File(img, filename=f"{self.stat_type}_page_{self.current_page+1}.png")
+
+            embed = discord.Embed(
+                title=f"{'🏏 Most Runs' if self.stat_type == 'runs' else '🎯 Most Wickets'}",
+                color=0x00FF00
+            )
+            embed.set_image(url=f"attachment://{self.stat_type}_page_{self.current_page+1}.png")
+            embed.set_footer(text=f"Page {self.current_page + 1}/{self.total_pages}")
+
+            await interaction.response.edit_message(embed=embed, attachments=[file], view=self)
+        else:
+            await interaction.response.send_message("❌ Failed to create stats image!", ephemeral=True)
+
+    @discord.ui.button(label="Next ➡️", style=discord.ButtonStyle.primary)
+    async def next_button(self, interaction: discord.Interaction, button: Button):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("❌ This is not your menu!", ephemeral=True)
+            return
+
+        self.current_page += 1
+        self.update_buttons()
+
+        # Create new image for this page
+        img = await create_stats_leaderboard_image(self.stat_type, self.data, self.current_page)
+        if img:
+            file = discord.File(img, filename=f"{self.stat_type}_page_{self.current_page+1}.png")
+
+            embed = discord.Embed(
+                title=f"{'🏏 Most Runs' if self.stat_type == 'runs' else '🎯 Most Wickets'}",
+                color=0x00FF00
+            )
+            embed.set_image(url=f"attachment://{self.stat_type}_page_{self.current_page+1}.png")
+            embed.set_footer(text=f"Page {self.current_page + 1}/{self.total_pages}")
+
+            await interaction.response.edit_message(embed=embed, attachments=[file], view=self)
+        else:
+            await interaction.response.send_message("❌ Failed to create stats image!", ephemeral=True)
+
+    async def on_timeout(self):
+        for child in self.children:
+            child.disabled = True
+        if self.message:
+            await self.message.edit(view=self)
+
 # Leaderboard View with category buttons
 class LeaderboardView(View):
     def __init__(self, ctx):
@@ -238,13 +446,17 @@ class LeaderboardView(View):
             return embed
 
         description = ""
-        for idx, row in enumerate(data, 1):
+        for idx, row in enumerate(data[:20], 1):  # Limit to top 20
             user_id = row[0]
             player_name = get_player_name_by_user_id(user_id)
             member = self.ctx.guild.get_member(user_id)
             username = member.name if member else "Unknown"
 
-            player_display = f"{player_name} (@{username})" if player_name else f"@{username}"
+            # Get team for emoji
+            team = get_user_team(user_id)
+            team_emoji = get_team_flag(team) if team else ""
+
+            player_display = f"{team_emoji} **{player_name}** (@{username})" if player_name else f"@{username}"
 
             line = ""
             if stat_type == "runs":

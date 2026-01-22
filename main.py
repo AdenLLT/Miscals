@@ -1599,7 +1599,7 @@ async def viewteam_command(ctx, *, team_name: str):
         await ctx.send(embed=embed)
 #-----------------
 
-@bot.command(name="squadimage", aliases=["si"], help="View all players in a specific team")
+@bot.command(name="squadimage", aliases=["is"], help="View all players in a specific team")
 async def viewteam_command(ctx, *, team_name: str):
     teams_data = load_players()
 
