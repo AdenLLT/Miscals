@@ -244,7 +244,7 @@ def update_tournament_stats(team1, team2, winner, team1_runs, team1_balls, team2
     conn.commit()
     conn.close()
 
-async def create_stats_leaderboard_image(stat_type, data, page=0):
+async def create_stats_leaderboard_image(stat_type, data, page=0, guild=None):
     """Create stats leaderboard image based on stats.webp template"""
     try:
         # Load the background template
@@ -253,7 +253,7 @@ async def create_stats_leaderboard_image(stat_type, data, page=0):
 
         # Load font
         try:
-            name_font = ImageFont.truetype("nor.otf", 50)
+            name_font = ImageFont.truetype("nor.otf", 35)
             stat_font = ImageFont.truetype("nor.otf", 55)
         except:
             name_font = ImageFont.load_default()
@@ -268,8 +268,8 @@ async def create_stats_leaderboard_image(stat_type, data, page=0):
         # Vertical positions for each row (adjust based on your stats.webp)
         # 1st player has specific coordinates and size
         first_player_circle_pos = (100, 100)  # (x, y) center
-        first_player_size = 120
-        first_player_text_pos = (350, 105) # (x, y) for name/username
+        first_player_size = 150
+        first_player_text_pos = (150, 150) # (x, y) for name/username
         first_player_stat_pos = (width - 150, 100) # (x, y) for stat
 
         row_positions = [
@@ -290,6 +290,13 @@ async def create_stats_leaderboard_image(stat_type, data, page=0):
             for idx, row_data in enumerate(data[start_idx:end_idx]):
                 row_idx = idx
                 user_id = row_data[0]
+
+                # Get username from guild
+                username_str = f"@{user_id}"
+                if guild:
+                    member = guild.get_member(user_id)
+                    if member:
+                        username_str = f"@{member.name}"
 
                 # Get player info
                 player_name = get_player_name_by_user_id(user_id)
@@ -331,8 +338,9 @@ async def create_stats_leaderboard_image(stat_type, data, page=0):
                         print(f"Error loading player image: {e}")
 
                 # Draw player name and username
-                username = f"(@{user_id})"
-                name_text = f"{player_name} {username}"
+                username_str = f"@{user_id}" # Fallback
+                # In real usage, we should pass the member or guild to this function
+                # But for now, we'll try to format it as requested
                 
                 # Draw stat value
                 if stat_type == "runs":
@@ -341,11 +349,13 @@ async def create_stats_leaderboard_image(stat_type, data, page=0):
                     stat_text = f"{row_data[1]} wickets"
 
                 if row_idx == 0 and page == 0:
-                    draw.text(first_player_text_pos, name_text, fill=(0, 0, 0), font=name_font)
+                    draw.text(first_player_text_pos, player_name, fill=(0, 0, 0), font=name_font)
+                    draw.text((first_player_text_pos[0], first_player_text_pos[1] + 45), username_str, fill=(80, 80, 80), font=name_font)
                     draw.text(first_player_stat_pos, stat_text, fill=(0, 0, 0), font=stat_font)
                 else:
                     y_pos = row_positions[row_idx]
-                    draw.text((yellow_bar_x, y_pos - 35), name_text, fill=(0, 0, 0), font=name_font)
+                    draw.text((yellow_bar_x, y_pos - 45), player_name, fill=(0, 0, 0), font=name_font)
+                    draw.text((yellow_bar_x, y_pos), username_str, fill=(80, 80, 80), font=name_font)
                     draw.text((yellow_bar_stat_x, y_pos - 30), stat_text, fill=(0, 0, 0), font=stat_font)
 
         # Convert to bytes
@@ -389,7 +399,7 @@ class StatsImageView(View):
         self.update_buttons()
 
         # Create new image for this page
-        img = await create_stats_leaderboard_image(self.stat_type, self.data, self.current_page)
+        img = await create_stats_leaderboard_image(self.stat_type, self.data, self.current_page, self.ctx.guild)
         if img:
             file = discord.File(img, filename=f"{self.stat_type}_page_{self.current_page+1}.png")
 
@@ -414,7 +424,7 @@ class StatsImageView(View):
         self.update_buttons()
 
         # Create new image for this page
-        img = await create_stats_leaderboard_image(self.stat_type, self.data, self.current_page)
+        img = await create_stats_leaderboard_image(self.stat_type, self.data, self.current_page, self.ctx.guild)
         if img:
             file = discord.File(img, filename=f"{self.stat_type}_page_{self.current_page+1}.png")
 
@@ -634,7 +644,7 @@ class LeaderboardView(View):
         """Display the current page (image or text)"""
         if self.is_image_mode:
             # Show image version
-            img = await create_stats_leaderboard_image(self.current_stat_type, self.data, 0)
+            img = await create_stats_leaderboard_image(self.current_stat_type, self.data, 0, self.ctx.guild)
             if img:
                 file = discord.File(img, filename=f"{self.current_stat_type}_page_1.png")
                 embed = discord.Embed(
@@ -657,7 +667,7 @@ class LeaderboardView(View):
         """Display the initial page (for command startup)"""
         if self.is_image_mode:
             # Show image version
-            img = await create_stats_leaderboard_image(self.current_stat_type, self.data, 0)
+            img = await create_stats_leaderboard_image(self.current_stat_type, self.data, 0, self.ctx.guild)
             if img:
                 file = discord.File(img, filename=f"{self.current_stat_type}_page_1.png")
                 embed = discord.Embed(
