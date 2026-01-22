@@ -266,8 +266,14 @@ async def create_stats_leaderboard_image(stat_type, data, page=0):
         end_idx = min(start_idx + entries_per_page, len(data))
 
         # Vertical positions for each row (adjust based on your stats.webp)
+        # 1st player has specific coordinates and size
+        first_player_circle_pos = (140, 130)  # (x, y) center
+        first_player_size = 120
+        first_player_text_pos = (350, 105) # (x, y) for name/username
+        first_player_stat_pos = (width - 150, 100) # (x, y) for stat
+
         row_positions = [
-            130,   # Row 1
+            130,   # Row 1 (center)
             260,   # Row 2
             390,   # Row 3
             520,   # Row 4
@@ -292,10 +298,7 @@ async def create_stats_leaderboard_image(stat_type, data, page=0):
 
                 player_image_url = get_player_image_by_name(player_name)
 
-                # Calculate Y position for this row
-                y_pos = row_positions[row_idx]
-
-                # Download and paste player headshot in purple circle
+                # Download and paste player headshot
                 if player_image_url and player_image_url.strip():
                     try:
                         async with session.get(player_image_url) as resp:
@@ -303,53 +306,45 @@ async def create_stats_leaderboard_image(stat_type, data, page=0):
                                 img_data = await resp.read()
                                 player_img = Image.open(io.BytesIO(img_data)).convert('RGBA')
 
-                                # Resize to fit in circle (approx 100x100)
-                                player_img = player_img.resize((100, 100), Image.Resampling.LANCZOS)
+                                # Set size based on rank
+                                size = first_player_size if row_idx == 0 and page == 0 else 100
+                                player_img = player_img.resize((size, size), Image.Resampling.LANCZOS)
                                 
-                                # Make image transparent (e.g., 50% opacity)
-                                alpha = player_img.getchannel('A')
-                                alpha = alpha.point(lambda i: i // 2)
-                                player_img.putalpha(alpha)
-
                                 # Create circular mask
-                                mask = Image.new('L', (100, 100), 0)
+                                mask = Image.new('L', (size, size), 0)
                                 mask_draw = ImageDraw.Draw(mask)
-                                mask_draw.ellipse((0, 0, 100, 100), fill=255)
+                                mask_draw.ellipse((0, 0, size, size), fill=255)
 
-                                # Paste in purple circle position
-                                circle_x = purple_circle_x - 50  # Center the 100px image
-                                circle_y = y_pos - 50
-                                img.paste(player_img, (circle_x, circle_y), player_img)
+                                # Position based on rank
+                                if row_idx == 0 and page == 0:
+                                    circle_x = first_player_circle_pos[0] - (size // 2)
+                                    circle_y = first_player_circle_pos[1] - (size // 2)
+                                else:
+                                    y_pos = row_positions[row_idx]
+                                    circle_x = purple_circle_x - (size // 2)
+                                    circle_y = y_pos - (size // 2)
+
+                                img.paste(player_img, (circle_x, circle_y), mask)
                     except Exception as e:
                         print(f"Error loading player image: {e}")
 
-                # Get member for username
-                member = None
-                try:
-                    # We don't have ctx here but we can try to get from discord client if passed or just use a placeholder
-                    # Actually we need the member to get the username. 
-                    # Let's adjust the data to include username or fetch it.
-                    # For now, let's assume we can't easily fetch member objects here without ctx or guild.
-                    # I will use a generic username fetching approach or just the ID if unavailable.
-                    username = "Unknown"
-                    # In a real bot, you'd pass the guild or bot to this function to fetch members.
-                except:
-                    username = "Unknown"
-
-                # Draw player name and username on yellow bar (bold)
-                # Since we don't have ctx/guild here, let's assume we can at least get the user object if we had the bot.
-                # I'll update the function signature or use a global bot if available.
+                # Draw player name and username
+                username = f"(@{user_id})"
+                name_text = f"{player_name} {username}"
                 
-                name_text = f"{player_name} (@{user_id})" # Fallback to ID if username not easily fetchable in this scope
-                draw.text((yellow_bar_x, y_pos - 35), name_text, fill=(0, 0, 0), font=name_font)
-
-                # Draw stat value on right side of yellow bar
+                # Draw stat value
                 if stat_type == "runs":
                     stat_text = f"{row_data[1]} runs"
                 elif stat_type == "wickets":
                     stat_text = f"{row_data[1]} wickets"
 
-                draw.text((yellow_bar_stat_x, y_pos - 30), stat_text, fill=(0, 0, 0), font=stat_font)
+                if row_idx == 0 and page == 0:
+                    draw.text(first_player_text_pos, name_text, fill=(0, 0, 0), font=name_font)
+                    draw.text(first_player_stat_pos, stat_text, fill=(0, 0, 0), font=stat_font)
+                else:
+                    y_pos = row_positions[row_idx]
+                    draw.text((yellow_bar_x, y_pos - 35), name_text, fill=(0, 0, 0), font=name_font)
+                    draw.text((yellow_bar_stat_x, y_pos - 30), stat_text, fill=(0, 0, 0), font=stat_font)
 
         # Convert to bytes
         output = io.BytesIO()
