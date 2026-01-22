@@ -3041,10 +3041,10 @@ async def matchtime(interaction: discord.Interaction, opponent: app_commands.Cho
         await interaction.response.send_message(f"❌ Captain of {opponent.name} is not in the server!", ephemeral=True)
         return
 
-    # Build ping text for captain
-    ping_text = f"<@{captain_id}>"
+    # Build ping text for captain and teams
+    ping_text = f"<@{captain_id}> {requester_team_role.mention} {opponent_role.mention}"
 
-    # Send captain ping first as separate message
+    # Send captain ping and team mentions
     await interaction.response.send_message(content=f"{ping_text} - Match Time Request")
 
     # Create request embed
