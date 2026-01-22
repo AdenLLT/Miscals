@@ -268,7 +268,7 @@ async def create_stats_leaderboard_image(stat_type, data, page=0):
         # Vertical positions for each row (adjust based on your stats.webp)
         # 1st player has specific coordinates and size
         first_player_circle_pos = (100, 100)  # (x, y) center
-        first_player_size = 150
+        first_player_size = 120
         first_player_text_pos = (350, 105) # (x, y) for name/username
         first_player_stat_pos = (width - 150, 100) # (x, y) for stat
 
@@ -317,11 +317,6 @@ async def create_stats_leaderboard_image(stat_type, data, page=0):
                                 alpha = alpha.point(lambda i: min(i, 252))
                                 player_img.putalpha(alpha)
                                 
-                                # Create circular mask
-                                mask = Image.new('L', (size, size), 0)
-                                mask_draw = ImageDraw.Draw(mask)
-                                mask_draw.ellipse((0, 0, size, size), fill=255)
-
                                 # Position based on rank
                                 if row_idx == 0 and page == 0:
                                     circle_x = first_player_circle_pos[0] - (size // 2)
@@ -331,7 +326,7 @@ async def create_stats_leaderboard_image(stat_type, data, page=0):
                                     circle_x = purple_circle_x - (size // 2)
                                     circle_y = y_pos - (size // 2)
 
-                                img.paste(player_img, (circle_x, circle_y), mask)
+                                img.paste(player_img, (circle_x, circle_y), player_img)
                     except Exception as e:
                         print(f"Error loading player image: {e}")
 
