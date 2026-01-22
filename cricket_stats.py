@@ -417,14 +417,18 @@ class StatsImageView(View):
         if self.message:
             await self.message.edit(view=self)
 
-# Leaderboard View with category buttons
+# Leaderboard View with category buttons and dual image/text display
 class LeaderboardView(View):
     def __init__(self, ctx):
         super().__init__(timeout=180)
         self.ctx = ctx
         self.message = None
+        self.current_stat_type = None
+        self.current_page = 0
+        self.is_image_mode = True
+        self.data = None
 
-    async def create_leaderboard_embed(self, stat_type):
+    async def create_leaderboard_embed(self, stat_type, page=0):
         titles = {
             "runs": "🏏 Most Runs",
             "wickets": "🎯 Most Wickets",
@@ -443,10 +447,16 @@ class LeaderboardView(View):
 
         if not data:
             embed.description = "No data available yet."
-            return embed
+            return embed, 0
+
+        # Pagination: 20 entries per text page
+        entries_per_page = 20
+        start_idx = page * entries_per_page
+        end_idx = min(start_idx + entries_per_page, len(data))
+        total_pages = (len(data) + entries_per_page - 1) // entries_per_page
 
         description = ""
-        for idx, row in enumerate(data[:20], 1):  # Limit to top 20
+        for idx, row in enumerate(data[start_idx:end_idx], start_idx + 1):
             user_id = row[0]
             player_name = get_player_name_by_user_id(user_id)
             member = self.ctx.guild.get_member(user_id)
@@ -464,7 +474,7 @@ class LeaderboardView(View):
             elif stat_type == "wickets":
                 line = f"**{idx}.** {player_display}\n    └ {row[1]} wickets ({row[2]} balls)\n\n"
             elif stat_type == "economy":
-                line = f"**{idx}.** {player_display}\n    └ {row[3]:.2f} economy ({row[0]} runs in {row[1]} balls)\n\n"
+                line = f"**{idx}.** {player_display}\n    └ {row[3]:.2f} economy ({row[1]} runs in {row[2]} balls)\n\n"
             elif stat_type == "strike_rate":
                 line = f"**{idx}.** {player_display}\n    └ {row[3]:.2f} SR ({row[1]} runs off {row[2]} balls)\n\n"
             elif stat_type == "average":
@@ -478,56 +488,164 @@ class LeaderboardView(View):
             description += line
 
         embed.description = description
-        embed.set_footer(text="Tournament Statistics")
-        return embed
+        embed.set_footer(text=f"Page {page + 1}/{total_pages} | Tournament Statistics")
+        return embed, total_pages
+
+    def update_buttons(self):
+        """Update button states based on current state"""
+        # Category buttons (always enabled)
+        for button in self.children:
+            if button.label in ["🏏 Runs", "🎯 Wickets", "💰 Economy", "⚡ Strike Rate", "📊 Bat Average", "🎳 Bowl Average"]:
+                button.disabled = False
+        
+        # Navigation buttons
+        if self.is_image_mode:
+            # Show next button only
+            for button in self.children:
+                if button.label == "Next ➡️":
+                    button.disabled = False
+                elif button.label == "◀️ Previous":
+                    button.disabled = True
+        else:
+            # Show previous/next based on page
+            for button in self.children:
+                if button.label == "◀️ Previous":
+                    button.disabled = self.current_page == 0
+                elif button.label == "Next ➡️":
+                    button.disabled = self.current_page >= (len(self.data) + 19) // 20 - 1
 
     @discord.ui.button(label="🏏 Runs", style=discord.ButtonStyle.success, row=0)
     async def runs_button(self, interaction: discord.Interaction, button: Button):
         if interaction.user.id != self.ctx.author.id:
             await interaction.response.send_message("❌ This is not your menu!", ephemeral=True)
             return
-        embed = await self.create_leaderboard_embed("runs")
-        await interaction.response.edit_message(embed=embed, view=self)
+        self.current_stat_type = "runs"
+        self.current_page = 0
+        self.is_image_mode = True
+        self.data = get_leaderboard_data("runs")
+        await self.show_current_page(interaction)
 
     @discord.ui.button(label="🎯 Wickets", style=discord.ButtonStyle.success, row=0)
     async def wickets_button(self, interaction: discord.Interaction, button: Button):
         if interaction.user.id != self.ctx.author.id:
             await interaction.response.send_message("❌ This is not your menu!", ephemeral=True)
             return
-        embed = await self.create_leaderboard_embed("wickets")
-        await interaction.response.edit_message(embed=embed, view=self)
+        self.current_stat_type = "wickets"
+        self.current_page = 0
+        self.is_image_mode = True
+        self.data = get_leaderboard_data("wickets")
+        await self.show_current_page(interaction)
 
     @discord.ui.button(label="💰 Economy", style=discord.ButtonStyle.success, row=0)
     async def economy_button(self, interaction: discord.Interaction, button: Button):
         if interaction.user.id != self.ctx.author.id:
             await interaction.response.send_message("❌ This is not your menu!", ephemeral=True)
             return
-        embed = await self.create_leaderboard_embed("economy")
-        await interaction.response.edit_message(embed=embed, view=self)
+        self.current_stat_type = "economy"
+        self.current_page = 0
+        self.is_image_mode = True
+        self.data = get_leaderboard_data("economy")
+        await self.show_current_page(interaction)
 
     @discord.ui.button(label="⚡ Strike Rate", style=discord.ButtonStyle.primary, row=1)
     async def sr_button(self, interaction: discord.Interaction, button: Button):
         if interaction.user.id != self.ctx.author.id:
             await interaction.response.send_message("❌ This is not your menu!", ephemeral=True)
             return
-        embed = await self.create_leaderboard_embed("strike_rate")
-        await interaction.response.edit_message(embed=embed, view=self)
+        self.current_stat_type = "strike_rate"
+        self.current_page = 0
+        self.is_image_mode = True
+        self.data = get_leaderboard_data("strike_rate")
+        await self.show_current_page(interaction)
 
     @discord.ui.button(label="📊 Bat Average", style=discord.ButtonStyle.primary, row=1)
     async def avg_button(self, interaction: discord.Interaction, button: Button):
         if interaction.user.id != self.ctx.author.id:
             await interaction.response.send_message("❌ This is not your menu!", ephemeral=True)
             return
-        embed = await self.create_leaderboard_embed("average")
-        await interaction.response.edit_message(embed=embed, view=self)
+        self.current_stat_type = "average"
+        self.current_page = 0
+        self.is_image_mode = True
+        self.data = get_leaderboard_data("average")
+        await self.show_current_page(interaction)
 
     @discord.ui.button(label="🎳 Bowl Average", style=discord.ButtonStyle.primary, row=1)
     async def bowl_avg_button(self, interaction: discord.Interaction, button: Button):
         if interaction.user.id != self.ctx.author.id:
             await interaction.response.send_message("❌ This is not your menu!", ephemeral=True)
             return
-        embed = await self.create_leaderboard_embed("bowling_average")
-        await interaction.response.edit_message(embed=embed, view=self)
+        self.current_stat_type = "bowling_average"
+        self.current_page = 0
+        self.is_image_mode = True
+        self.data = get_leaderboard_data("bowling_average")
+        await self.show_current_page(interaction)
+
+    @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.primary, row=2)
+    async def previous_button(self, interaction: discord.Interaction, button: Button):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("❌ This is not your menu!", ephemeral=True)
+            return
+        
+        if self.is_image_mode:
+            # Can't go back from image mode
+            await interaction.response.defer()
+            return
+        
+        self.current_page -= 1
+        self.update_buttons()
+        await self.show_current_page(interaction)
+
+    @discord.ui.button(label="Next ➡️", style=discord.ButtonStyle.primary, row=2)
+    async def next_button(self, interaction: discord.Interaction, button: Button):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("❌ This is not your menu!", ephemeral=True)
+            return
+        
+        if self.is_image_mode:
+            # Transition from image to text mode
+            self.is_image_mode = False
+            self.current_page = 0
+        else:
+            # Next text page
+            self.current_page += 1
+        
+        self.update_buttons()
+        await self.show_current_page(interaction)
+
+    async def show_current_page(self, interaction: discord.Interaction):
+        """Display the current page (image or text)"""
+        if self.is_image_mode:
+            # Show image version
+            img = await create_stats_leaderboard_image(self.current_stat_type, self.data, 0)
+            if img:
+                file = discord.File(img, filename=f"{self.current_stat_type}_page_1.png")
+                embed = discord.Embed(
+                    title=self.get_title(self.current_stat_type),
+                    color=0x00FF00
+                )
+                embed.set_image(url=f"attachment://{self.current_stat_type}_page_1.png")
+                embed.set_footer(text="Page 1/2 (Image) | Click Next to see all stats")
+                self.update_buttons()
+                await interaction.response.edit_message(embed=embed, attachments=[file], view=self)
+            else:
+                await interaction.response.defer()
+        else:
+            # Show text version
+            embed, total_pages = await self.create_leaderboard_embed(self.current_stat_type, self.current_page)
+            self.update_buttons()
+            await interaction.response.edit_message(embed=embed, view=self)
+
+    def get_title(self, stat_type):
+        """Get title for stat type"""
+        titles = {
+            "runs": "🏏 Most Runs",
+            "wickets": "🎯 Most Wickets",
+            "economy": "💰 Best Economy Rate",
+            "strike_rate": "⚡ Best Strike Rate",
+            "average": "📊 Best Batting Average",
+            "bowling_average": "🎳 Best Bowling Average"
+        }
+        return titles.get(stat_type, "Leaderboard")
 
     async def on_timeout(self):
         for child in self.children:
