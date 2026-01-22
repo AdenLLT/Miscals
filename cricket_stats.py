@@ -295,6 +295,13 @@ async def create_stats_leaderboard_image(stat_type, data, page=0, guild=None):
                 username_str = f"@{user_id}"
                 if guild:
                     member = guild.get_member(user_id)
+                    if not member:
+                        # Try to fetch member if not in cache
+                        try:
+                            member = await guild.fetch_member(user_id)
+                        except:
+                            pass
+                    
                     if member:
                         username_str = f"@{member.name}"
 
@@ -339,8 +346,18 @@ async def create_stats_leaderboard_image(stat_type, data, page=0, guild=None):
 
                 # Draw player name and username
                 username_str = f"@{user_id}" # Fallback
-                # In real usage, we should pass the member or guild to this function
-                # But for now, we'll try to format it as requested
+                if guild:
+                    member = guild.get_member(user_id)
+                    if not member:
+                        try:
+                            # We can't await inside a non-async loop easily if we didn't prepare, 
+                            # but create_stats_leaderboard_image is async.
+                            # However, we already added the fetch_member logic above.
+                            pass
+                        except:
+                            pass
+                    if member:
+                        username_str = f"@{member.name}"
                 
                 # Draw stat value
                 if stat_type == "runs":
