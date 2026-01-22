@@ -8,6 +8,9 @@ import asyncio
 import time
 import io
 import math
+import pytz
+from discord import app_commands
+from datetime import datetime, timedelta
 from typing import Dict, Optional
 from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
@@ -48,6 +51,7 @@ async def on_ready():
     await bot.load_extension('cricket_stats')
     await bot.load_extension('matchupdates')  # ADD THIS LINE
     await bot.load_extension('tournament')
+    await bot.tree.sync()
     print(f'{bot.user} has connected to Discord!')
     print(f'Bot is ready! Prefix: .')
 
@@ -2850,7 +2854,232 @@ async def send_message(ctx, channel_id: int, *, message: str):
         await ctx.send(f"❌ An error occurred: {e}")
 
 
+#------------
 
+class MatchTimeButtons(discord.ui.View):
+    def __init__(self, requester_id, target_captain_id, requester_team_role_id, target_team_role_id, match_time, captain_id):
+        super().__init__(timeout=172800)  # 2 days in seconds
+        self.requester_id = requester_id
+        self.target_captain_id = target_captain_id
+        self.requester_team_role_id = requester_team_role_id
+        self.target_team_role_id = target_team_role_id
+        self.match_time = match_time
+        self.captain_id = captain_id
+
+    @discord.ui.button(label="Accept Time", style=discord.ButtonStyle.green, custom_id="accept_time")
+    async def accept_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Only target captain can click
+        if interaction.user.id != self.target_captain_id:
+            await interaction.response.send_message("❌ Only the team captain can accept this request!", ephemeral=True)
+            return
+
+        # Disable all buttons
+        for child in self.children:
+            child.disabled = True
+
+        await interaction.response.edit_message(view=self)
+
+        # Calculate match time timestamp
+        ist = pytz.timezone('Asia/Kolkata')
+        today = datetime.now(ist).date()
+
+        # Parse the time (convert to 24-hour format for parsing)
+        time_str = self.match_time.replace("IST", "").strip()
+        match_datetime = datetime.strptime(f"{today} {time_str}", "%Y-%m-%d %I:%M%p")
+        match_datetime = ist.localize(match_datetime)
+
+        # Convert to Unix timestamp for Discord
+        unix_timestamp = int(match_datetime.timestamp())
+
+        # Build ping text for roles
+        ping_text = ""
+        if self.requester_team_role_id:
+            ping_text += f"<@&{self.requester_team_role_id}> "
+        if self.target_team_role_id:
+            ping_text += f"<@&{self.target_team_role_id}> "
+
+        # Send ping message first (separate from embed)
+        await interaction.followup.send(
+            content=f"{ping_text}**VS** at **{self.match_time}**"
+        )
+
+        # Then send the embed
+        announce_embed = discord.Embed(
+            title="⚔️ Match Scheduled!",
+            color=0x00FF00
+        )
+
+        announce_embed.add_field(
+            name="🕐 Match Time",
+            value=f"<t:{unix_timestamp}:F>\n<t:{unix_timestamp}:R>",
+            inline=False
+        )
+
+        announce_embed.set_footer(text="Good luck to both teams!")
+
+        await interaction.followup.send(embed=announce_embed)
+
+    @discord.ui.button(label="Cancel Request", style=discord.ButtonStyle.red, custom_id="cancel_request")
+    async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Only requester can click
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("❌ Only the person who created this request can cancel it!", ephemeral=True)
+            return
+
+        # Disable all buttons
+        for child in self.children:
+            child.disabled = True
+
+        cancel_embed = discord.Embed(
+            title="❌ Match Request Cancelled",
+            description="The match time request has been cancelled.",
+            color=0xFF0000
+        )
+
+        await interaction.response.edit_message(embed=cancel_embed, view=self)
+
+@bot.tree.command(name="matchtime", description="Schedule a match time with another team")
+@app_commands.describe(
+    opponent="Select the opponent team",
+    time="Select the match time"
+)
+@app_commands.choices(opponent=[
+    app_commands.Choice(name="India", value="1460376137594044567"),
+    app_commands.Choice(name="Pakistan", value="1460376138755866644"),
+    app_commands.Choice(name="Australia", value="1460376139611640025"),
+    app_commands.Choice(name="England", value="1460376141314654424"),
+    app_commands.Choice(name="New Zealand", value="1460376142342000762"),
+    app_commands.Choice(name="South Africa", value="1460376143633846527"),
+    app_commands.Choice(name="West Indies", value="1460376148751028408"),
+    app_commands.Choice(name="Sri Lanka", value="1460376147715166282"),
+    app_commands.Choice(name="Bangladesh", value="1460376144862908523"),
+    app_commands.Choice(name="Afghanistan", value="1460376146163273739"),
+    app_commands.Choice(name="Netherlands", value="1460376154480312370"),
+    app_commands.Choice(name="Scotland", value="1460376151795961897"),
+    app_commands.Choice(name="Ireland", value="1460376149908525191"),
+    app_commands.Choice(name="Zimbabwe", value="1460376157668245545"),
+    app_commands.Choice(name="UAE", value="1460376158985130114"),
+    app_commands.Choice(name="Canada", value="1460376154958725152"),
+    app_commands.Choice(name="USA", value="1460376156250570824")
+])
+@app_commands.choices(time=[
+    app_commands.Choice(name="7:00 PM IST", value="7:00PM IST"),
+    app_commands.Choice(name="7:30 PM IST", value="7:30PM IST"),
+    app_commands.Choice(name="8:00 PM IST", value="8:00PM IST"),
+    app_commands.Choice(name="8:30 PM IST", value="8:30PM IST"),
+    app_commands.Choice(name="9:00 PM IST", value="9:00PM IST"),
+    app_commands.Choice(name="9:30 PM IST", value="9:30PM IST")
+])
+async def matchtime(interaction: discord.Interaction, opponent: app_commands.Choice[str], time: app_commands.Choice[str]):
+    # Check if user has the required role
+    required_role = interaction.guild.get_role(1463220065657688285)
+    if required_role not in interaction.user.roles:
+        await interaction.response.send_message("❌ You don't have permission to use this command!", ephemeral=True)
+        return
+
+    # Get user's team role
+    role_ids = {
+        "India": 1460376137594044567,
+        "Pakistan": 1460376138755866644,
+        "Australia": 1460376139611640025,
+        "England": 1460376141314654424,
+        "New Zealand": 1460376142342000762,
+        "South Africa": 1460376143633846527,
+        "West Indies": 1460376148751028408,
+        "Sri Lanka": 1460376147715166282,
+        "Bangladesh": 1460376144862908523,
+        "Afghanistan": 1460376146163273739,
+        "Netherlands": 1460376154480312370,
+        "Scotland": 1460376151795961897,
+        "Ireland": 1460376149908525191,
+        "Zimbabwe": 1460376157668245545,
+        "UAE": 1460376158985130114,
+        "Canada": 1460376154958725152,
+        "USA": 1460376156250570824
+    }
+
+    # Find requester's team
+    requester_team_role = None
+    requester_team_name = None
+    for team_name, role_id in role_ids.items():
+        role = interaction.guild.get_role(role_id)
+        if role in interaction.user.roles:
+            requester_team_role = role
+            requester_team_name = team_name
+            break
+
+    if not requester_team_role:
+        await interaction.response.send_message("❌ You don't have a team role!", ephemeral=True)
+        return
+
+    # Get opponent team role
+    opponent_role = interaction.guild.get_role(int(opponent.value))
+    if not opponent_role:
+        await interaction.response.send_message("❌ Opponent team role not found!", ephemeral=True)
+        return
+
+    # Check if user is trying to challenge their own team
+    if requester_team_role.id == opponent_role.id:
+        await interaction.response.send_message("❌ You cannot challenge your own team!", ephemeral=True)
+        return
+
+    # Get opponent team captain
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute("SELECT user_id, username FROM team_captains WHERE team_name = ?", (opponent.name,))
+    captain_result = c.fetchone()
+    conn.close()
+
+    if not captain_result:
+        await interaction.response.send_message(f"❌ {opponent.name} doesn't have a captain set yet!", ephemeral=True)
+        return
+
+    captain_id, captain_username = captain_result
+    captain = interaction.guild.get_member(captain_id)
+
+    if not captain:
+        await interaction.response.send_message(f"❌ Captain of {opponent.name} is not in the server!", ephemeral=True)
+        return
+
+    # Build ping text for captain
+    ping_text = f"<@{captain_id}>"
+
+    # Send captain ping first as separate message
+    await interaction.response.send_message(content=f"{ping_text} - Match Time Request")
+
+    # Create request embed
+    request_embed = discord.Embed(
+        title="🏏 Match Time Request",
+        description=f"The captain of **{requester_team_name}** wants to schedule a match!",
+        color=0xFFA500
+    )
+
+    request_embed.add_field(
+        name="Teams",
+        value=f"{requester_team_role.mention} **VS** {opponent_role.mention}",
+        inline=False
+    )
+
+    request_embed.add_field(
+        name="Proposed Time",
+        value=f"**{time.value}**",
+        inline=False
+    )
+
+    request_embed.set_footer(text=f"Requested by {interaction.user.name}")
+
+    # Create view with buttons
+    view = MatchTimeButtons(
+        requester_id=interaction.user.id,
+        target_captain_id=captain_id,
+        requester_team_role_id=requester_team_role.id,
+        target_team_role_id=opponent_role.id,
+        match_time=time.value,
+        captain_id=captain_id
+    )
+
+    # Send embed as followup message
+    await interaction.followup.send(embed=request_embed, view=view)
 
 token = os.getenv('TOKEN')
 if token:
