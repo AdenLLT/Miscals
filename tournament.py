@@ -1116,47 +1116,71 @@ class Tournament(commands.Cog):
                 return
 
             played_matchups = get_played_matchups(tournament_id)
-            fixtures = []
+            
+            # Simple backtracking/recursive matching to ensure ALL teams get a match
+            def find_all_matches(remaining_teams, current_matches):
+                if not remaining_teams:
+                    return current_matches
+                
+                t1 = remaining_teams[0]
+                rest = remaining_teams[1:]
+                
+                # Try matching t1 with every other available team
+                random.shuffle(rest) # Randomize matching order
+                for i, t2 in enumerate(rest):
+                    if frozenset([t1, t2]) not in played_matchups:
+                        new_remaining = rest[:i] + rest[i+1:]
+                        new_matches = current_matches + [[t1, t2]]
+                        result = find_all_matches(new_remaining, new_matches)
+                        if result is not None:
+                            return result
+                return None
 
             random.shuffle(available_teams)
+            generated_matches = find_all_matches(available_teams, [])
 
-            max_matches = 6 - len(existing_fixtures)
-            matches_created = 0
-
-            while len(available_teams) >= 2 and matches_created < max_matches:
-                team1 = available_teams[0]
-                matched = False
-
-                for i in range(1, len(available_teams)):
-                    team2 = available_teams[i]
-                    matchup = frozenset([team1, team2])
-
-                    if matchup not in played_matchups:
-                        channel_id = random.choice(list(MATCH_CHANNELS.keys()))
-                        stadium = MATCH_CHANNELS[channel_id]
-                        fixtures.append([team1, team2, channel_id, stadium])
-
-                        available_teams.remove(team1)
-                        available_teams.remove(team2)
-                        matches_created += 1
-                        matched = True
-                        break
-
-                if not matched:
-                    available_teams.remove(team1)
-
-            if not fixtures:
-                if existing_fixtures:
-                    await ctx.send(f"✅ Manual fixtures already created for Round {target_round}!")
-                else:
-                    await ctx.send("✅ All possible matchups have been played!")
+            if not generated_matches:
+                await ctx.send(f"❌ Could not find a valid set of matches where ALL teams play new opponents for Round {target_round}!")
                 return
+
+            fixtures = []
+            for t1, t2 in generated_matches:
+                channel_id = random.choice(list(MATCH_CHANNELS.keys()))
+                stadium = MATCH_CHANNELS[channel_id]
+                fixtures.append([t1, t2, channel_id, stadium])
 
             embed = await FixtureEditView(ctx, self.bot, tournament_id, fixtures, target_round, all_teams).create_fixture_embed()
             view = FixtureEditView(ctx, self.bot, tournament_id, fixtures, target_round, all_teams)
             view.message = await ctx.send(embed=embed, view=view)
         else:
             await ctx.send(f"✅ All teams already have fixtures for Round {target_round}!")
+
+    @commands.command(name="reserveall", help="[ADMIN] Reserve all unplayed matches in the current round")
+    @commands.has_permissions(administrator=True)
+    async def reserveall(self, ctx):
+        tournament = get_active_tournament()
+        if not tournament:
+            await ctx.send("❌ No active tournament found!")
+            return
+
+        tournament_id, tournament_name, current_round = tournament
+
+        conn = sqlite3.connect('players.db')
+        c = conn.cursor()
+
+        c.execute("""UPDATE fixtures 
+                    SET is_reserved = 1 
+                    WHERE tournament_id = ? AND round_number = ? AND is_played = 0""",
+                 (tournament_id, current_round))
+        
+        count = c.rowcount
+        conn.commit()
+        conn.close()
+
+        if count == 0:
+            await ctx.send(f"❌ No unplayed fixtures found in Round {current_round} to reserve!")
+        else:
+            await ctx.send(f"✅ Successfully reserved **{count}** matches in Round {current_round}!")
 
     @commands.command(name="setfpp", help="[ADMIN] Set FPP for a team")
     @commands.has_permissions(administrator=True)
