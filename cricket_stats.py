@@ -255,6 +255,7 @@ async def create_stats_leaderboard_image(stat_type, data, page=0, guild=None):
         try:
             name_font = ImageFont.truetype("nor.otf", 25)
             stat_font = ImageFont.truetype("nor.otf", 55)
+            rest_font = ImageFont.truetype("nor.otf", 10)
         except:
             name_font = ImageFont.load_default()
             stat_font = ImageFont.load_default()
@@ -273,7 +274,7 @@ async def create_stats_leaderboard_image(stat_type, data, page=0, guild=None):
         first_player_stat_pos = (width - 200, 100)  # (x, y) for stat
 
         # 2nd player
-        second_player_circle_pos = (152, 258)  # (x, y) center
+        second_player_circle_pos = (230, 258)  # (x, y) center
         second_player_size = 100
         second_player_text_pos = (200, 228)  # (x, y) for name
         second_player_stat_pos = (width - 250, 228)  # (x, y) for stat
@@ -380,9 +381,15 @@ async def create_stats_leaderboard_image(stat_type, data, page=0, guild=None):
                     stat_text = f"{row_data[1]} wickets"
 
                 # Draw text using custom positions
-                draw.text(text_pos, player_name, fill=(0, 0, 0), font=name_font)
-                draw.text((text_pos[0], text_pos[1] + 30), username_str, fill=(80, 80, 80), font=name_font)
-                draw.text(stat_pos, stat_text, fill=(0, 0, 0), font=stat_font)
+                # Use rest_font for players 2-5, original fonts for 1st player
+                if row_idx == 0:
+                    draw.text(text_pos, player_name, fill=(0, 0, 0), font=name_font)
+                    draw.text((text_pos[0], text_pos[1] + 30), username_str, fill=(80, 80, 80), font=name_font)
+                    draw.text(stat_pos, stat_text, fill=(0, 0, 0), font=stat_font)
+                else:
+                    draw.text(text_pos, player_name, fill=(0, 0, 0), font=rest_font)
+                    draw.text((text_pos[0], text_pos[1] + 30), username_str, fill=(80, 80, 80), font=rest_font)
+                    draw.text(stat_pos, stat_text, fill=(0, 0, 0), font=rest_font)
 
         # Convert to bytes
         output = io.BytesIO()
