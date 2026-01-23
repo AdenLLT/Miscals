@@ -253,7 +253,7 @@ async def create_stats_leaderboard_image(stat_type, data, page=0, guild=None):
 
         # Load font
         try:
-            name_font = ImageFont.truetype("nor.otf", 35)
+            name_font = ImageFont.truetype("nor.otf", 25)
             stat_font = ImageFont.truetype("nor.otf", 55)
         except:
             name_font = ImageFont.load_default()
@@ -269,20 +269,20 @@ async def create_stats_leaderboard_image(stat_type, data, page=0, guild=None):
         # 1st player has specific coordinates and size
         first_player_circle_pos = (100, 100)  # (x, y) center
         first_player_size = 150
-        first_player_text_pos = (150, 150) # (x, y) for name/username
-        first_player_stat_pos = (width - 150, 100) # (x, y) for stat
+        first_player_text_pos = (250, 35) # (x, y) for name/username
+        first_player_stat_pos = (width - 200, 100) # (x, y) for stat
 
         row_positions = [
             130,   # Row 1 (center)
-            260,   # Row 2
+            258,   # Row 2
             390,   # Row 3
             520,   # Row 4
             650    # Row 5
         ]
 
-        purple_circle_x = 140  # X position for center of purple circle
-        yellow_bar_x = 350  # X position for start of yellow bar (player name)
-        yellow_bar_stat_x = width - 150  # X position for stat value (right side)
+        purple_circle_x = 152  # X position for center of purple circle
+        yellow_bar_x = 200  # X position for start of yellow bar (player name)
+        yellow_bar_stat_x = width - 250  # X position for stat value (right side)
 
         draw = ImageDraw.Draw(img)
 

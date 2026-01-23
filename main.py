@@ -2857,7 +2857,7 @@ async def send_message(ctx, channel_id: int, *, message: str):
 #------------
 
 class MatchTimeButtons(discord.ui.View):
-    def __init__(self, requester_id, target_captain_id, requester_team_role_id, target_team_role_id, match_time, captain_id):
+    def __init__(self, requester_id, target_captain_id, requester_team_role_id, target_team_role_id, match_time, captain_id, channel):
         super().__init__(timeout=172800)  # 2 days in seconds
         self.requester_id = requester_id
         self.target_captain_id = target_captain_id
@@ -2865,6 +2865,7 @@ class MatchTimeButtons(discord.ui.View):
         self.target_team_role_id = target_team_role_id
         self.match_time = match_time
         self.captain_id = captain_id
+        self.channel = channel
 
     @discord.ui.button(label="Accept Time", style=discord.ButtonStyle.green, custom_id="accept_time")
     async def accept_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -2898,12 +2899,12 @@ class MatchTimeButtons(discord.ui.View):
         if self.target_team_role_id:
             ping_text += f"<@&{self.target_team_role_id}> "
 
-        # Send ping message first (separate from embed)
-        await interaction.followup.send(
+        # Send ping message first (separate from embed) as regular message
+        await self.channel.send(
             content=f"{ping_text}**VS** at **{self.match_time}**"
         )
 
-        # Then send the embed
+        # Then send the embed as regular message
         announce_embed = discord.Embed(
             title="⚔️ Match Scheduled!",
             color=0x00FF00
@@ -2917,7 +2918,7 @@ class MatchTimeButtons(discord.ui.View):
 
         announce_embed.set_footer(text="Good luck to both teams!")
 
-        await interaction.followup.send(embed=announce_embed)
+        await self.channel.send(embed=announce_embed)
 
     @discord.ui.button(label="Cancel Request", style=discord.ButtonStyle.red, custom_id="cancel_request")
     async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -3041,11 +3042,11 @@ async def matchtime(interaction: discord.Interaction, opponent: app_commands.Cho
         await interaction.response.send_message(f"❌ Captain of {opponent.name} is not in the server!", ephemeral=True)
         return
 
-    # Build ping text for captain and teams
-    ping_text = f"<@{captain_id}> {requester_team_role.mention} {opponent_role.mention}"
+    # Build ping text for captain
+    ping_text = f"<@{captain_id}>"
 
-    # Send captain ping and team mentions
-    await interaction.response.send_message(content=f"{ping_text} - Match Time Request")
+    # Send captain ping first as regular message (not reply)
+    await interaction.channel.send(content=f"{ping_text} - Match Time Request")
 
     # Create request embed
     request_embed = discord.Embed(
@@ -3075,11 +3076,15 @@ async def matchtime(interaction: discord.Interaction, opponent: app_commands.Cho
         requester_team_role_id=requester_team_role.id,
         target_team_role_id=opponent_role.id,
         match_time=time.value,
-        captain_id=captain_id
+        captain_id=captain_id,
+        channel=interaction.channel
     )
 
-    # Send embed as followup message
-    await interaction.followup.send(embed=request_embed, view=view)
+    # Send embed as regular message (not reply) with buttons
+    await interaction.channel.send(embed=request_embed, view=view)
+
+    # Send ephemeral confirmation to the slash command user
+    await interaction.response.send_message("✅ Match time request sent!", ephemeral=True)
 
 token = os.getenv('TOKEN')
 if token:
