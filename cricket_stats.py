@@ -367,11 +367,11 @@ async def create_stats_leaderboard_image(stat_type, data, page=0, guild=None):
 
                 if row_idx == 0 and page == 0:
                     draw.text(first_player_text_pos, player_name, fill=(0, 0, 0), font=name_font)
-                    draw.text((first_player_text_pos[0], first_player_text_pos[1] + 45), username_str, fill=(80, 80, 80), font=name_font)
+                    draw.text((first_player_text_pos[0], first_player_text_pos[1] + 30), username_str, fill=(80, 80, 80), font=name_font)
                     draw.text(first_player_stat_pos, stat_text, fill=(0, 0, 0), font=stat_font)
                 else:
                     y_pos = row_positions[row_idx]
-                    draw.text((yellow_bar_x, y_pos - 45), player_name, fill=(0, 0, 0), font=name_font)
+                    draw.text((yellow_bar_x, y_pos - 30), player_name, fill=(0, 0, 0), font=name_font)
                     draw.text((yellow_bar_x, y_pos), username_str, fill=(80, 80, 80), font=name_font)
                     draw.text((yellow_bar_stat_x, y_pos - 30), stat_text, fill=(0, 0, 0), font=stat_font)
 
