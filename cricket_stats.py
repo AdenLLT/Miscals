@@ -265,24 +265,45 @@ async def create_stats_leaderboard_image(stat_type, data, page=0, guild=None):
         start_idx = page * entries_per_page
         end_idx = min(start_idx + entries_per_page, len(data))
 
-        # Vertical positions for each row (adjust based on your stats.webp)
-        # 1st player has specific coordinates and size
+        # Custom positions for each player rank
+        # 1st player
         first_player_circle_pos = (100, 100)  # (x, y) center
         first_player_size = 150
-        first_player_text_pos = (250, 35) # (x, y) for name/username
-        first_player_stat_pos = (width - 200, 100) # (x, y) for stat
+        first_player_text_pos = (250, 35)  # (x, y) for name/username
+        first_player_stat_pos = (width - 200, 100)  # (x, y) for stat
 
-        row_positions = [
-            130,   # Row 1 (center)
-            258,   # Row 2
-            390,   # Row 3
-            520,   # Row 4
-            650    # Row 5
+        # 2nd player
+        second_player_circle_pos = (152, 258)  # (x, y) center
+        second_player_size = 100
+        second_player_text_pos = (200, 228)  # (x, y) for name
+        second_player_stat_pos = (width - 250, 228)  # (x, y) for stat
+
+        # 3rd player
+        third_player_circle_pos = (152, 390)  # (x, y) center
+        third_player_size = 100
+        third_player_text_pos = (200, 360)  # (x, y) for name
+        third_player_stat_pos = (width - 250, 360)  # (x, y) for stat
+
+        # 4th player
+        fourth_player_circle_pos = (152, 520)  # (x, y) center
+        fourth_player_size = 100
+        fourth_player_text_pos = (200, 490)  # (x, y) for name
+        fourth_player_stat_pos = (width - 250, 490)  # (x, y) for stat
+
+        # 5th player
+        fifth_player_circle_pos = (152, 650)  # (x, y) center
+        fifth_player_size = 100
+        fifth_player_text_pos = (200, 620)  # (x, y) for name
+        fifth_player_stat_pos = (width - 250, 620)  # (x, y) for stat
+
+        # Store all positions in lists for easy access
+        player_positions = [
+            (first_player_circle_pos, first_player_size, first_player_text_pos, first_player_stat_pos),
+            (second_player_circle_pos, second_player_size, second_player_text_pos, second_player_stat_pos),
+            (third_player_circle_pos, third_player_size, third_player_text_pos, third_player_stat_pos),
+            (fourth_player_circle_pos, fourth_player_size, fourth_player_text_pos, fourth_player_stat_pos),
+            (fifth_player_circle_pos, fifth_player_size, fifth_player_text_pos, fifth_player_stat_pos),
         ]
-
-        purple_circle_x = 152  # X position for center of purple circle
-        yellow_bar_x = 200  # X position for start of yellow bar (player name)
-        yellow_bar_stat_x = width - 250  # X position for stat value (right side)
 
         draw = ImageDraw.Draw(img)
 
@@ -312,6 +333,9 @@ async def create_stats_leaderboard_image(stat_type, data, page=0, guild=None):
 
                 player_image_url = get_player_image_by_name(player_name)
 
+                # Get custom positions for this player rank
+                circle_pos, size, text_pos, stat_pos = player_positions[row_idx]
+
                 # Download and paste player headshot
                 if player_image_url and player_image_url.strip():
                     try:
@@ -320,8 +344,6 @@ async def create_stats_leaderboard_image(stat_type, data, page=0, guild=None):
                                 img_data = await resp.read()
                                 player_img = Image.open(io.BytesIO(img_data)).convert('RGBA')
 
-                                # Set size based on rank
-                                size = first_player_size if row_idx == 0 and page == 0 else 100
                                 player_img = player_img.resize((size, size), Image.Resampling.LANCZOS)
                                 
                                 # Set 99% opacity (252/255)
@@ -331,28 +353,20 @@ async def create_stats_leaderboard_image(stat_type, data, page=0, guild=None):
                                 alpha = alpha.point(lambda i: min(i, 252))
                                 player_img.putalpha(alpha)
                                 
-                                # Position based on rank
-                                if row_idx == 0 and page == 0:
-                                    circle_x = first_player_circle_pos[0] - (size // 2)
-                                    circle_y = first_player_circle_pos[1] - (size // 2)
-                                else:
-                                    y_pos = row_positions[row_idx]
-                                    circle_x = purple_circle_x - (size // 2)
-                                    circle_y = y_pos - (size // 2)
+                                # Position based on custom circle_pos
+                                circle_x = circle_pos[0] - (size // 2)
+                                circle_y = circle_pos[1] - (size // 2)
 
                                 img.paste(player_img, (circle_x, circle_y), player_img)
                     except Exception as e:
                         print(f"Error loading player image: {e}")
 
                 # Draw player name and username
-                username_str = f"@{user_id}" # Fallback
+                username_str = f"@{user_id}"  # Fallback
                 if guild:
                     member = guild.get_member(user_id)
                     if not member:
                         try:
-                            # We can't await inside a non-async loop easily if we didn't prepare, 
-                            # but create_stats_leaderboard_image is async.
-                            # However, we already added the fetch_member logic above.
                             pass
                         except:
                             pass
@@ -365,15 +379,10 @@ async def create_stats_leaderboard_image(stat_type, data, page=0, guild=None):
                 elif stat_type == "wickets":
                     stat_text = f"{row_data[1]} wickets"
 
-                if row_idx == 0 and page == 0:
-                    draw.text(first_player_text_pos, player_name, fill=(0, 0, 0), font=name_font)
-                    draw.text((first_player_text_pos[0], first_player_text_pos[1] + 30), username_str, fill=(80, 80, 80), font=name_font)
-                    draw.text(first_player_stat_pos, stat_text, fill=(0, 0, 0), font=stat_font)
-                else:
-                    y_pos = row_positions[row_idx]
-                    draw.text((yellow_bar_x, y_pos - 30), player_name, fill=(0, 0, 0), font=name_font)
-                    draw.text((yellow_bar_x, y_pos), username_str, fill=(80, 80, 80), font=name_font)
-                    draw.text((yellow_bar_stat_x, y_pos - 30), stat_text, fill=(0, 0, 0), font=stat_font)
+                # Draw text using custom positions
+                draw.text(text_pos, player_name, fill=(0, 0, 0), font=name_font)
+                draw.text((text_pos[0], text_pos[1] + 30), username_str, fill=(80, 80, 80), font=name_font)
+                draw.text(stat_pos, stat_text, fill=(0, 0, 0), font=stat_font)
 
         # Convert to bytes
         output = io.BytesIO()
