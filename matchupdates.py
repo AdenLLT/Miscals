@@ -491,14 +491,13 @@ async def create_match_image(match_data, guild):
 
             draw.text((right_x - 140, bowler_y - 90), f"@{bowler_username}", fill=BLACK, font=username_font, anchor="rm")
 
-            font_size = get_dynamic_font_size(bowler_name.upper(), max_name_width, base_player_font_size)
             try:
-                player_font = ImageFont.truetype("nor.otf", font_size)
+                bowler_name_font = ImageFont.truetype("nor.otf", base_player_font_size)
             except:
-                player_font = ImageFont.load_default()
+                bowler_name_font = ImageFont.load_default()
 
-            draw.text((right_x - 140, bowler_y - 30), bowler_name.upper(), fill=PURPLE, font=player_font, anchor="rm")
-            draw.text((right_x - 130, bowler_y + 30), bowler_stats, fill=PURPLE, font=player_font, anchor="rm")
+            draw.text((right_x - 140, bowler_y - 30), bowler_name.upper(), fill=PURPLE, font=bowler_name_font, anchor="rm")
+            draw.text((right_x - 130, bowler_y + 30), bowler_stats, fill=PURPLE, font=bowler_name_font, anchor="rm")
 
         # BOTTOM RIGHT - Timeline circles
         circle_start_x = width - 420
