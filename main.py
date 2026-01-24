@@ -46,15 +46,15 @@ bot = commands.Bot(
 async def on_ready():
     global elite_players
     init_db()
+    init_nicknames_db()  # ADD THIS LINE
     elite_players = load_elite_players()
     # Load the stats cog
     await bot.load_extension('cricket_stats')
-    await bot.load_extension('matchupdates')  # ADD THIS LINE
+    await bot.load_extension('matchupdates')
     await bot.load_extension('tournament')
     await bot.tree.sync()
     print(f'{bot.user} has connected to Discord!')
     print(f'Bot is ready! Prefix: .')
-
 
 
 def init_db():
@@ -75,6 +75,17 @@ def init_db():
     # ADD THIS NEW TABLE FOR CAPTAINS
     c.execute('''CREATE TABLE IF NOT EXISTS team_captains
                  (team_name TEXT PRIMARY KEY, player_name TEXT, user_id INTEGER, username TEXT)''')
+    conn.commit()
+    conn.close()
+
+def init_nicknames_db():
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS user_nicknames
+                 (user_id INTEGER PRIMARY KEY, 
+                  original_nickname TEXT,
+                  custom_nickname TEXT,
+                  last_synced TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     conn.commit()
     conn.close()
 
@@ -2776,7 +2787,7 @@ async def rules_command(ctx):
         "<:allrounder:1451978476033671279> **ALL ROUNDERS:** __2__ Overs\n"
         "<:bat:1451967322146213980> **BATSMEN** / **WICKETKEEPERS:** __1__ Over\n\n"
         "*(Only ONE batsman / wicketkeeper allowed to bowl 2 overs)*\n\n"
-        "**BATTING INNINGS ORDER:** `BATSMEN --> WICKETKEEPERS --> ALL-ROUNDERS --> BOWLERS`"
+        "**BATTING INNINGS ORDER:** `WICKETKEEPERS OR BATSMEN --> ALL-ROUNDERS --> BOWLERS`"
     )
 
     embed.description = rules_text
@@ -2965,10 +2976,15 @@ class MatchTimeButtons(discord.ui.View):
 ])
 @app_commands.choices(time=[
     app_commands.Choice(name="7:00 PM IST", value="7:00PM IST"),
+    app_commands.Choice(name="7:15 PM IST", value="7:15PM IST"),
     app_commands.Choice(name="7:30 PM IST", value="7:30PM IST"),
+    app_commands.Choice(name="7:45 PM IST", value="7:45PM IST"),
     app_commands.Choice(name="8:00 PM IST", value="8:00PM IST"),
+    app_commands.Choice(name="8:15 PM IST", value="8:15PM IST"),
     app_commands.Choice(name="8:30 PM IST", value="8:30PM IST"),
+    app_commands.Choice(name="8:45 PM IST", value="8:45PM IST"),
     app_commands.Choice(name="9:00 PM IST", value="9:00PM IST"),
+    app_commands.Choice(name="9:15 PM IST", value="9:15PM IST"),
     app_commands.Choice(name="9:30 PM IST", value="9:30PM IST")
 ])
 async def matchtime(interaction: discord.Interaction, opponent: app_commands.Choice[str], time: app_commands.Choice[str]):
@@ -3085,6 +3101,410 @@ async def matchtime(interaction: discord.Interaction, opponent: app_commands.Cho
 
     # Send ephemeral confirmation to the slash command user
     await interaction.response.send_message("✅ Match time request sent!", ephemeral=True)
+
+@bot.command(name="order", aliases=["o"], help="View your team's batting order")
+async def order_command(ctx):
+    """Show the user's team batting order in simplified format"""
+
+    # Get the user's player
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", 
+              (ctx.author.id,))
+    result = c.fetchone()
+    conn.close()
+
+    if not result:
+        await ctx.send("❌ You haven't claimed a player yet! Use `-represent` to claim one.")
+        return
+
+    player_name = result[0]
+
+    # Find which team the user's player belongs to
+    players, team_names = find_player(player_name)
+
+    if not players or not team_names:
+        await ctx.send("❌ Could not find your player's team!")
+        return
+
+    user_team = team_names[0]
+
+    # Load all teams data
+    teams_data = load_players()
+
+    # Find the user's team data
+    team_data = None
+    for t in teams_data:
+        if t['team'] == user_team:
+            team_data = t
+            break
+
+    if not team_data:
+        await ctx.send("❌ Team data not found!")
+        return
+
+    # Categorize players by role and get their representatives
+    batsmen = []
+    wicketkeepers = []
+    allrounders = []
+    bowlers = []
+
+    for player in team_data['players']:
+        rep_info = get_representative(player['name'])
+
+        # Skip unclaimed players
+        if not rep_info:
+            continue
+
+        username = rep_info[1]
+
+        # Categorize by role
+        if "Wicketkeeper" in player['role']:
+            wicketkeepers.append(username)
+        elif "Batsman" in player['role']:
+            batsmen.append(username)
+        elif "All-Rounder" in player['role'] or "All-rounder" in player['role']:
+            allrounders.append(username)
+        elif "Bowler" in player['role']:
+            bowlers.append(username)
+
+    # Build the order text
+    order_text = f"**`WK / BAT -> ALR -> BOWL`**\n\n"
+
+
+    if wicketkeepers:
+        order_text += "**Wicketkeepers:**\n"
+        for username in wicketkeepers:
+            order_text += f"- {username}\n"
+        order_text += "\n"
+
+    if batsmen:
+        order_text += "**Batters:**\n"
+        for username in batsmen:
+            order_text += f"- {username}\n"
+        order_text += "\n"
+
+    if allrounders:
+        order_text += "**All-Rounders:**\n"
+        for username in allrounders:
+            order_text += f"- {username}\n"
+        order_text += "\n"
+
+    if bowlers:
+        order_text += "**Bowlers:**\n"
+        for username in bowlers:
+            order_text += f"- {username}\n"
+
+    await ctx.send(order_text)
+
+
+def format_player_nickname(player_name, custom_nickname):
+    """Format nickname as 'FirstInitial. LastWord ○ CustomNickname'"""
+    parts = player_name.split()
+    if len(parts) == 0:
+        return custom_nickname
+
+    first_initial = parts[0][0]
+    last_word = parts[-1]
+
+    return f"{first_initial}. {last_word} ○ {custom_nickname}"
+
+def get_user_custom_nickname(user_id):
+    """Get user's custom nickname from database"""
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute("SELECT custom_nickname FROM user_nicknames WHERE user_id = ?", (user_id,))
+    result = c.fetchone()
+    conn.close()
+    return result[0] if result else None
+
+def save_original_nickname(user_id, nickname):
+    """Save original nickname before syncing"""
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+
+    # Check if record exists
+    c.execute("SELECT 1 FROM user_nicknames WHERE user_id = ?", (user_id,))
+    exists = c.fetchone()
+
+    if exists:
+        # Update if original_nickname is NULL
+        c.execute("""UPDATE user_nicknames 
+                     SET original_nickname = COALESCE(original_nickname, ?)
+                     WHERE user_id = ?""", (nickname, user_id))
+    else:
+        # Insert new record
+        c.execute("""INSERT INTO user_nicknames (user_id, original_nickname, custom_nickname) 
+                     VALUES (?, ?, ?)""", (user_id, nickname, nickname))
+
+    conn.commit()
+    conn.close()
+
+def update_custom_nickname(user_id, custom_nickname):
+    """Update user's custom nickname"""
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute("""INSERT OR REPLACE INTO user_nicknames (user_id, custom_nickname, last_synced) 
+                 VALUES (?, ?, CURRENT_TIMESTAMP)""", (user_id, custom_nickname))
+    conn.commit()
+    conn.close()
+
+@bot.command(name="syncnicknames", aliases=["sn"], help="[ADMIN] Sync nicknames for all claimed players")
+@commands.has_permissions(administrator=True)
+async def syncnicknames_command(ctx):
+    """Sync nicknames for all claimed players"""
+    loading_msg = await ctx.send("🔄 Syncing nicknames for all claimed players...")
+
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute("SELECT player_name, user_id, username FROM player_representatives")
+    all_claims = c.fetchall()
+    conn.close()
+
+    synced_count = 0
+    failed_list = []
+    skipped_count = 0
+
+    for player_name, user_id, username in all_claims:
+        # Try to fetch member from guild (forces cache update)
+        try:
+            member = await ctx.guild.fetch_member(user_id)
+        except discord.NotFound:
+            failed_list.append(f"{player_name} (@{username}) - Not in server")
+            continue
+        except discord.HTTPException:
+            # Fallback to cache if fetch fails
+            member = ctx.guild.get_member(user_id)
+            if not member:
+                failed_list.append(f"{player_name} (@{username}) - Not in server")
+                continue
+
+        # Save original nickname if not already saved
+        current_nickname = member.display_name
+        save_original_nickname(user_id, current_nickname)
+
+        # Get custom nickname (if user hasn't set one, use their current display name)
+        custom_nickname = get_user_custom_nickname(user_id)
+        if not custom_nickname:
+            custom_nickname = current_nickname
+            update_custom_nickname(user_id, custom_nickname)
+
+        # Format new nickname
+        new_nickname = format_player_nickname(player_name, custom_nickname)
+
+        # Skip if nickname is already correct
+        if member.display_name == new_nickname:
+            skipped_count += 1
+            continue
+
+        try:
+            await member.edit(nick=new_nickname, reason=f"Nickname sync by {ctx.author}")
+            synced_count += 1
+        except discord.Forbidden:
+            failed_list.append(f"{player_name} (@{username}) - No permission")
+        except discord.HTTPException as e:
+            failed_list.append(f"{player_name} (@{username}) - HTTP error: {e}")
+
+    # Create summary embed
+    embed = discord.Embed(
+        title="✅ Nickname Sync Complete",
+        color=0x00FF00
+    )
+
+    summary = f"✅ **Synced:** {synced_count}\n"
+    summary += f"ℹ️ **Already Correct:** {skipped_count}\n"
+    summary += f"❌ **Failed:** {len(failed_list)}"
+
+    embed.add_field(name="Summary", value=summary, inline=False)
+
+    if failed_list:
+        failures = "\n".join([f"• {f}" for f in failed_list[:10]])
+        if len(failed_list) > 10:
+            failures += f"\n...and {len(failed_list) - 10} more."
+
+        embed.add_field(name="Failed", value=failures, inline=False)
+
+    embed.set_footer(text=f"Synced by {ctx.author.name}")
+    embed.timestamp = discord.utils.utcnow()
+
+    await loading_msg.delete()
+    await ctx.send(embed=embed)
+
+@bot.tree.command(name="setnickname", description="Set your custom nickname")
+@app_commands.describe(nickname="Your desired nickname")
+async def setnickname_command(interaction: discord.Interaction, nickname: str):
+    """Set custom nickname for claimed player"""
+
+    # Check if user has claimed a player
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", 
+              (interaction.user.id,))
+    result = c.fetchone()
+    conn.close()
+
+    if not result:
+        await interaction.response.send_message(
+            "❌ You haven't claimed a player yet! Use `-represent` to claim one.",
+            ephemeral=True
+        )
+        return
+
+    player_name = result[0]
+
+    # Check nickname length (Discord limit is 32 characters)
+    formatted_nickname = format_player_nickname(player_name, nickname)
+    if len(formatted_nickname) > 32:
+        await interaction.response.send_message(
+            f"❌ Your nickname is too long! The formatted nickname would be:\n`{formatted_nickname}`\n"
+            f"This is {len(formatted_nickname)} characters, but Discord's limit is 32.\n"
+            f"Please choose a shorter nickname.",
+            ephemeral=True
+        )
+        return
+
+    # Update custom nickname in database
+    update_custom_nickname(interaction.user.id, nickname)
+
+    # Update member's nickname
+    try:
+        await interaction.user.edit(nick=formatted_nickname, reason="Custom nickname set by user")
+
+        await interaction.response.send_message(
+            f"✅ Your nickname has been updated to: **{formatted_nickname}**",
+            ephemeral=True
+        )
+    except discord.Forbidden:
+        await interaction.response.send_message(
+            "❌ I don't have permission to change your nickname!",
+            ephemeral=True
+        )
+    except discord.HTTPException as e:
+        await interaction.response.send_message(
+            f"❌ Failed to update nickname: {e}",
+            ephemeral=True
+        )
+
+@bot.command(name="setbacknicknames", aliases=["sbn"], help="[ADMIN] Restore original nicknames")
+@commands.has_permissions(administrator=True)
+async def setbacknicknames_command(ctx):
+    """Restore original nicknames for all claimed players"""
+    loading_msg = await ctx.send("🔄 Restoring original nicknames...")
+
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+
+    # Get all users with saved nicknames
+    c.execute("""SELECT user_id, original_nickname 
+                 FROM user_nicknames 
+                 WHERE original_nickname IS NOT NULL""")
+    nickname_data = c.fetchall()
+    conn.close()
+
+    restored_count = 0
+    failed_list = []
+    skipped_count = 0
+
+    for user_id, original_nickname in nickname_data:
+        # Try to fetch member
+        try:
+            member = await ctx.guild.fetch_member(user_id)
+        except discord.NotFound:
+            continue
+        except discord.HTTPException:
+            member = ctx.guild.get_member(user_id)
+            if not member:
+                continue
+
+        # Skip if nickname is already the original
+        if member.display_name == original_nickname:
+            skipped_count += 1
+            continue
+
+        try:
+            await member.edit(nick=original_nickname, reason=f"Nickname restore by {ctx.author}")
+            restored_count += 1
+        except discord.Forbidden:
+            failed_list.append(f"<@{user_id}> - No permission")
+        except discord.HTTPException as e:
+            failed_list.append(f"<@{user_id}> - HTTP error")
+
+    # Create summary embed
+    embed = discord.Embed(
+        title="✅ Nicknames Restored",
+        color=0x00FF00
+    )
+
+    summary = f"✅ **Restored:** {restored_count}\n"
+    summary += f"ℹ️ **Already Original:** {skipped_count}\n"
+    summary += f"❌ **Failed:** {len(failed_list)}"
+
+    embed.add_field(name="Summary", value=summary, inline=False)
+
+    if failed_list:
+        failures = "\n".join([f"• {f}" for f in failed_list[:10]])
+        if len(failed_list) > 10:
+            failures += f"\n...and {len(failed_list) - 10} more."
+
+        embed.add_field(name="Failed", value=failures, inline=False)
+
+    embed.set_footer(text=f"Restored by {ctx.author.name}")
+    embed.timestamp = discord.utils.utcnow()
+
+    await loading_msg.delete()
+    await ctx.send(embed=embed)
+
+# Optional: Command to check current nickname status
+@bot.command(name="mynickname", aliases=["mn"], help="Check your current nickname status")
+async def mynickname_command(ctx):
+    """Check current nickname information"""
+
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+
+    # Get player info
+    c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", 
+              (ctx.author.id,))
+    player_result = c.fetchone()
+
+    if not player_result:
+        await ctx.send("❌ You haven't claimed a player yet!")
+        conn.close()
+        return
+
+    player_name = player_result[0]
+
+    # Get nickname info
+    c.execute("""SELECT original_nickname, custom_nickname, last_synced 
+                 FROM user_nicknames WHERE user_id = ?""", (ctx.author.id,))
+    nickname_result = c.fetchone()
+    conn.close()
+
+    embed = discord.Embed(
+        title="📝 Your Nickname Status",
+        color=0x0066CC
+    )
+
+    embed.add_field(name="Player", value=player_name, inline=False)
+    embed.add_field(name="Current Display Name", value=ctx.author.display_name, inline=False)
+
+    if nickname_result:
+        original, custom, last_synced = nickname_result
+        embed.add_field(name="Original Nickname", value=original or "Not saved", inline=True)
+        embed.add_field(name="Custom Nickname", value=custom or "Not set", inline=True)
+
+        if last_synced:
+            embed.add_field(
+                name="Last Synced",
+                value=f"<t:{int(datetime.strptime(last_synced, '%Y-%m-%d %H:%M:%S').timestamp())}:R>",
+                inline=False
+            )
+    else:
+        embed.add_field(name="Status", value="Not synced yet", inline=False)
+
+    embed.set_footer(text="Use /setnickname to change your custom nickname")
+
+    await ctx.send(embed=embed)
 
 token = os.getenv('TOKEN')
 if token:

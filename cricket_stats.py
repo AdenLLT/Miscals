@@ -100,6 +100,79 @@ def get_leaderboard_data(stat_type):
             ORDER BY avg ASC
             LIMIT 20
         """)
+    elif stat_type == "centuries":
+        c.execute("""
+            SELECT user_id, COUNT(*) as total
+            FROM match_stats
+            WHERE runs >= 100
+            GROUP BY user_id
+            ORDER BY total DESC
+            LIMIT 20
+        """)
+    elif stat_type == "fifties":
+        c.execute("""
+            SELECT user_id, COUNT(*) as total
+            FROM match_stats
+            WHERE runs >= 50 AND runs < 100
+            GROUP BY user_id
+            ORDER BY total DESC
+            LIMIT 20
+        """)
+    elif stat_type == "five_wickets":
+        c.execute("""
+            SELECT user_id, COUNT(*) as total
+            FROM match_stats
+            WHERE wickets >= 5
+            GROUP BY user_id
+            ORDER BY total DESC
+            LIMIT 20
+        """)
+    elif stat_type == "impact_points":
+        c.execute("""
+            SELECT user_id, 
+                   SUM(runs + (wickets * 20)) as total_impact
+            FROM match_stats
+            GROUP BY user_id
+            ORDER BY total_impact DESC
+            LIMIT 20
+        """)
+    elif stat_type == "highest_score":
+        c.execute("""
+            SELECT user_id, MAX(runs) as highest, balls_faced
+            FROM match_stats
+            WHERE runs > 0
+            GROUP BY user_id
+            ORDER BY highest DESC
+            LIMIT 20
+        """)
+    elif stat_type == "best_bowling":
+        c.execute("""
+            SELECT user_id, MAX(wickets) as best_wickets, 
+                   runs_conceded, balls_bowled
+            FROM match_stats
+            WHERE wickets > 0
+            GROUP BY user_id
+            ORDER BY best_wickets DESC, runs_conceded ASC
+            LIMIT 20
+        """)
+    elif stat_type == "ducks":
+        c.execute("""
+            SELECT user_id, COUNT(*) as total
+            FROM match_stats
+            WHERE runs = 0 AND balls_faced > 0 AND not_out = 0
+            GROUP BY user_id
+            ORDER BY total DESC
+            LIMIT 20
+        """)
+    elif stat_type == "most_runs_conceded":
+        c.execute("""
+            SELECT user_id, SUM(runs_conceded) as total
+            FROM match_stats
+            WHERE balls_bowled > 0
+            GROUP BY user_id
+            ORDER BY total DESC
+            LIMIT 20
+        """)
 
     results = c.fetchall()
     conn.close()
@@ -284,8 +357,8 @@ def get_player_data(player_name):
 async def create_top5_graphic(stat_type, data, guild, bot):
     """Create a beautiful top 5 graphic with player images"""
 
-    # Create canvas (1920x1080 for high quality)
-    width, height = 1920, 1080
+    # Create canvas (2400x1200 for bigger cards)
+    width, height = 2400, 1200
     img = Image.new('RGBA', (width, height), (0, 0, 0, 0))
 
     # Create gradient background
@@ -305,27 +378,33 @@ async def create_top5_graphic(stat_type, data, guild, bot):
 
     # Try to load custom fonts, fallback to default
     try:
-        title_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 80)
-        name_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 48)
-        username_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 32)
-        stats_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 36)
+        title_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 90)
+        name_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 52)
+        username_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 38)
+        stats_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 42)
     except:
         title_font = ImageFont.load_default()
         name_font = ImageFont.load_default()
         username_font = ImageFont.load_default()
         stats_font = ImageFont.load_default()
 
-    # Draw title
-    title_text = "🏏 TOP 5 " + ("RUN SCORERS" if stat_type == "runs" else "WICKET TAKERS")
+    # Draw title with emoji
+    if stat_type == "runs":
+        title_emoji = "<:batting:1451967322146213980>"
+        title_text = "🏏 TOP 5 RUN SCORERS"
+    else:
+        title_emoji = "<:bowling:1451974295793172547>"
+        title_text = "🎯 TOP 5 WICKET TAKERS"
+
     title_bbox = draw.textbbox((0, 0), title_text, font=title_font)
     title_width = title_bbox[2] - title_bbox[0]
     draw.text(((width - title_width) / 2, 50), title_text, fill=(255, 215, 0, 255), font=title_font)
 
-    # Player card settings
-    card_width = 320
-    card_height = 500
-    spacing = 40
-    start_y = 200
+    # Player card settings - BIGGER CARDS
+    card_width = 400
+    card_height = 600
+    spacing = 50
+    start_y = 230
 
     # Calculate total width needed
     total_width = (card_width * 5) + (spacing * 4)
@@ -358,10 +437,10 @@ async def create_top5_graphic(stat_type, data, guild, bot):
                 card_draw.rectangle([(0, y), (card_width, y+1)], fill=(255, 255, 255, alpha))
 
             # Draw card border
-            card_draw.rectangle([(0, 0), (card_width-1, card_height-1)], outline=(255, 215, 0, 255), width=4)
+            card_draw.rectangle([(0, 0), (card_width-1, card_height-1)], outline=(255, 215, 0, 255), width=5)
 
             # Rank badge (top-left corner)
-            rank_size = 70
+            rank_size = 80
             rank_badge = Image.new('RGBA', (rank_size, rank_size), (0, 0, 0, 0))
             rank_draw = ImageDraw.Draw(rank_badge)
 
@@ -382,7 +461,7 @@ async def create_top5_graphic(stat_type, data, guild, bot):
             rank_draw.text(((rank_size - rank_text_width) / 2, (rank_size - rank_text_height) / 2 - 5), 
                           rank_text, fill=(0, 0, 0, 255), font=stats_font)
 
-            card.paste(rank_badge, (10, 10), rank_badge)
+            card.paste(rank_badge, (15, 15), rank_badge)
 
             # Load player image
             if player_data and player_data.get('image'):
@@ -392,33 +471,33 @@ async def create_top5_graphic(stat_type, data, guild, bot):
                             img_data = await resp.read()
                             player_img = Image.open(io.BytesIO(img_data)).convert('RGBA')
 
-                            # Resize to fit card
-                            player_img = player_img.resize((280, 280), Image.Resampling.LANCZOS)
+                            # Resize to fit card - bigger image
+                            player_img = player_img.resize((340, 340), Image.Resampling.LANCZOS)
 
-                            # Paste player image (no mask, full visibility)
-                            card.paste(player_img, (20, 100), player_img)
+                            # Paste player image
+                            card.paste(player_img, (30, 110), player_img)
                 except:
                     pass
 
-            # Player name
-            name_y = 390
+            # Player name - adjusted position
+            name_y = 460
             name_bbox = card_draw.textbbox((0, 0), player_name, font=name_font)
             name_width = name_bbox[2] - name_bbox[0]
 
-            if name_width > card_width - 20:
+            if name_width > card_width - 30:
                 # Truncate if too long
-                player_name = player_name[:15] + "..."
+                player_name = player_name[:18] + "..."
 
             name_bbox = card_draw.textbbox((0, 0), player_name, font=name_font)
             name_width = name_bbox[2] - name_bbox[0]
             card_draw.text(((card_width - name_width) / 2, name_y), player_name, fill=(0, 0, 0, 255), font=name_font)
 
-            # Username
+            # Username - PURPLE TEXT
             username_text = f"@{member.name}"
-            username_y = 435
+            username_y = 510
             username_bbox = card_draw.textbbox((0, 0), username_text, font=username_font)
             username_width = username_bbox[2] - username_bbox[0]
-            card_draw.text(((card_width - username_width) / 2, username_y), username_text, fill=(80, 80, 80, 255), font=username_font)
+            card_draw.text(((card_width - username_width) / 2, username_y), username_text, fill=(147, 112, 219, 255), font=username_font)
 
             # Stats
             if stat_type == "runs":
@@ -426,7 +505,7 @@ async def create_top5_graphic(stat_type, data, guild, bot):
             else:
                 stat_text = f"{row[1]} wickets"
 
-            stat_y = 465
+            stat_y = 550
             stat_bbox = card_draw.textbbox((0, 0), stat_text, font=stats_font)
             stat_width = stat_bbox[2] - stat_bbox[0]
             card_draw.text(((card_width - stat_width) / 2, stat_y), stat_text, fill=(255, 215, 0, 255), font=stats_font)
@@ -460,7 +539,15 @@ class LeaderboardView(View):
             "economy": "💰 Best Economy Rate",
             "strike_rate": "⚡ Best Strike Rate",
             "average": "📊 Best Batting Average",
-            "bowling_average": "🎳 Best Bowling Average"
+            "bowling_average": "🎳 Best Bowling Average",
+            "centuries": "💯 Most Centuries",
+            "fifties": "5️⃣0️⃣ Most Fifties",
+            "five_wickets": "🔥 Most 5-Wicket Hauls",
+            "impact_points": "⭐ Most Impact Points",
+            "highest_score": "🏆 Highest Score",
+            "best_bowling": "🎯 Best Bowling Figures",
+            "ducks": "🦆 Most Ducks",
+            "most_runs_conceded": "💸 Most Runs Conceded"
         }
 
         data = get_leaderboard_data(self.stat_type)
@@ -528,7 +615,7 @@ class LeaderboardView(View):
                 embed.set_footer(text=f"Page {page + 1} of {total_pages} • Tournament Statistics")
                 return embed, None
         else:
-            # Other stats: single page (original behavior)
+            # Other stats: single page
             embed = discord.Embed(
                 title=titles[self.stat_type],
                 color=0x00FF00
@@ -556,6 +643,22 @@ class LeaderboardView(View):
                     line = f"**{idx}.** {player_display}\n    └ {row[3]:.2f} average ({row[1]} runs, {int(row[2])} dismissals)\n\n"
                 elif self.stat_type == "bowling_average":
                     line = f"**{idx}.** {player_display}\n    └ {row[3]:.2f} average ({row[1]} runs, {int(row[2])} wickets)\n\n"
+                elif self.stat_type == "centuries":
+                    line = f"**{idx}.** {player_display}\n    └ {row[1]} centuries\n\n"
+                elif self.stat_type == "fifties":
+                    line = f"**{idx}.** {player_display}\n    └ {row[1]} fifties\n\n"
+                elif self.stat_type == "five_wickets":
+                    line = f"**{idx}.** {player_display}\n    └ {row[1]} five-wicket hauls\n\n"
+                elif self.stat_type == "impact_points":
+                    line = f"**{idx}.** {player_display}\n    └ {int(row[1])} impact points\n\n"
+                elif self.stat_type == "highest_score":
+                    line = f"**{idx}.** {player_display}\n    └ {row[1]} ({row[2]} balls)\n\n"
+                elif self.stat_type == "best_bowling":
+                    line = f"**{idx}.** {player_display}\n    └ {row[1]}/{row[2]} ({row[3]} balls)\n\n"
+                elif self.stat_type == "ducks":
+                    line = f"**{idx}.** {player_display}\n    └ {row[1]} ducks\n\n"
+                elif self.stat_type == "most_runs_conceded":
+                    line = f"**{idx}.** {player_display}\n    └ {row[1]} runs conceded\n\n"
 
                 if len(description) + len(line) > 4000:
                     description += "... (truncated)"
@@ -641,7 +744,7 @@ class LeaderboardView(View):
         self.update_buttons()
         await interaction.response.edit_message(embed=embed, attachments=[], view=self)
 
-    @discord.ui.button(label="⚡ Strike Rate", style=discord.ButtonStyle.primary, row=1)
+    @discord.ui.button(label="⚡ Strike Rate", style=discord.ButtonStyle.primary, row=0)
     async def sr_button(self, interaction: discord.Interaction, button: Button):
         if interaction.user.id != self.ctx.author.id:
             await interaction.response.send_message("❌ This is not your menu!", ephemeral=True)
@@ -680,7 +783,111 @@ class LeaderboardView(View):
         self.update_buttons()
         await interaction.response.edit_message(embed=embed, attachments=[], view=self)
 
-    @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.secondary, row=2)
+    @discord.ui.button(label="💯 Centuries", style=discord.ButtonStyle.primary, row=1)
+    async def centuries_button(self, interaction: discord.Interaction, button: Button):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("❌ This is not your menu!", ephemeral=True)
+            return
+
+        self.stat_type = "centuries"
+        self.current_page = 0
+
+        embed, _ = await self.create_leaderboard_embed(0)
+        self.update_buttons()
+        await interaction.response.edit_message(embed=embed, attachments=[], view=self)
+
+    @discord.ui.button(label="5️⃣0️⃣ Fifties", style=discord.ButtonStyle.primary, row=1)
+    async def fifties_button(self, interaction: discord.Interaction, button: Button):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("❌ This is not your menu!", ephemeral=True)
+            return
+
+        self.stat_type = "fifties"
+        self.current_page = 0
+
+        embed, _ = await self.create_leaderboard_embed(0)
+        self.update_buttons()
+        await interaction.response.edit_message(embed=embed, attachments=[], view=self)
+
+    @discord.ui.button(label="🔥 5-fers", style=discord.ButtonStyle.danger, row=2)
+    async def five_wickets_button(self, interaction: discord.Interaction, button: Button):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("❌ This is not your menu!", ephemeral=True)
+            return
+
+        self.stat_type = "five_wickets"
+        self.current_page = 0
+
+        embed, _ = await self.create_leaderboard_embed(0)
+        self.update_buttons()
+        await interaction.response.edit_message(embed=embed, attachments=[], view=self)
+
+    @discord.ui.button(label="⭐ Impact", style=discord.ButtonStyle.danger, row=2)
+    async def impact_button(self, interaction: discord.Interaction, button: Button):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("❌ This is not your menu!", ephemeral=True)
+            return
+
+        self.stat_type = "impact_points"
+        self.current_page = 0
+
+        embed, _ = await self.create_leaderboard_embed(0)
+        self.update_buttons()
+        await interaction.response.edit_message(embed=embed, attachments=[], view=self)
+
+    @discord.ui.button(label="🏆 High Score", style=discord.ButtonStyle.danger, row=2)
+    async def highest_score_button(self, interaction: discord.Interaction, button: Button):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("❌ This is not your menu!", ephemeral=True)
+            return
+
+        self.stat_type = "highest_score"
+        self.current_page = 0
+
+        embed, _ = await self.create_leaderboard_embed(0)
+        self.update_buttons()
+        await interaction.response.edit_message(embed=embed, attachments=[], view=self)
+
+    @discord.ui.button(label="🎯 Best Bowl", style=discord.ButtonStyle.danger, row=2)
+    async def best_bowling_button(self, interaction: discord.Interaction, button: Button):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("❌ This is not your menu!", ephemeral=True)
+            return
+
+        self.stat_type = "best_bowling"
+        self.current_page = 0
+
+        embed, _ = await self.create_leaderboard_embed(0)
+        self.update_buttons()
+        await interaction.response.edit_message(embed=embed, attachments=[], view=self)
+
+    @discord.ui.button(label="🦆 Ducks", style=discord.ButtonStyle.secondary, row=3)
+    async def ducks_button(self, interaction: discord.Interaction, button: Button):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("❌ This is not your menu!", ephemeral=True)
+            return
+
+        self.stat_type = "ducks"
+        self.current_page = 0
+
+        embed, _ = await self.create_leaderboard_embed(0)
+        self.update_buttons()
+        await interaction.response.edit_message(embed=embed, attachments=[], view=self)
+
+    @discord.ui.button(label="💸 Runs Conceded", style=discord.ButtonStyle.secondary, row=3)
+    async def runs_conceded_button(self, interaction: discord.Interaction, button: Button):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("❌ This is not your menu!", ephemeral=True)
+            return
+
+        self.stat_type = "most_runs_conceded"
+        self.current_page = 0
+
+        embed, _ = await self.create_leaderboard_embed(0)
+        self.update_buttons()
+        await interaction.response.edit_message(embed=embed, attachments=[], view=self)
+
+    @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.secondary, row=3)
     async def prev_button(self, interaction: discord.Interaction, button: Button):
         if interaction.user.id != self.ctx.author.id:
             await interaction.response.send_message("❌ This is not your menu!", ephemeral=True)
@@ -698,7 +905,7 @@ class LeaderboardView(View):
         else:
             await interaction.response.edit_message(embed=embed, attachments=[], view=self)
 
-    @discord.ui.button(label="Next ➡️", style=discord.ButtonStyle.secondary, row=2)
+    @discord.ui.button(label="Next ➡️", style=discord.ButtonStyle.secondary, row=3)
     async def next_button(self, interaction: discord.Interaction, button: Button):
         if interaction.user.id != self.ctx.author.id:
             await interaction.response.send_message("❌ This is not your menu!", ephemeral=True)

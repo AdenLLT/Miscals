@@ -52,11 +52,11 @@ def init_tournament_db():
 
 # Available match channels (stadiums)
 MATCH_CHANNELS = {
-    1452048274486726809: "Stadium"
+    1464251938521485403: "Dubai International Cricket Stadium",
 }
 
 # Channel for posting fixtures
-FIXTURES_CHANNEL = 1452272794560757810
+FIXTURES_CHANNEL = 1463219150645231849
 
 def get_active_tournament():
     """Get the currently active tournament"""
@@ -348,7 +348,7 @@ async def create_points_table_image(tournament_name, teams_data):
             footer_font = ImageFont.load_default()
 
         # Draw title
-        title_text = f"🏆 {tournament_name} - Points Table"
+        title_text = "Points Table"
         title_bbox = draw.textbbox((0, 0), title_text, font=title_font)
         title_width = title_bbox[2] - title_bbox[0]
         draw.text(((width - title_width) // 2, 10), title_text, fill=(0, 0, 0), font=title_font)
@@ -470,7 +470,7 @@ async def create_points_table_image(tournament_name, teams_data):
 
         # Footer
         footer_y = header_y + 60 + (len(teams_data) * row_height) + 15
-        footer_text = "TOP 8 QUALIFY • TourneyFanHub"
+        footer_text = " "
         footer_bbox = draw.textbbox((0, 0), footer_text, font=footer_font)
         footer_width = footer_bbox[2] - footer_bbox[0]
         draw.text(((width - footer_width) // 2, footer_y), footer_text, fill=(100, 100, 100), font=footer_font)
@@ -841,7 +841,7 @@ class FixtureEditView(View):
             vs_image = await create_vs_image(team1, team2, stadium)
 
             embed = discord.Embed(
-                title=f"🏏 {tournament_name} - Round {self.round_number}",
+                title=f"{tournament_name} - Round {self.round_number}",
                 color=0x00FF00
             )
 
@@ -949,7 +949,7 @@ class Tournament(commands.Cog):
             color=0xFFD700
         )
         embed.set_image(url="attachment://points_table.png")
-        embed.set_footer(text="TourneyFanHub")
+        embed.set_footer(text="TOP 8 QUALIFY")
 
         await ctx.send(embed=embed, file=file)
 
@@ -1018,13 +1018,13 @@ class Tournament(commands.Cog):
 
         embed.add_field(
             name="Match",
-            value=f"{flag1} **{team1}** vs {flag2} **{team2}**",
+            value=f"[ {flag1} ] **{team1}** vs [ {flag2} ] **{team2}**",
             inline=False
         )
 
         embed.add_field(
             name="Stadium",
-            value=f"🏟️ <#{channel_id}>",
+            value=f"🏟️ : <#{channel_id}>",
             inline=False
         )
 
