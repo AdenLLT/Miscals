@@ -58,6 +58,23 @@ async def on_ready():
     print(f'{bot.user} has connected to Discord!')
     print(f'Bot is ready! Prefix: .')
 
+@bot.command(name="quarterfinals")
+async def quarterfinals(ctx):
+    embed = discord.Embed(
+        title="🏆 Tournament Quarter-Finals",
+        description=(
+            "**Afghanistan** VS **South Africa**\n\n"
+            "**Bangladesh** VS **India**\n\n"
+            "**Scotland** VS **TBD #7**\n\n"
+            "**Sri Lanka** VS **TBD #8**"
+        ),
+        color=discord.Color.gold(),
+        timestamp=datetime.utcnow()
+    )
+    embed.set_footer(text="Knockout Stage | World Cup 2026")
+    embed.set_thumbnail(url="https://i.imgur.com/8QO9y8B.png") # Placeholder trophy icon
+    await ctx.send(embed=embed)
+
 @bot.listen()
 async def on_command_error(ctx, error):
     if isinstance(error, commands.CommandNotFound):
