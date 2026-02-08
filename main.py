@@ -61,18 +61,24 @@ async def on_ready():
 @bot.command(name="quarterfinals")
 async def quarterfinals(ctx):
     embed = discord.Embed(
-        title="🏆 Tournament Quarter-Finals",
+        title="⚔️ Tournament Quarter-Finals ⚔️",
         description=(
-            "**Afghanistan** VS **South Africa**\n\n"
-            "**Bangladesh** VS **India**\n\n"
-            "**Scotland** VS **TBD #7**\n\n"
-            "**Sri Lanka** VS **TBD #8**"
+            "╭─── ⋅ 🏆 ⋅ ───╮\n\n"
+            "🇦🇫 **Afghanistan** VS **South Africa** 🇿🇦\n"
+            "───────────────\n"
+            "🇧🇩 **Bangladesh** VS **India** 🇮🇳\n"
+            "───────────────\n"
+            "🏴󠁧󠁢󠁳󠁣󠁴󠁿 **Scotland** VS **TBD #7** 🔍\n"
+            "───────────────\n"
+            "🇱🇰 **Sri Lanka** VS **TBD #8** 🔍\n\n"
+            "╰─── ⋅ 🏆 ⋅ ───╯"
         ),
         color=discord.Color.gold(),
         timestamp=datetime.utcnow()
     )
-    embed.set_footer(text="Knockout Stage | World Cup 2026")
-    embed.set_thumbnail(url="https://i.imgur.com/8QO9y8B.png") # Placeholder trophy icon
+    embed.set_footer(text="CWC26 Quarter Finals")
+    if ctx.guild and ctx.guild.icon:
+        embed.set_thumbnail(url=ctx.guild.icon.url)
     await ctx.send(embed=embed)
 
 @bot.listen()
