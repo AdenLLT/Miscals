@@ -1,0 +1,80 @@
+{
+  "fast_bowling": {
+    "Right-arm fast": {
+      "kph_range": "137-153",
+      "deliveries": [
+        "Toe-crushing yorker", "Wide yorker", "Fast inswinging yorker", "Reverse-swing yorker", "Fast bouncer", "Slower bouncer", "Bodyline bouncer", "Head-high bouncer", "Good-length seam-up", "Hard length into the pitch", "Back-of-the-hand slower ball", "Knuckle ball", "Split-finger slower ball", "Off-cutter at pace", "Leg-cutter at pace", "Wobble-seam delivery", "Scrambled-seam delivery", "Cross-seam hard length", "Late inswinger", "Late outswinger", "Reverse-swing full delivery", "Back-of-a-length nibble", "Heavy ball into the body", "Surprise slower yorker"
+      ]
+    },
+    "Left-arm fast": {
+      "kph_range": "137-153",
+      "deliveries": [
+        "Full inswinging yorker", "Wide yorker", "Reverse-swing yorker", "Fast bouncer", "Slower bouncer", "Bodyline bouncer", "Good-length seam-up", "Hard length into the pitch", "Back-of-the-hand slower ball", "Knuckle ball", "Split-finger slower ball", "Off-cutter", "Leg-cutter", "Wobble-seam delivery", "Scrambled-seam delivery", "Angle across delivery", "Late swing into the pads", "Cross-seam heavy length", "Round-the-wicket angle", "Into-the-body short ball", "Surprise full ball"
+      ]
+    },
+    "Right-arm fast-medium": {
+      "kph_range": "129-142",
+      "deliveries": [
+        "Stock good-length seam", "Back-of-a-length", "Short-of-a-length", "Heavy length", "Yorker", "Wide yorker", "Off-cutter", "Leg-cutter", "Into-the-pitch cutter", "Slower ball (finger)", "Slower ball (back-of-the-hand)", "Split-finger slower ball", "Knuckle ball", "Wobble-seam delivery", "Scrambled-seam delivery", "Inswinger", "Outswinger", "Late movement off the seam", "Cross-seam delivery", "Surprise bouncer", "Wicket-to-wicket line"
+      ]
+    },
+    "Left-arm fast-medium": {
+      "kph_range": "129-142",
+      "deliveries": [
+        "Stock good-length seam", "Back-of-a-length", "Short-of-a-length", "Heavy length", "Yorker", "Wide yorker", "Off-cutter", "Leg-cutter", "Into-the-pitch cutter", "Slower ball (finger)", "Back-of-the-hand slower ball", "Split-finger slower ball", "Knuckle ball", "Wobble-seam delivery", "Scrambled-seam delivery", "Angle across delivery", "Inswinger to right-handers", "Late swing back in", "Cross-seam delivery", "Round-the-wicket line", "Surprise short ball"
+      ]
+    },
+    "Right-arm medium-fast": {
+      "kph_range": "121-132",
+      "deliveries": [
+        "Stock line-and-length", "Back-of-a-length", "Short-of-a-length", "Heavy length", "Full delivery", "Yorker", "Wide yorker", "Off-cutter", "Leg-cutter", "Change-of-pace slower ball", "Back-of-the-hand slower ball", "Split-finger slower ball", "Knuckle ball", "Slower bouncer", "Wobble-seam delivery", "Scrambled-seam delivery", "Cross-seam bounce", "In-dipper", "Outswinger", "Surprise full ball", "Into-the-body delivery"
+      ]
+    },
+    "Right-arm medium": {
+      "kph_range": "113-127",
+      "deliveries": [
+        "Stock line-and-length", "Back-of-a-length", "Short-of-a-length", "Full delivery", "Change-up slower ball", "Back-of-the-hand slower ball", "Split-finger slower ball", "Off-cutter", "Leg-cutter", "Into-the-pitch cutter", "Slower bouncer", "In-dipper", "Away-swinger", "Late seam movement", "Cross-seam variation", "Wobble-seam delivery", "Wide delivery", "Surprise yorker"
+      ]
+    },
+    "Left-arm medium": {
+      "kph_range": "113-127",
+      "deliveries": [
+        "Stock line-and-length", "Back-of-a-length", "Short-of-a-length", "Full delivery", "Change-up slower ball", "Back-of-the-hand slower ball", "Split-finger slower ball", "Off-cutter", "Leg-cutter", "Into-the-pitch cutter", "Slower bouncer", "In-dipper", "Angle across delivery", "Late swing into pads", "Cross-seam variation", "Wobble-seam delivery", "Wide delivery", "Round-the-wicket angle", "Surprise yorker"
+      ]
+    }
+  },
+  "spin_bowling": {
+    "Right-arm off break": {
+      "kph_range": "72-97",
+      "deliveries": ["Off-break", "Arm ball", "Doosra", "Carrom ball", "Floated delivery", "Quicker delivery", "Top-spinner", "Slider"]
+    },
+    "Right-arm leg break": {
+      "kph_range": "72-97",
+      "deliveries": ["Leg-break", "Googly", "Top-spinner", "Slider", "Floated leg-break", "Zooter", "Back-spinner", "Quicker delivery"]
+    },
+    "Left-arm orthodox": {
+      "kph_range": "72-97",
+      "deliveries": ["Left-arm orthodox", "Arm ball", "Floated delivery", "Quicker delivery", "Top-spinner", "Slider", "Over-spinning delivery"]
+    },
+    "Left-arm wrist-spin": {
+      "kph_range": "72-97",
+      "deliveries": ["Chinaman", "Googly", "Top-spinner", "Slider", "Back-spinner", "Floated chinaman", "Quicker delivery"]
+    },
+    "Right-arm mystery spin": {
+      "kph_range": "72-105",
+      "deliveries": ["Carrom ball", "Doosra", "Off-break", "Leg-break variation", "Top-spinner", "Slider", "Floated delivery", "Quicker delivery"]
+    },
+    "Right-arm spin": {
+      "kph_range": "72-97",
+      "deliveries": ["Stock spinning delivery", "Arm ball", "Floated delivery", "Quicker delivery", "Top-spinner", "Slider", "Variation in turn"]
+    },
+    "Left-arm spin": {
+      "kph_range": "72-97",
+      "deliveries": ["Stock spinning delivery", "Arm ball", "Floated delivery", "Quicker delivery", "Top-spinner", "Slider", "Variation in turn"]
+    },
+    "Slow left-arm orthodox": {
+      "kph_range": "72-89",
+      "deliveries": ["Slow left-arm orthodox", "Floated delivery with loop", "Arm ball", "Top-spinner", "Slider", "Quicker delivery", "Flighted delivery", "Over-spinning delivery"]
+    }
+  }
+}

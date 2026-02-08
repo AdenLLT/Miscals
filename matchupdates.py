@@ -110,7 +110,11 @@ EMOJI_MAPPING = {
     'emoji_32': '4',
     'emoji_33': '5',
     'emoji_34': '6',
-    'emoji_35': 'W'
+    'emoji_35': 'W',
+    'PP1_emoji_30': '2LB',
+    'PP2_emoji_31': '4LB',
+    'PP3_emoji_32': '6LB',
+    'PP4_emoji_33': '8LB'
 }
 
 # Store last processed timeline per channel
@@ -136,7 +140,7 @@ def parse_embed_fields(embed):
 
         # --- 2. EXTRACT ALL TEAM SCORES (can be any team names) ---
         # Pattern matches: "TEAM NAME: score (overs)" - supports any case
-        team_pattern = r'([A-Za-z\s]+):\s*(\d+/\d+)\s*\((\d+\.\d+)\s*overs\)'
+        team_pattern = r'([A-Za-z\s]+)\s*[^\:]*:\s*(\d+/\d+)\s*\((\d+\.\d+)\s*overs\)'
         all_teams = re.findall(team_pattern, full_text)
 
         if len(all_teams) < 2:
@@ -275,11 +279,24 @@ def parse_embed_fields(embed):
                     data['team_b_name'] = team
 
         # --- 4. EXTRACT TIMELINE ---
+        # --- 4. EXTRACT TIMELINE ---
         timeline_match = re.search(r'Timeline:\s*(.+?)(?:\n|$)', full_text)
         if timeline_match:
             timeline_text = timeline_match.group(1)
-            emoji_matches = re.findall(r':emoji_(\d+):', timeline_text)
-            timeline = [EMOJI_MAPPING.get(f'emoji_{num}', '?') for num in emoji_matches]
+            # Updated regex to capture both regular emojis and PP emojis
+            emoji_matches = re.findall(r':(?:PP\d+_)?emoji_(\d+):', timeline_text)
+            timeline = []
+            for match in re.finditer(r':(?:(PP\d+)_)?emoji_(\d+):', timeline_text):
+                prefix = match.group(1)  # PP1, PP2, etc. or None
+                num = match.group(2)     # The number
+
+                if prefix:
+                    key = f'{prefix}_emoji_{num}'
+                else:
+                    key = f'emoji_{num}'
+
+                timeline.append(EMOJI_MAPPING.get(key, '?'))
+
             data['timeline'] = timeline
 
         return data
@@ -334,6 +351,7 @@ async def create_match_image(match_data, guild):
             ball_font = ImageFont.truetype("nor.otf", 35)
             target_font = ImageFont.truetype("nor.otf", 40)
             usersmol_font = ImageFont.truetype("nor.otf", 40)
+            bowlersmol_font = ImageFont.truetype("nor.otf", 50)
         except:
             username_font = ImageFont.load_default()
             score_font = ImageFont.load_default()
@@ -491,13 +509,14 @@ async def create_match_image(match_data, guild):
 
             draw.text((right_x - 140, bowler_y - 90), f"@{bowler_username}", fill=BLACK, font=username_font, anchor="rm")
 
+            # Fixed font size for bowler name and stats (no dynamic sizing)
             try:
-                bowler_name_font = ImageFont.truetype("nor.otf", base_player_font_size)
+                bowler_fixed_font = ImageFont.truetype("nor.otf", 90)  # Fixed size
             except:
-                bowler_name_font = ImageFont.load_default()
+                bowler_fixed_font = ImageFont.load_default()
 
-            draw.text((right_x - 140, bowler_y - 30), bowler_name.upper(), fill=PURPLE, font=bowler_name_font, anchor="rm")
-            draw.text((right_x - 130, bowler_y + 30), bowler_stats, fill=PURPLE, font=bowler_name_font, anchor="rm")
+            draw.text((right_x - 100, bowler_y - 30), bowler_name.upper(), fill=PURPLE, font=bowlersmol_font, anchor="rm")
+            draw.text((right_x - 130, bowler_y + 30), bowler_stats, fill=PURPLE, font=bowlersmol_font, anchor="rm")
 
         # BOTTOM RIGHT - Timeline circles
         circle_start_x = width - 420
@@ -511,6 +530,7 @@ async def create_match_image(match_data, guild):
         for i, ball in enumerate(current_over_balls):
             x = circle_start_x + (i * circle_spacing)
 
+            # Determine fill color based on ball type
             if ball == 'W':
                 fill_color = (217, 17, 17)
             elif ball == '0':
@@ -519,6 +539,8 @@ async def create_match_image(match_data, guild):
                 fill_color = (191, 7, 232)
             elif ball == '4':
                 fill_color = (41, 232, 7)
+            elif 'LB' in ball:  # Leg byes
+                fill_color = (255, 165, 0)  # Orange color for leg byes
             else:
                 fill_color = (27, 22, 107)
 
@@ -526,7 +548,12 @@ async def create_match_image(match_data, guild):
                          (x + circle_radius, circle_y + circle_radius)], 
                         fill=fill_color, outline=(255, 255, 255), width=4)
 
-            draw.text((x, circle_y), ball, fill=(255, 255, 255), font=ball_font, anchor="mm")
+            # Use smaller font for LB text to fit in circle
+            if 'LB' in ball:
+                lb_font = ImageFont.truetype("nor.otf", 24)  # Smaller font for LB
+                draw.text((x, circle_y), ball, fill=(255, 255, 255), font=lb_font, anchor="mm")
+            else:
+                draw.text((x, circle_y), ball, fill=(255, 255, 255), font=ball_font, anchor="mm")
 
         # Convert to bytes
         output = io.BytesIO()

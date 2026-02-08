@@ -21,6 +21,8 @@ from discord.ext.commands.cooldowns import BucketType
 intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
+intents.voice_states = True  # Required for voice
+intents.guilds = True  # Required for voice
 mydb = sqlite3.connect("players.db")
 crsr = mydb.cursor()
 mydb.commit()
@@ -55,6 +57,12 @@ async def on_ready():
     await bot.tree.sync()
     print(f'{bot.user} has connected to Discord!')
     print(f'Bot is ready! Prefix: .')
+
+@bot.listen()
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.CommandNotFound):
+        return
+    await ctx.send(f"❌ Error: {error}")
 
 
 def init_db():
@@ -1194,6 +1202,7 @@ class PlayerSelectView(View):
 
 # Main represent command
 @bot.command(name="represent", aliases=["rep"], help="Request to represent a cricket player")
+@commands.has_permissions(administrator=True)
 async def represent_command(ctx):
     # Check if user already represents a player
     conn = sqlite3.connect('players.db')
@@ -1225,6 +1234,7 @@ async def represent_command(ctx):
 
 # Unrepresent command
 @bot.command(name="unrepresent", aliases=["unrep"], help="Remove yourself as a player representative")
+@commands.has_permissions(administrator=True)
 async def unrepresent_command(ctx):
     conn = sqlite3.connect('players.db')
     c = conn.cursor()
@@ -2891,18 +2901,6 @@ class MatchTimeButtons(discord.ui.View):
 
         await interaction.response.edit_message(view=self)
 
-        # Calculate match time timestamp
-        ist = pytz.timezone('Asia/Kolkata')
-        today = datetime.now(ist).date()
-
-        # Parse the time (convert to 24-hour format for parsing)
-        time_str = self.match_time.replace("IST", "").strip()
-        match_datetime = datetime.strptime(f"{today} {time_str}", "%Y-%m-%d %I:%M%p")
-        match_datetime = ist.localize(match_datetime)
-
-        # Convert to Unix timestamp for Discord
-        unix_timestamp = int(match_datetime.timestamp())
-
         # Build ping text for roles
         ping_text = ""
         if self.requester_team_role_id:
@@ -2923,7 +2921,7 @@ class MatchTimeButtons(discord.ui.View):
 
         announce_embed.add_field(
             name="🕐 Match Time",
-            value=f"<t:{unix_timestamp}:F>\n<t:{unix_timestamp}:R>",
+            value=f"**{self.match_time}**",
             inline=False
         )
 
@@ -3505,6 +3503,864 @@ async def mynickname_command(ctx):
     embed.set_footer(text="Use /setnickname to change your custom nickname")
 
     await ctx.send(embed=embed)
+
+@bot.command(name="playm", help="[ADMIN] Play national anthems in voice channel")
+@commands.has_permissions(administrator=True)
+async def playm_command(ctx):
+    """Play pak.mp3 and ind.mp3 in voice channel with intervals"""
+
+    # Get the voice channel
+    VOICE_CHANNEL_ID = 1464599261336567933
+    voice_channel = bot.get_channel(VOICE_CHANNEL_ID)
+
+    if not voice_channel:
+        await ctx.send("❌ Voice channel not found!")
+        return
+
+    if not isinstance(voice_channel, discord.VoiceChannel):
+        await ctx.send("❌ The specified channel is not a voice channel!")
+        return
+
+    # Check if already connected and disconnect first
+    for vc in bot.voice_clients:
+        if vc.guild == ctx.guild:
+            await vc.disconnect(force=True)
+            await asyncio.sleep(1)
+
+    voice_client = None
+
+    try:
+        # Send initial message
+        status_msg = await ctx.send("🔄 Connecting to voice channel...")
+
+        # Try to connect with a timeout
+        try:
+            voice_client = await asyncio.wait_for(
+                voice_channel.connect(timeout=60, reconnect=False),
+                timeout=30.0
+            )
+        except asyncio.TimeoutError:
+            await status_msg.edit(content="❌ Connection timed out. Voice connections may not be supported on this hosting platform (Replit).")
+            return
+        except discord.errors.ConnectionClosed as e:
+            await status_msg.edit(content=f"❌ Connection failed with error code {e.code}.\n"
+                                         f"**Note:** Voice connections often don't work on Replit due to network restrictions.\n"
+                                         f"Consider hosting on a VPS or local machine for voice features.")
+            return
+
+        await status_msg.edit(content="✅ Connected! Starting playback in 7 seconds...")
+
+        # Wait 7 seconds before starting
+        await asyncio.sleep(7)
+
+        # Define a helper function to play audio and wait
+        async def play_audio(file_path, name):
+            if not voice_client or not voice_client.is_connected():
+                raise Exception("Voice client disconnected")
+
+            # Check if file exists
+            import os
+            if not os.path.exists(file_path):
+                raise FileNotFoundError(f"{file_path} not found")
+
+            await status_msg.edit(content=f"🎵 Now playing: {name}")
+
+            # Create audio source
+            audio_source = discord.FFmpegPCMAudio(file_path)
+            voice_client.play(audio_source)
+
+            # Wait for audio to finish
+            while voice_client.is_playing():
+                await asyncio.sleep(0.5)
+
+        # Play pak.mp3
+        await play_audio("pak.mp3", "pak.mp3")
+
+        # Wait 15 seconds interval
+        await status_msg.edit(content="⏸️ 15 second interval...")
+        await asyncio.sleep(15)
+
+        # Play ind.mp3
+        await play_audio("ind.mp3", "ind.mp3")
+
+        # Disconnect from voice channel
+        await status_msg.edit(content="✅ Playback finished! Leaving voice channel...")
+        await voice_client.disconnect()
+
+    except FileNotFoundError as e:
+        await ctx.send(f"❌ Audio file not found: {e}\nMake sure pak.mp3 and ind.mp3 are in the bot's directory.")
+        if voice_client:
+            await voice_client.disconnect()
+    except discord.ClientException as e:
+        await ctx.send(f"❌ Discord client error: {e}")
+        if voice_client:
+            await voice_client.disconnect()
+    except Exception as e:
+        await ctx.send(f"❌ An error occurred: {e}")
+        if voice_client:
+            try:
+                await voice_client.disconnect()
+            except:
+                pass
+
+# Alternative command if voice doesn't work
+@bot.command(name="checkvoice", help="[ADMIN] Check if voice is supported")
+@commands.has_permissions(administrator=True)
+async def checkvoice_command(ctx):
+    """Check if voice features are available"""
+
+    embed = discord.Embed(
+        title="🔊 Voice Support Check",
+        color=0x0066CC
+    )
+
+    # Check intents
+    has_voice_intent = bot.intents.voice_states
+    has_guilds_intent = bot.intents.guilds
+
+    embed.add_field(
+        name="Required Intents",
+        value=f"Voice States: {'✅' if has_voice_intent else '❌'}\n"
+              f"Guilds: {'✅' if has_guilds_intent else '❌'}",
+        inline=False
+    )
+
+    # Check PyNaCl
+    try:
+        import nacl
+        pynacl_installed = "✅ Installed"
+    except ImportError:
+        pynacl_installed = "❌ Not installed (run: pip install PyNaCl)"
+
+    embed.add_field(name="PyNaCl", value=pynacl_installed, inline=False)
+
+    # Check FFmpeg
+    import subprocess
+    try:
+        subprocess.run(['ffmpeg', '-version'], capture_output=True, check=True)
+        ffmpeg_installed = "✅ Installed"
+    except:
+        ffmpeg_installed = "❌ Not installed or not in PATH"
+
+    embed.add_field(name="FFmpeg", value=ffmpeg_installed, inline=False)
+
+    # Platform warning
+    import platform
+    system_info = f"{platform.system()} {platform.release()}"
+    embed.add_field(name="System", value=system_info, inline=False)
+
+    embed.add_field(
+        name="⚠️ Important Note",
+        value="Voice features often don't work on Replit or similar cloud platforms due to network restrictions. "
+              "For reliable voice support, host the bot on a VPS or local machine.",
+        inline=False
+    )
+
+    await ctx.send(embed=embed)
+
+@bot.command(name="rulesall", help="[ADMIN] DM rules to all claimed bowlers")
+@commands.has_permissions(administrator=True)
+async def rulesall_command(ctx):
+    """DM rules embed to all claimed bowlers"""
+    
+    loading_msg = await ctx.send("🔄 Sending rules to all bowlers...")
+    
+    # Load teams data
+    teams_data = load_players()
+    
+    # Get all bowlers
+    bowler_users = []
+    
+    for team_data in teams_data:
+        for player in team_data['players']:
+            # Check if player is a bowler
+            if "Bowler" in player['role']:
+                # Get representative info
+                rep_info = get_representative(player['name'])
+                
+                if rep_info:
+                    user_id, username = rep_info
+                    member = ctx.guild.get_member(user_id)
+                    
+                    if member:
+                        bowler_users.append({
+                            'member': member,
+                            'player_name': player['name'],
+                            'team': team_data['team']
+                        })
+    
+    if not bowler_users:
+        await loading_msg.edit(content="❌ No claimed bowlers found!")
+        return
+    
+    # Send DMs to all bowlers
+    sent_count = 0
+    failed_list = []
+    
+    for bowler_info in bowler_users:
+        member = bowler_info['member']
+        player_name = bowler_info['player_name']
+        team = bowler_info['team']
+        
+        try:
+            # Create embed
+            embed = discord.Embed(
+                title="🏏 CWC26 TFH HC Nations - Bowler Rules",
+                description=(
+                    f"You are playing as a **Bowler** in the CWC26 TFH HC Nations.\n\n"
+                    f"Welcome. You will need to follow THIS ONE SIMPLE RULE **DURING YOUR BATTING**"
+                ),
+                color=0x0066CC
+            )
+            
+            # Add player info
+            flag = get_team_flag(team)
+            embed.add_field(
+                name="Your Player",
+                value=f"{flag} **{player_name}** ({team})",
+                inline=False
+            )
+            
+            # Set image
+            file = discord.File("well.png", filename="well.png")
+            embed.set_image(url="attachment://well.png")
+            
+            embed.set_footer(text="CWC26 TFH HC Nations")
+            
+            # Send DM
+            await member.send(embed=embed, file=file)
+            sent_count += 1
+            
+            # Small delay to avoid rate limits
+            await asyncio.sleep(1)
+            
+        except discord.Forbidden:
+            failed_list.append(f"{player_name} (@{member.name}) - DMs disabled")
+        except discord.HTTPException as e:
+            failed_list.append(f"{player_name} (@{member.name}) - HTTP error")
+        except FileNotFoundError:
+            await loading_msg.edit(content="❌ well.png file not found!")
+            return
+        except Exception as e:
+            failed_list.append(f"{player_name} (@{member.name}) - {str(e)}")
+    
+    # Create summary embed
+    summary_embed = discord.Embed(
+        title="✅ Rules DM Complete",
+        color=0x00FF00
+    )
+    
+    summary = f"✅ **Sent:** {sent_count}\n"
+    summary += f"❌ **Failed:** {len(failed_list)}\n"
+    summary += f"📊 **Total Bowlers:** {len(bowler_users)}"
+    
+    summary_embed.add_field(name="Summary", value=summary, inline=False)
+    
+    if failed_list:
+        failures = "\n".join([f"• {f}" for f in failed_list[:10]])
+        if len(failed_list) > 10:
+            failures += f"\n...and {len(failed_list) - 10} more."
+        
+        summary_embed.add_field(name="Failed", value=failures, inline=False)
+    
+    summary_embed.set_footer(text=f"Executed by {ctx.author.name}")
+    summary_embed.timestamp = discord.utils.utcnow()
+    
+    await loading_msg.delete()
+    await ctx.send(embed=summary_embed)
+
+@bot.command(name="deletereal", aliases=["dr"], help="[ADMIN] Permanently delete a player from all databases")
+@commands.has_permissions(administrator=True)
+async def deletereal_command(ctx, *, player_name: str):
+    """
+    Permanently delete a player from all databases
+    Usage: -deletereal player name
+    """
+    # Search for player in database
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+
+    # Search in player_representatives table
+    c.execute("SELECT player_name, user_id, username FROM player_representatives WHERE player_name LIKE ?", 
+              (f"%{player_name}%",))
+    results = c.fetchall()
+
+    if not results:
+        await ctx.send(f"❌ Player '{player_name}' not found in database.")
+        conn.close()
+        return
+
+    if len(results) > 1:
+        embed = discord.Embed(
+            title="🔍 Multiple Players Found",
+            description=f"Multiple players match '{player_name}'. Please use the exact name:\n\n",
+            color=0xFFA500
+        )
+
+        for i, (name, user_id, username) in enumerate(results, 1):
+            embed.description += f"**{i}.** **{name}** (@{username})\n"
+
+        await ctx.send(embed=embed)
+        conn.close()
+        return
+
+    # Single match found
+    exact_player_name, user_id, username = results[0]
+    conn.close()
+
+    # Confirmation embed
+    confirm_embed = discord.Embed(
+        title="⚠️ Confirm Permanent Deletion",
+        description=f"Are you sure you want to **permanently delete** this player?\n\n"
+                    f"**Player:** {exact_player_name}\n"
+                    f"**Representative:** @{username}\n"
+                    f"**User ID:** {user_id}\n\n"
+                    f"This will remove them from:\n"
+                    f"• Player representatives\n"
+                    f"• Team captains\n"
+                    f"• Match stats\n"
+                    f"• Elite players\n"
+                    f"• Player emojis\n"
+                    f"• User nicknames\n\n"
+                    f"**This action cannot be undone!**",
+        color=0xFF0000
+    )
+
+    confirm_msg = await ctx.send(embed=confirm_embed)
+    await confirm_msg.add_reaction("✅")
+    await confirm_msg.add_reaction("❌")
+
+    def check(reaction, user):
+        return user == ctx.author and str(reaction.emoji) in ["✅", "❌"] and reaction.message.id == confirm_msg.id
+
+    try:
+        reaction, user = await bot.wait_for('reaction_add', timeout=30.0, check=check)
+    except asyncio.TimeoutError:
+        await confirm_msg.edit(embed=discord.Embed(
+            title="❌ Deletion Cancelled",
+            description="Confirmation timed out.",
+            color=0x808080
+        ))
+        await confirm_msg.clear_reactions()
+        return
+
+    if str(reaction.emoji) == "❌":
+        await confirm_msg.edit(embed=discord.Embed(
+            title="❌ Deletion Cancelled",
+            description=f"**{exact_player_name}** was not deleted.",
+            color=0x808080
+        ))
+        await confirm_msg.clear_reactions()
+        return
+
+    # User confirmed - proceed with deletion
+    await confirm_msg.clear_reactions()
+    await confirm_msg.edit(embed=discord.Embed(
+        title="🔄 Deleting Player...",
+        description="Please wait...",
+        color=0xFFA500
+    ))
+
+    deletion_log = []
+
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+
+    # 1. Remove from player_representatives
+    c.execute("DELETE FROM player_representatives WHERE player_name = ?", (exact_player_name,))
+    if c.rowcount > 0:
+        deletion_log.append(f"✅ Removed from player representatives")
+    conn.commit()
+
+    # 2. Remove from team_captains
+    c.execute("DELETE FROM team_captains WHERE player_name = ?", (exact_player_name,))
+    if c.rowcount > 0:
+        deletion_log.append(f"✅ Removed from team captains")
+    conn.commit()
+
+    # 3. Remove from match_stats (using user_id)
+    c.execute("DELETE FROM match_stats WHERE user_id = ?", (user_id,))
+    if c.rowcount > 0:
+        deletion_log.append(f"✅ Removed {c.rowcount} match stat entries")
+    conn.commit()
+
+    # 4. Remove from user_nicknames
+    c.execute("DELETE FROM user_nicknames WHERE user_id = ?", (user_id,))
+    if c.rowcount > 0:
+        deletion_log.append(f"✅ Removed from user nicknames")
+    conn.commit()
+
+    conn.close()
+
+    # 5. Remove from elite players
+    if exact_player_name in elite_players:
+        elite_players.remove(exact_player_name)
+        save_elite_players()
+        deletion_log.append(f"✅ Removed from elite players")
+
+    # 6. Remove player emoji
+    emoji_name = ''.join(c if c.isalnum() or c == '_' else '_' for c in exact_player_name)[:32]
+    emoji_removed = False
+
+    for guild_id in EMOJI_SERVERS:
+        guild = bot.get_guild(guild_id)
+        if guild:
+            emoji_obj = discord.utils.get(guild.emojis, name=emoji_name)
+            if emoji_obj:
+                try:
+                    await emoji_obj.delete(reason=f"Player deletion by {ctx.author}")
+                    deletion_log.append(f"✅ Removed emoji from {guild.name}")
+                    emoji_removed = True
+                except:
+                    deletion_log.append(f"⚠️ Failed to remove emoji from {guild.name}")
+
+    # Remove from emoji mappings
+    if exact_player_name in player_emojis:
+        del player_emojis[exact_player_name]
+        with open('player_emojis.json', 'w') as f:
+            json.dump(player_emojis, f, indent=2)
+        if not emoji_removed:
+            deletion_log.append(f"✅ Removed from emoji mappings")
+
+    # Create final embed
+    final_embed = discord.Embed(
+        title="✅ Player Permanently Deleted",
+        description=f"**{exact_player_name}** (@{username}) has been permanently deleted from all databases.",
+        color=0xFF0000
+    )
+
+    if deletion_log:
+        final_embed.add_field(
+            name="Deletion Log",
+            value="\n".join(deletion_log),
+            inline=False
+        )
+
+    final_embed.set_footer(text=f"Deleted by {ctx.author.name}")
+    final_embed.timestamp = discord.utils.utcnow()
+
+    await confirm_msg.edit(embed=final_embed)
+
+def get_team_color_rgb(team_name):
+    """Get team color as RGB tuple for image generation"""
+    colors = {
+        "India": (0, 102, 204),
+        "Pakistan": (0, 100, 0),
+        "Australia": (255, 215, 0),
+        "England": (1, 33, 105),
+        "New Zealand": (0, 0, 0),
+        "South Africa": (0, 107, 63),
+        "West Indies": (123, 0, 65),
+        "Sri Lanka": (0, 61, 165),
+        "Bangladesh": (0, 106, 78),
+        "Afghanistan": (83, 99, 237),
+        "Netherlands": (255, 54, 0),
+        "Scotland": (161, 0, 242),
+        "Ireland": (157, 255, 46),
+        "Zimbabwe": (255, 33, 33),
+        "UAE": (252, 68, 68),
+        "Canada": (255, 0, 0),
+        "USA": (8, 0, 38)
+    }
+    return colors.get(team_name, (128, 128, 128))
+
+
+@bot.tree.command(name="dom", description="[ADMIN] Create Player of the Match graphic")
+@app_commands.describe(
+    text="Achievement text to display",
+    user="Discord user to feature"
+)
+@app_commands.checks.has_permissions(administrator=True)
+async def dom_command(interaction: discord.Interaction, text: str, user: discord.Member):
+    """Generate a Player of the Match graphic"""
+
+    # ========================================
+    # 🎯 EASY COORDINATE CONFIGURATION
+    # ========================================
+    # Just edit these coordinates to move elements around!
+
+    LAYOUT = {
+        # Flag position (top left)
+        'flag_x': 5,
+        'flag_y': 0,
+        'flag_size': 140,
+
+        # User avatar position (top right area)
+        'avatar_x': 220,
+        'avatar_y': 100,
+        'avatar_size': 100,
+
+        # Player image position (right side)
+        'player_x': -25,
+        'player_y': 24,
+        'player_size': 350,
+
+        # Text positions - each with independent X coordinate
+        'player_name_x': 190,
+        'player_name_y': 20,
+        'player_name_size': 50,
+        'player_name_max_width': 300,  # Max width before scaling down
+
+        'username_x': 330,
+        'username_y': 130,
+        'username_size': 20,
+        'username_max_width': 300,  # Max width before scaling down
+
+        'achievement_x': 230,
+        'achievement_y': 270,
+        'achievement_size': 20,
+        'achievement_max_width': 300,  # Max width for achievement text
+
+        'team_name_x': 1000,
+        'team_name_y': None,  # Will auto-calculate below achievement text
+        'team_name_size': 40,
+        'team_name_spacing': 60,
+
+        # Text styling
+        'text_outline_width': 3,
+        'text_color': (255, 255, 255),      # White
+        'text_outline_color': (0, 0, 0),    # Black
+    }
+
+    # ========================================
+    # END OF EASY CONFIGURATION
+    # ========================================
+
+    await interaction.response.defer(ephemeral=True)
+
+    # Get player info from database
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (user.id,))
+    result = c.fetchone()
+    conn.close()
+
+    if not result:
+        await interaction.followup.send("❌ This user hasn't claimed a player yet!", ephemeral=True)
+        return
+
+    player_name = result[0]
+
+    # Get player data
+    players, team_names = find_player(player_name)
+
+    if not players:
+        await interaction.followup.send("❌ Player data not found!", ephemeral=True)
+        return
+
+    player_data = players[0]
+    team_name = team_names[0]
+
+    try:
+        # Load background
+        bg = Image.open("starbackground.png").convert('RGBA')
+        width, height = bg.size
+
+        print(f"Image size: {width}x{height}")
+
+        # ========================================
+        # CREATE GRADIENT OVERLAY
+        # ========================================
+        # Get team color
+        team_color = get_team_color_rgb(team_name)
+
+        # Create overlay for gradient
+        overlay = Image.new('RGBA', (width, height), (0, 0, 0, 0))
+        draw_overlay = ImageDraw.Draw(overlay, 'RGBA')
+
+        # Create smooth fading gradient from left side with team color
+        for x in range(width // 2):
+            progress = x / (width // 2)
+            alpha = int(150 * (1 - progress))  # Fade from left to transparent
+
+            for y in range(height):
+                draw_overlay.point((x, y), fill=team_color + (alpha,))
+
+        # Composite overlay onto background
+        img = Image.alpha_composite(bg, overlay)
+
+        # Load fonts
+        try:
+            player_name_font = ImageFont.truetype("nor.otf", LAYOUT['player_name_size'])
+            username_font = ImageFont.truetype("nor.otf", LAYOUT['username_size'])
+            text_font = ImageFont.truetype("nor.otf", LAYOUT['achievement_size'])
+            team_font = ImageFont.truetype("nor.otf", LAYOUT['team_name_size'])
+            print("✅ Loaded fonts")
+        except Exception as e:
+            print(f"❌ Failed to load fonts: {e}")
+            try:
+                player_name_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", LAYOUT['player_name_size'])
+                username_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", LAYOUT['username_size'])
+                text_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", LAYOUT['achievement_size'])
+                team_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", LAYOUT['team_name_size'])
+                print("✅ Loaded DejaVu fonts")
+            except Exception as e2:
+                print(f"❌ Failed to load DejaVu fonts: {e2}")
+                player_name_font = ImageFont.load_default()
+                username_font = ImageFont.load_default()
+                text_font = ImageFont.load_default()
+                team_font = ImageFont.load_default()
+                print("⚠️ Using default font")
+
+        async with aiohttp.ClientSession() as session:
+            # ========================================
+            # PLACE FLAG
+            # ========================================
+            flag_x = LAYOUT['flag_x']
+            flag_y = LAYOUT['flag_y']
+            flag_size = LAYOUT['flag_size']
+
+            if team_name.lower() == "west indies":
+                try:
+                    flag_img = Image.open("westindies.jpg").convert('RGBA')
+                    flag_img = flag_img.resize((flag_size, flag_size), Image.Resampling.LANCZOS)
+
+                    mask = Image.new('L', (flag_size, flag_size), 0)
+                    mask_draw = ImageDraw.Draw(mask)
+                    mask_draw.ellipse((0, 0, flag_size, flag_size), fill=255)
+
+                    circular_flag = Image.new('RGBA', (flag_size, flag_size), (0, 0, 0, 0))
+                    circular_flag.paste(flag_img, (0, 0), mask)
+
+                    img.paste(circular_flag, (flag_x, flag_y), circular_flag)
+                    print(f"✅ Pasted West Indies flag at ({flag_x}, {flag_y})")
+                except Exception as e:
+                    print(f"❌ Error loading West Indies flag: {e}")
+            else:
+                flag_url = get_team_flag_url(team_name)
+                if flag_url:
+                    try:
+                        async with session.get(flag_url) as resp:
+                            if resp.status == 200:
+                                flag_data = await resp.read()
+                                flag_img = Image.open(io.BytesIO(flag_data)).convert('RGBA')
+                                flag_img = flag_img.resize((flag_size, flag_size), Image.Resampling.LANCZOS)
+
+                                mask = Image.new('L', (flag_size, flag_size), 0)
+                                mask_draw = ImageDraw.Draw(mask)
+                                mask_draw.ellipse((0, 0, flag_size, flag_size), fill=255)
+
+                                circular_flag = Image.new('RGBA', (flag_size, flag_size), (0, 0, 0, 0))
+                                circular_flag.paste(flag_img, (0, 0), mask)
+
+                                img.paste(circular_flag, (flag_x, flag_y), circular_flag)
+                                print(f"✅ Pasted {team_name} flag at ({flag_x}, {flag_y})")
+                    except Exception as e:
+                        print(f"❌ Error loading team flag: {e}")
+
+            # ========================================
+            # PLACE USER AVATAR
+            # ========================================
+            avatar_x = LAYOUT['avatar_x']
+            avatar_y = LAYOUT['avatar_y']
+            avatar_size = LAYOUT['avatar_size']
+
+            if user.avatar:
+                try:
+                    async with session.get(str(user.avatar.url)) as resp:
+                        if resp.status == 200:
+                            avatar_data = await resp.read()
+                            avatar_img = Image.open(io.BytesIO(avatar_data)).convert('RGBA')
+                        else:
+                            avatar_img = Image.new('RGBA', (avatar_size, avatar_size), (128, 128, 128, 255))
+                except:
+                    avatar_img = Image.new('RGBA', (avatar_size, avatar_size), (128, 128, 128, 255))
+            else:
+                avatar_img = Image.new('RGBA', (avatar_size, avatar_size), (128, 128, 128, 255))
+
+            avatar_img = avatar_img.resize((avatar_size, avatar_size), Image.Resampling.LANCZOS)
+
+            mask = Image.new('L', (avatar_size, avatar_size), 0)
+            mask_draw = ImageDraw.Draw(mask)
+            mask_draw.ellipse((0, 0, avatar_size, avatar_size), fill=255)
+
+            border_thickness = 6
+            bordered_size = avatar_size + (border_thickness * 2)
+            bordered_avatar = Image.new('RGBA', (bordered_size, bordered_size), (255, 255, 255, 255))
+
+            border_mask = Image.new('L', (bordered_size, bordered_size), 0)
+            border_mask_draw = ImageDraw.Draw(border_mask)
+            border_mask_draw.ellipse((0, 0, bordered_size, bordered_size), fill=255)
+
+            bordered_avatar.paste(avatar_img, (border_thickness, border_thickness), mask)
+
+            img.paste(bordered_avatar, (avatar_x - border_thickness, avatar_y - border_thickness), border_mask)
+            print(f"✅ Pasted user avatar at ({avatar_x}, {avatar_y})")
+
+            # ========================================
+            # PLACE PLAYER IMAGE
+            # ========================================
+            player_x = LAYOUT['player_x']
+            player_y = LAYOUT['player_y']
+            player_size = LAYOUT['player_size']
+
+            player_img = None
+            if player_data.get('image'):
+                try:
+                    async with session.get(player_data['image']) as resp:
+                        if resp.status == 200:
+                            img_data = await resp.read()
+                            player_img = Image.open(io.BytesIO(img_data)).convert('RGBA')
+                            print("✅ Downloaded player image")
+                except Exception as e:
+                    print(f"❌ Error downloading player image: {e}")
+
+            if not player_img:
+                try:
+                    player_img = Image.open("fallback.webp").convert('RGBA')
+                    print("✅ Using fallback image")
+                except:
+                    await interaction.followup.send("❌ Could not load player image!", ephemeral=True)
+                    return
+
+            player_img = player_img.resize((player_size, player_size), Image.Resampling.LANCZOS)
+            img.paste(player_img, (player_x, player_y), player_img)
+            print(f"✅ Pasted player image at ({player_x}, {player_y})")
+
+        # ========================================
+        # DRAW ALL TEXT
+        # ========================================
+        img = img.convert('RGB')
+        draw = ImageDraw.Draw(img)
+
+        text_color = LAYOUT['text_color']
+        outline_color = LAYOUT['text_outline_color']
+        outline_width = LAYOUT['text_outline_width']
+
+        # ========================================
+        # Draw Player Name (WITH OUTLINE)
+        # ========================================
+        player_name_x = LAYOUT['player_name_x']
+        player_name_y = LAYOUT['player_name_y']
+
+        # Check if player name is too wide
+        current_font = player_name_font
+        bbox = draw.textbbox((0, 0), player_name, font=current_font)
+        text_width = bbox[2] - bbox[0]
+
+        # Scale down font if text is too wide
+        if text_width > LAYOUT['player_name_max_width']:
+            scale_factor = LAYOUT['player_name_max_width'] / text_width
+            new_size = int(LAYOUT['player_name_size'] * scale_factor)
+            try:
+                current_font = ImageFont.truetype("nor.otf", new_size)
+            except:
+                try:
+                    current_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", new_size)
+                except:
+                    current_font = ImageFont.load_default()
+
+        print(f"Drawing player name '{player_name}' at ({player_name_x}, {player_name_y})")
+
+        # Draw outline
+        for adj_x in range(-outline_width, outline_width + 1):
+            for adj_y in range(-outline_width, outline_width + 1):
+                draw.text((player_name_x + adj_x, player_name_y + adj_y), player_name, font=current_font, fill=outline_color)
+        # Draw main text
+        draw.text((player_name_x, player_name_y), player_name, font=current_font, fill=text_color)
+
+        # ========================================
+        # Draw Username (NO OUTLINE)
+        # ========================================
+        username_text = f"@{user.name}"
+        username_x = LAYOUT['username_x']
+        username_y = LAYOUT['username_y']
+
+        # Check if username is too wide
+        current_username_font = username_font
+        bbox = draw.textbbox((0, 0), username_text, font=current_username_font)
+        text_width = bbox[2] - bbox[0]
+
+        # Scale down font if text is too wide
+        if text_width > LAYOUT['username_max_width']:
+            scale_factor = LAYOUT['username_max_width'] / text_width
+            new_size = int(LAYOUT['username_size'] * scale_factor)
+            try:
+                current_username_font = ImageFont.truetype("nor.otf", new_size)
+            except:
+                try:
+                    current_username_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", new_size)
+                except:
+                    current_username_font = ImageFont.load_default()
+
+        print(f"Drawing username '{username_text}' at ({username_x}, {username_y})")
+        draw.text((username_x, username_y), username_text, font=current_username_font, fill=text_color)
+
+        # ========================================
+        # Draw Achievement Text (NO OUTLINE, NO WORD WRAP)
+        # ========================================
+        achievement_x = LAYOUT['achievement_x']
+        achievement_y = LAYOUT['achievement_y']
+
+        # Check if achievement text is too wide
+        current_achievement_font = text_font
+        bbox = draw.textbbox((0, 0), text, font=current_achievement_font)
+        text_width = bbox[2] - bbox[0]
+
+        # Scale down font if text is too wide
+        if text_width > LAYOUT['achievement_max_width']:
+            scale_factor = LAYOUT['achievement_max_width'] / text_width
+            new_size = int(LAYOUT['achievement_size'] * scale_factor)
+            try:
+                current_achievement_font = ImageFont.truetype("nor.otf", new_size)
+            except:
+                try:
+                    current_achievement_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", new_size)
+                except:
+                    current_achievement_font = ImageFont.load_default()
+
+        print(f"Drawing achievement text '{text}' at ({achievement_x}, {achievement_y})")
+        draw.text((achievement_x, achievement_y), text, font=current_achievement_font, fill=text_color)
+
+        # ========================================
+        # Draw Team Name (NO OUTLINE)
+        # ========================================
+        team_name_x = LAYOUT['team_name_x']
+        team_name_y = achievement_y + LAYOUT['team_name_spacing']
+
+        print(f"Drawing team name '{team_name}' at ({team_name_x}, {team_name_y})")
+        draw.text((team_name_x, team_name_y), team_name, font=team_font, fill=text_color)
+
+        # ========================================
+        # SAVE AND SEND
+        # ========================================
+        output = io.BytesIO()
+        img.save(output, format='PNG', quality=95)
+        output.seek(0)
+
+        embed = discord.Embed(
+            title="🎗️ SPOTLIGHT Perfomance",
+            color=get_team_color(team_name)
+        )
+
+        embed.set_image(url="attachment://player_of_match.png")
+        embed.set_footer(text="CWC HEROES™")
+
+        file = discord.File(output, filename="player_of_match.png")
+        message = await interaction.channel.send(embed=embed, file=file)
+
+        # Add fire emoji reaction
+        await message.add_reaction("🔥")
+
+        print("✅ Sent image to channel")
+
+        await interaction.followup.send("✅ Player of the Match graphic sent!", ephemeral=True)
+
+    except FileNotFoundError as e:
+        error_msg = f"❌ File not found: {e}\nMake sure starbackground.png and fonts are in the bot's directory!"
+        await interaction.followup.send(error_msg, ephemeral=True)
+        print(error_msg)
+    except Exception as e:
+        error_msg = f"❌ Error creating graphic: {e}"
+        await interaction.followup.send(error_msg, ephemeral=True)
+        print(error_msg)
+        import traceback
+        traceback.print_exc()
+
+@dom_command.error
+async def dom_error(interaction: discord.Interaction, error):
+    if isinstance(error, app_commands.MissingPermissions):
+        await interaction.response.send_message("❌ You need administrator permissions to use this command!", ephemeral=True)
 
 token = os.getenv('TOKEN')
 if token:

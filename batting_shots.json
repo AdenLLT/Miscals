@@ -1,0 +1,49 @@
+{
+  "cricket_batting_shots": {
+    "straight_bat_shots": {
+      "defensive_shots": ["Forward defensive", "Backward defensive", "Block", "Dead bat", "Leave (shoulder arms)", "Watchful leave"],
+      "attacking_shots": ["Straight drive", "On drive", "Off drive", "Cover drive", "Square drive", "Push shot", "Nudge", "Wristy flick"]
+    },
+    "horizontal_bat_shots": {
+      "off_side_shots": ["Cut shot", "Square cut", "Late cut", "Upper cut", "Slash", "Guide to third man", "Steer"],
+      "on_side_shots": ["Pull shot", "Hook shot", "Short arm pull", "Long handle pull", "Sweep shot", "Paddle sweep", "Reverse sweep", "Slog sweep"],
+      "leg_side_shots": ["Leg glance", "Flick off the pads", "Whip shot", "Clip off the pads", "Onside flick"]
+    },
+    "lofted_shots": {
+      "straight_down_ground": ["Straight lofted drive", "Lofted on drive", "Lofted off drive"],
+      "off_side_lofted": ["Lofted cover drive", "Inside-out lofted shot", "Lofted square drive", "Over extra cover", "Over mid-off"],
+      "on_side_lofted": ["Lofted on drive", "Over mid-on", "Over midwicket", "Over square leg", "Over long on"],
+      "leg_side_lofted": ["Lofted leg glance", "Lofted flick", "Over fine leg"]
+    },
+    "unorthodox_shots": {
+      "reverse_hits": ["Reverse sweep", "Switch hit", "Reverse pull", "Reverse scoop", "Reverse lap"],
+      "scoop_family": ["Dilscoop", "Ramp shot", "Paddle scoop", "Scoop over fine leg", "Scoop over short fine", "Helicopter shot (MS Dhoni style)"],
+      "innovative_shots": ["Switch hit", "Upper cut over slips", "Ramp shot over keeper", "Inside-out over cover", "Check drive", "French cut (inside edge to fine leg)", "Chinese cut (inside edge past stumps)"]
+    },
+    "running_shots": {
+      "quick_singles": ["Push and run", "Drop and run", "Nudge and run", "Deflect and run", "Steal a single"],
+      "placement_shots": ["Placement through gaps", "Gap finding drive", "Dab to third man", "Work to leg side", "Place between fielders"]
+    },
+    "power_hitting_shots": {
+      "clearing_boundary": ["Monster hit", "Maximum shot", "Clean hit", "Flat six", "Huge six", "Tonk", "Heave", "Slog"],
+      "targeted_hitting": ["Target cow corner", "Hit over long on", "Hit over long off", "Hit over deep midwicket", "Hit over deep extra cover"]
+    },
+    "improvisation_shots": {
+      "adjustment_shots": ["Late adjustment", "Last-minute flick", "Adjustment to Yorker", "Adjustment to bouncer", "Playing off the back foot"],
+      "improvised_shots": ["Ramp over slips", "Upper cut over third man", "Flick over square leg", "Improvised scoop", "Wristy whip"]
+    },
+    "footwork_based_shots": {
+      "front_foot": ["Forward press drive", "Front foot defense", "Front foot pull (rare)", "Front foot cut (rare)"],
+      "back_foot": ["Back foot punch", "Back foot drive", "Back foot cut", "Back foot pull", "Back foot hook"],
+      "dancing_down": ["Charge down the pitch", "Dancing down loft", "Advancing down track"]
+    },
+    "spin_specific_shots": {
+      "against_spin": ["Sweep to spinners", "Paddle sweep", "Reverse sweep to spinner", "Use of feet to spinner", "Coming down the track", "Late cut to spinner"],
+      "reading_spin": ["Picking the googly", "Playing the doosra", "Handling carrom ball", "Playing the arm ball"]
+    },
+    "pace_specific_shots": {
+      "against_pace": ["Upper cut to fast bowler", "Pull to short ball", "Hook to bouncer", "Drive to full length", "Nudge to good length", "Leave outside off"],
+      "handling_variations": ["Playing the slower ball", "Playing the yorker", "Playing the bouncer", "Playing the cutter", "Playing the knuckle ball"]
+    }
+  }
+}
