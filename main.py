@@ -61,14 +61,14 @@ async def on_ready():
 @bot.command(name="quarterfinals")
 async def quarterfinals(ctx):
     embed = discord.Embed(
-        title="⚔️ Tournament Quarter-Finals ⚔️",
+        title="Pakistan's CWC26",
         description=(
             "╭─── ⋅ 🏆 ⋅ ───╮\n\n"
             "🇦🇫 **Afghanistan** VS **South Africa** 🇿🇦\n"
             "───────────────\n"
             "🇧🇩 **Bangladesh** VS **India** 🇮🇳\n"
             "───────────────\n"
-            "🏴󠁧󠁢󠁳󠁣󠁴󠁿 **Scotland** VS **TBD #7** 🔍\n"
+            "🏴󠁧󠁢󠁳󠁣󠁴󠁿 **Scotland** VS **Netherlands** 🇳🇱\n"
             "───────────────\n"
             "🇱🇰 **Sri Lanka** VS **TBD #8** 🔍\n\n"
             "╰─── ⋅ 🏆 ⋅ ───╯"

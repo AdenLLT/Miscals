@@ -1525,7 +1525,8 @@ class CricketStats(commands.Cog):
 
     @commands.command(name="addstats", aliases=["as"], help="[ADMIN] Add match stats")
     @commands.has_any_role(1452028308735922339)
-    async def addstats_command(self, ctx):
+    async def addstats_command(self, ctx, flag: str = ""):
+        nolb = flag.upper() == "NOLB"
         if not ctx.message.reference:
             await ctx.send("❌ Please reply to a message containing match statistics!")
             return
@@ -1810,7 +1811,8 @@ class CricketStats(commands.Cog):
         scoreboard = await create_match_scoreboard(match_data, ctx.guild)
 
         # Update tournament stats with confirmed scores
-        update_tournament_stats(team1, team2, winner, team1_runs, team1_balls, team2_runs, team2_balls)
+        if not nolb:
+            update_tournament_stats(team1, team2, winner, team1_runs, team1_balls, team2_runs, team2_balls)
 
         file = discord.File(scoreboard, filename="scoreboard.png")
         await ctx.send(f"✅ **Match Statistics Added Successfully**\n🏆 **{winner} WON**\n📊 **{len(matches)} players**", file=file)
