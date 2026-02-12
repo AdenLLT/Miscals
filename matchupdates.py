@@ -610,6 +610,15 @@ async def create_wicket_image(wicket_data, guild):
         player_y = height // 2 - 80
 
         # Draw player name (WHITE, centered)
+        name_size = 90
+        if len(out_player_name) > 15:
+            name_size = 65  # Shrink if more than 15 characters
+        
+        try:
+            player_name_font = ImageFont.truetype("nor.otf", name_size)
+        except:
+            player_name_font = ImageFont.load_default()
+
         draw.text((center_x - 90, player_y - 20), out_player_name, fill=WHITE, font=player_name_font, anchor="mm")
 
         # Draw username below (WHITE, centered)
