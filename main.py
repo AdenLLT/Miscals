@@ -58,6 +58,22 @@ async def on_ready():
     print(f'{bot.user} has connected to Discord!')
     print(f'Bot is ready! Prefix: .')
 
+@bot.tree.command(name="sendmsg", description="Send a custom message in this channel")
+@app_commands.describe(
+    message="The message content to send",
+    image="Optional image to attach"
+)
+async def sendmsg(interaction: discord.Interaction, message: str, image: Optional[discord.Attachment] = None):
+    # Hide the slash command response (ephemeral)
+    await interaction.response.send_message("✅ Message sent!", ephemeral=True)
+    
+    # Send the message separately in the same channel
+    if image:
+        file = await image.to_file()
+        await interaction.channel.send(content=message, file=file)
+    else:
+        await interaction.channel.send(content=message)
+
 @bot.command(name="quarterfinals")
 async def quarterfinals(ctx):
     embed = discord.Embed(
