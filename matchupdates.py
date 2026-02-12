@@ -201,6 +201,7 @@ def parse_embed_fields(embed):
         batters_section = re.search(r'Batters:\s*(.+?)(?:Bowler:|Partnership:|$)', full_text, re.DOTALL)
         if batters_section:
             batters_text = batters_section.group(1)
+            # Find the user ID from the user mention: <@ID>
             batter_lines = [line.strip() for line in batters_text.split('\n') if line.strip() and 'runs' in line.lower()]
 
             batter_count = 0
@@ -209,12 +210,15 @@ def parse_embed_fields(embed):
                 if 'no batsman' in line.lower(): continue
 
                 clean_line = line.replace('*', '').strip()
-                match = re.search(r'^(.+?):\s*(\d+)\s*\((\d+)\)\s*runs', clean_line)
+                # Pattern to match username and optional user mention/ID
+                # Format: "Username (<@ID>): 10 (5) runs"
+                match = re.search(r'^(.+?)(?:\s*\(<@!?(\d+)>\))?:\s*(\d+)\s*\((\d+)\)\s*runs', clean_line)
 
                 if match:
                     username = match.group(1).strip()
-                    runs = match.group(2)
-                    balls = match.group(3)
+                    user_id_str = match.group(2)
+                    runs = match.group(3)
+                    balls = match.group(4)
                     is_on_strike = '**' in line
 
                     batter_count += 1
@@ -222,7 +226,13 @@ def parse_embed_fields(embed):
 
                     conn = sqlite3.connect('players.db')
                     c = conn.cursor()
-                    c.execute("SELECT player_name FROM player_representatives WHERE username = ?", (username,))
+                    
+                    if user_id_str:
+                        user_id = int(user_id_str)
+                        c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (user_id,))
+                    else:
+                        c.execute("SELECT player_name FROM player_representatives WHERE username = ?", (username,))
+                    
                     result = c.fetchone()
                     conn.close()
 
@@ -254,17 +264,25 @@ def parse_embed_fields(embed):
         if bowler_section:
             bowler_line = bowler_section.group(1).strip()
             clean_line = bowler_line.replace('*', '').strip()
-            match = re.search(r'^(.+?):\s*(\d+)\s*-\s*(\d+)\s*\((\d+(?:\.\d+)?)\s*overs?\)', clean_line)
+            # Format: "Username (<@ID>): 0-10 (1.0 overs)"
+            match = re.search(r'^(.+?)(?:\s*\(<@!?(\d+)>\))?:\s*(\d+)\s*-\s*(\d+)\s*\((\d+(?:\.\d+)?)\s*overs?\)', clean_line)
 
             if match:
                 username = match.group(1).strip()
-                runs = match.group(2)
-                wickets = match.group(3)
-                overs = match.group(4)
+                user_id_str = match.group(2)
+                runs = match.group(3)
+                wickets = match.group(4)
+                overs = match.group(5)
 
                 conn = sqlite3.connect('players.db')
                 c = conn.cursor()
-                c.execute("SELECT player_name FROM player_representatives WHERE username = ?", (username,))
+                
+                if user_id_str:
+                    user_id = int(user_id_str)
+                    c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (user_id,))
+                else:
+                    c.execute("SELECT player_name FROM player_representatives WHERE username = ?", (username,))
+                
                 result = c.fetchone()
                 conn.close()
 

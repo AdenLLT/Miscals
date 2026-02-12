@@ -63,6 +63,7 @@ async def on_ready():
     message="The message content to send",
     image="Optional image to attach"
 )
+@app_commands.checks.has_permissions(administrator=True)
 async def sendmsg(interaction: discord.Interaction, message: str, image: Optional[discord.Attachment] = None):
     # Hide the slash command response (ephemeral)
     await interaction.response.send_message("✅ Message sent!", ephemeral=True)
