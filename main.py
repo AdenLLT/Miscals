@@ -4880,7 +4880,17 @@ class FantasyLeaderboardView(discord.ui.View):
             await interaction.response.send_message("You're already on the last page!", ephemeral=True)
 
 
-@commands.command(name="fantasylb", aliases=["flb", "fantasylead
+@commands.command(name="fantasylb", aliases=["flb", "fantasylead"])
+async def fantasylb(ctx):
+    """View fantasy cricket leaderboard"""
+    from cricket_stats import get_fantasy_leaderboard
+    entries = get_fantasy_leaderboard()
+    if not entries:
+        await ctx.send("❌ No fantasy teams found yet!")
+        return
+    
+    view = FantasyLeaderboardView(bot, entries)
+    await ctx.send(embed=view.get_page_embed(), view=view)
 
 token = os.getenv('TOKEN')
 if token:

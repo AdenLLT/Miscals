@@ -36,9 +36,9 @@ name = "Discord Bot"
 author = "agent"
 mode = "sequential"
 
+[workflows.workflow.metadata]
+outputType = "console"
+
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "python main.py"
-
-[workflows.workflow.metadata]
-outputType = "console"
