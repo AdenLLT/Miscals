@@ -123,7 +123,8 @@ MATCH_CHANNELS = {
     1464677627506987202: "National Stadium Karachi",
     1464677685593768047: "Rawalpindi Cricket Stadium",
     1464648571898036469: "Multan Cricket Stadium",
-    1464677944222810429: "Arbab Niaz Stadium"
+    1464677944222810429: "Arbab Niaz Stadium",
+    1471920655955136736: "Abu Dhabi Cricket Stadium"
 }
 
 # Channel for posting fixtures
