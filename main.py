@@ -56,6 +56,47 @@ async def on_ready():
     await bot.load_extension('tournament')
     await bot.tree.sync()
     print(f'{bot.user} has connected to Discord!')
+    print(f'Bot is ready! Prefix: .')
+
+@bot.tree.command(name="sendmsg", description="Send a custom message in this channel")
+@app_commands.describe(
+    message="The message content to send",
+    image="Optional image to attach"
+)
+@app_commands.checks.has_permissions(administrator=True)
+async def sendmsg(interaction: discord.Interaction, message: str, image: Optional[discord.Attachment] = None):
+    # Hide the slash command response (ephemeral)
+    await interaction.response.send_message("✅ Message sent!", ephemeral=True)
+    
+    # Send the message separately in the same channel
+    if image:
+        file = await image.to_file()
+        await interaction.channel.send(content=message, file=file)
+    else:
+        await interaction.channel.send(content=message)
+
+@bot.command(name="quarterfinals")
+async def quarterfinals(ctx):
+    embed = discord.Embed(
+        title="Pakistan's CWC26",
+        description=(
+            "╭─── ⋅ 🏆 ⋅ ───╮\n\n"
+            "🇦🇫 **Afghanistan** VS **South Africa** 🇿🇦\n"
+            "───────────────\n"
+            "🇧🇩 **Bangladesh** VS **India** 🇮🇳\n"
+            "───────────────\n"
+            "🏴󠁧󠁢󠁳󠁣󠁴󠁿 **Scotland** VS **Netherlands** 🇳🇱\n"
+            "───────────────\n"
+            "🇱🇰 **Sri Lanka** VS **TBD #8** 🔍\n\n"
+            "╰─── ⋅ 🏆 ⋅ ───╯"
+        ),
+        color=discord.Color.gold(),
+        timestamp=datetime.utcnow()
+    )
+    embed.set_footer(text="CWC26 Quarter Finals")
+    if ctx.guild and ctx.guild.icon:
+        embed.set_thumbnail(url=ctx.guild.icon.url)
+    await ctx.send(embed=embed)
 
 @bot.listen()
 async def on_command_error(ctx, error):
@@ -82,11 +123,6 @@ def init_db():
     # ADD THIS NEW TABLE FOR CAPTAINS
     c.execute('''CREATE TABLE IF NOT EXISTS team_captains
                  (team_name TEXT PRIMARY KEY, player_name TEXT, user_id INTEGER, username TEXT)''')
-    # FANTASY TABLES
-    c.execute('''CREATE TABLE IF NOT EXISTS fantasy_teams
-                 (user_id INTEGER PRIMARY KEY, team_data TEXT, total_points INTEGER DEFAULT 0)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS fantasy_points_log
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, points INTEGER, reason TEXT, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     conn.commit()
     conn.close()
 
@@ -101,31 +137,6 @@ def init_nicknames_db():
     conn.commit()
     conn.close()
 
-def init_fantasy_db():
-    """Initialize fantasy cricket database tables"""
-    conn = sqlite3.connect('players.db')
-    c = conn.cursor()
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS fantasy_teams
-                 (user_id INTEGER PRIMARY KEY,
-                  team_data TEXT,
-                  total_points INTEGER DEFAULT 0,
-                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS fantasy_points_log
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  user_id INTEGER,
-                  player_name TEXT,
-                  match_id INTEGER,
-                  points_earned INTEGER,
-                  timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-    
-    conn.commit()
-    conn.close()
-
-# Then in your on_ready() function (around line 48), add this line after init_db():
-    init_fantasy_db()  # ADD THIS LINE
-    
 
 # Load players from JSON
 def load_players():
@@ -4390,507 +4401,6 @@ async def dom_command(interaction: discord.Interaction, text: str, user: discord
 async def dom_error(interaction: discord.Interaction, error):
     if isinstance(error, app_commands.MissingPermissions):
         await interaction.response.send_message("❌ You need administrator permissions to use this command!", ephemeral=True)
-
-# ============================================================
-# FANTASY CRICKET FEATURE - ADD TO YOUR BOT
-# ============================================================
-# This code should be integrated into your existing bot files.
-# Follow the instructions in comments to place code correctly.
-# ============================================================
-
-# ============================================================
-# PART 1: DATABASE INITIALIZATION
-# Add this to your init_db() function in main.py
-# ============================================================
-
-
-# Call this in your main on_ready() or init_db()
-# init_fantasy_db()
-
-
-# ============================================================
-# PART 2: HELPER FUNCTIONS
-# Add these helper functions to main.py or cricket_stats.py
-# ============================================================
-
-def get_india_nz_players():
-    """Get all players from India and New Zealand teams"""
-    try:
-        with open('players.json', 'r', encoding='utf-8') as f:
-            teams_data = json.load(f)
-        
-        india_players = []
-        nz_players = []
-        
-        for team in teams_data:
-            if team['team'] == 'India':
-                india_players = [p['name'] for p in team['players']]
-            elif team['team'] == 'New Zealand':
-                nz_players = [p['name'] for p in team['players']]
-        
-        return india_players, nz_players
-    except:
-        return [], []
-
-def get_fantasy_team(user_id):
-    """Get user's fantasy team"""
-    conn = sqlite3.connect('players.db')
-    c = conn.cursor()
-    c.execute("SELECT team_data, total_points FROM fantasy_teams WHERE user_id = ?", (user_id,))
-    result = c.fetchone()
-    conn.close()
-    
-    if result:
-        return json.loads(result[0]), result[1]
-    return None, 0
-
-def save_fantasy_team(user_id, team_data):
-    """Save user's fantasy team"""
-    conn = sqlite3.connect('players.db')
-    c = conn.cursor()
-    c.execute("""INSERT OR REPLACE INTO fantasy_teams (user_id, team_data, total_points)
-                 VALUES (?, ?, COALESCE((SELECT total_points FROM fantasy_teams WHERE user_id = ?), 0))""",
-              (user_id, json.dumps(team_data), user_id))
-    conn.commit()
-    conn.close()
-
-def update_fantasy_points(user_id, points_to_add):
-    """Update fantasy team total points"""
-    conn = sqlite3.connect('players.db')
-    c = conn.cursor()
-    c.execute("UPDATE fantasy_teams SET total_points = total_points + ? WHERE user_id = ?",
-              (points_to_add, user_id))
-    conn.commit()
-    conn.close()
-
-def get_fantasy_leaderboard():
-    """Get fantasy leaderboard data"""
-    conn = sqlite3.connect('players.db')
-    c = conn.cursor()
-    c.execute("""SELECT user_id, total_points, team_data 
-                 FROM fantasy_teams 
-                 ORDER BY total_points DESC""")
-    results = c.fetchall()
-    conn.close()
-    return results
-
-
-# ============================================================
-# PART 3: PLAYER SELECTION VIEW
-# Add this class to main.py
-# ============================================================
-
-class PlayerSelectionView(discord.ui.View):
-    def __init__(self, india_players, nz_players):
-        super().__init__(timeout=300)
-        self.selected_players = []
-        self.india_players = india_players
-        self.nz_players = nz_players
-        self.selection_complete = False
-        
-        # Create select menu with all players
-        all_players = india_players + nz_players
-        
-        # Split into chunks of 25 (Discord limit)
-        for i in range(0, len(all_players), 25):
-            chunk = all_players[i:i+25]
-            select = discord.ui.Select(
-                placeholder=f"Select players ({i+1}-{min(i+25, len(all_players))})",
-                min_values=0,
-                max_values=min(11 - len(self.selected_players), len(chunk)),
-                options=[
-                    discord.SelectOption(
-                        label=player,
-                        value=player,
-                        description=f"{'🇮🇳 India' if player in india_players else '🇳🇿 New Zealand'}"
-                    )
-                    for player in chunk
-                ],
-                custom_id=f"player_select_{i}"
-            )
-            select.callback = self.player_select_callback
-            self.add_item(select)
-    
-    async def player_select_callback(self, interaction: discord.Interaction):
-        # Get the select menu that was used
-        for item in self.children:
-            if isinstance(item, discord.ui.Select) and item.custom_id == interaction.data['custom_id']:
-                selected = interaction.data['values']
-                
-                # Remove any previously selected players from this menu
-                for player in self.selected_players[:]:
-                    if player in [opt.value for opt in item.options]:
-                        self.selected_players.remove(player)
-                
-                # Add newly selected players
-                for player in selected:
-                    if player not in self.selected_players:
-                        self.selected_players.append(player)
-                
-                # Check if we have exactly 11 players
-                if len(self.selected_players) == 11:
-                    self.selection_complete = True
-                    # Disable all select menus
-                    for child in self.children:
-                        child.disabled = True
-                    
-                    await interaction.response.edit_message(
-                        content=f"✅ **Team Selected!** ({len(self.selected_players)}/11 players)\n\n" + 
-                                "\n".join([f"{i+1}. {p}" for i, p in enumerate(self.selected_players)]) +
-                                "\n\n**Proceed to confirm your team.**",
-                        view=self
-                    )
-                else:
-                    await interaction.response.edit_message(
-                        content=f"**Selecting Fantasy 11** ({len(self.selected_players)}/11 players selected)\n\n" +
-                                ("**Selected Players:**\n" + "\n".join([f"{i+1}. {p}" for i, p in enumerate(self.selected_players)]) if self.selected_players else "No players selected yet.") +
-                                f"\n\n{'⚠️ Select ' + str(11 - len(self.selected_players)) + ' more player(s)' if len(self.selected_players) < 11 else ''}",
-                        view=self
-                    )
-                break
-
-
-class ConfirmationView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=60)
-        self.confirmed = False
-    
-    @discord.ui.button(label="✅ Confirm Team", style=discord.ButtonStyle.success)
-    async def confirm_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.confirmed = True
-        self.stop()
-        await interaction.response.defer()
-    
-    @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.danger)
-    async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.confirmed = False
-        self.stop()
-        await interaction.response.defer()
-
-
-# ============================================================
-# PART 4: /createfantasy11 SLASH COMMAND
-# Add this to main.py
-# ============================================================
-
-@bot.tree.command(name="createfantasy11", description="Create your Fantasy 11 team from India and New Zealand players")
-async def create_fantasy11(interaction: discord.Interaction):
-    """Create a Fantasy 11 team"""
-    user_id = interaction.user.id
-    
-    # Check if user already has a team
-    existing_team, _ = get_fantasy_team(user_id)
-    if existing_team:
-        await interaction.response.send_message(
-            "❌ You already have a Fantasy 11 team! You can only create one team and cannot edit it.",
-            ephemeral=True
-        )
-        return
-    
-    await interaction.response.defer(ephemeral=True)
-    
-    # Get India and New Zealand players
-    india_players, nz_players = get_india_nz_players()
-    
-    if not india_players or not nz_players:
-        await interaction.followup.send(
-            "❌ Could not load player data. Please contact an admin.",
-            ephemeral=True
-        )
-        return
-    
-    # Create selection view
-    view = PlayerSelectionView(india_players, nz_players)
-    
-    await interaction.followup.send(
-        "**🏏 Create Your Fantasy 11 Team**\n\n"
-        "Select **exactly 11 players** from India 🇮🇳 and New Zealand 🇳🇿.\n"
-        "⚠️ You can only create ONE team and CANNOT edit it later!\n\n"
-        "**Instructions:**\n"
-        "• Use the dropdown menus below to select players\n"
-        "• You must select exactly 11 players\n"
-        "• No duplicates allowed\n"
-        "• Once selected, confirm your team\n\n"
-        f"**Available:** {len(india_players)} India players, {len(nz_players)} NZ players",
-        view=view,
-        ephemeral=True
-    )
-    
-    # Wait for selection to complete
-    await view.wait()
-    
-    if not view.selection_complete or len(view.selected_players) != 11:
-        await interaction.followup.send(
-            "❌ Team creation cancelled or incomplete. You must select exactly 11 players.",
-            ephemeral=True
-        )
-        return
-    
-    # Show confirmation embed
-    india_count = sum(1 for p in view.selected_players if p in india_players)
-    nz_count = sum(1 for p in view.selected_players if p in nz_players)
-    
-    confirm_embed = discord.Embed(
-        title="🏆 Confirm Your Fantasy 11 Team",
-        description="**⚠️ WARNING: Once confirmed, you CANNOT edit or create a new team!**",
-        color=0xFFD700
-    )
-    
-    # Add players list
-    players_list = "\n".join([
-        f"{i+1}. {'🇮🇳' if p in india_players else '🇳🇿'} {p}"
-        for i, p in enumerate(view.selected_players)
-    ])
-    
-    confirm_embed.add_field(
-        name="Your Selected Players",
-        value=players_list,
-        inline=False
-    )
-    
-    confirm_embed.add_field(
-        name="Team Composition",
-        value=f"🇮🇳 India: **{india_count}** players\n🇳🇿 New Zealand: **{nz_count}** players",
-        inline=False
-    )
-    
-    confirm_embed.set_footer(text="Click ✅ Confirm to finalize or ❌ Cancel to abort")
-    
-    confirm_view = ConfirmationView()
-    await interaction.followup.send(embed=confirm_embed, view=confirm_view, ephemeral=True)
-    
-    await confirm_view.wait()
-    
-    if not confirm_view.confirmed:
-        await interaction.followup.send("❌ Team creation cancelled.", ephemeral=True)
-        return
-    
-    # Save the team
-    team_data = {
-        'players': view.selected_players,
-        'india_count': india_count,
-        'nz_count': nz_count
-    }
-    
-    save_fantasy_team(user_id, team_data)
-    
-    await interaction.followup.send(
-        "✅ **Fantasy 11 team created successfully!**\n\n"
-        "Your team will now earn points based on player performances in matches.\n"
-        "Your team has been posted to the Fantasy Cricket channel!",
-        ephemeral=True
-    )
-    
-    # Post to the specified channel
-    fantasy_channel_id = 1471951626058207292
-    fantasy_channel = bot.get_channel(fantasy_channel_id)
-    
-    if fantasy_channel:
-        # Create team display embed (similar to -vt command)
-        team_embed = discord.Embed(
-            title=f"🏆 {interaction.user.name}'s Fantasy 11 Team",
-            description=f"**Total Points:** 0\n\n**Team Composition:**\n🇮🇳 India: {india_count} players\n🇳🇿 New Zealand: {nz_count} players",
-            color=0xFFD700
-        )
-        
-        # Group by team
-        india_in_team = [p for p in view.selected_players if p in india_players]
-        nz_in_team = [p for p in view.selected_players if p in nz_players]
-        
-        if india_in_team:
-            team_embed.add_field(
-                name="🇮🇳 India Players",
-                value="\n".join([f"• {p}" for p in india_in_team]),
-                inline=True
-            )
-        
-        if nz_in_team:
-            team_embed.add_field(
-                name="🇳🇿 New Zealand Players", 
-                value="\n".join([f"• {p}" for p in nz_in_team]),
-                inline=True
-            )
-        
-        team_embed.set_footer(text=f"Created by {interaction.user.name} • Points will update after each match")
-        team_embed.set_thumbnail(url=interaction.user.display_avatar.url if interaction.user.display_avatar else None)
-        
-        await fantasy_channel.send(embed=team_embed)
-
-
-# ============================================================
-# PART 5: FANTASY POINTS CALCULATION
-# Add this function to cricket_stats.py and call it in addstats
-# ============================================================
-
-def calculate_fantasy_points_for_match(matches):
-    """
-    Calculate and award fantasy points after a match
-    Call this in your addstats command after stats are saved
-    
-    matches: list of tuples (user_id, runs, balls_faced, runs_conceded, balls_bowled, wickets, not_out)
-    """
-    # Get all fantasy teams
-    conn = sqlite3.connect('players.db')
-    c = conn.cursor()
-    c.execute("SELECT user_id, team_data FROM fantasy_teams")
-    fantasy_teams = c.fetchall()
-    
-    # Calculate impact points for each player in the match
-    player_impact_points = {}
-    
-    for match in matches:
-        user_id, runs, balls_faced, runs_conceded, balls_bowled, wickets, not_out = map(int, match)
-        
-        # Get player name
-        player_name = get_player_name_by_user_id(user_id)
-        if not player_name:
-            continue
-        
-        # Calculate impact points (same formula as leaderboard)
-        impact_points = runs + (wickets * 20)
-        player_impact_points[player_name] = impact_points
-    
-    # Award points to fantasy teams
-    points_awarded = {}  # {user_id: points}
-    
-    for fantasy_user_id, team_data_json in fantasy_teams:
-        team_data = json.loads(team_data_json)
-        players_in_team = team_data['players']
-        
-        # Calculate total points for this fantasy team from this match
-        total_points = 0
-        for player_name, impact in player_impact_points.items():
-            if player_name in players_in_team:
-                total_points += impact
-        
-        if total_points > 0:
-            points_awarded[fantasy_user_id] = total_points
-            update_fantasy_points(fantasy_user_id, total_points)
-    
-    conn.close()
-    
-    return points_awarded
-
-
-# ============================================================
-# PART 6: MODIFY ADDSTATS COMMAND
-# In cricket_stats.py, in the addstats command, after line 1818
-# (after stats are committed to database), add this:
-# ============================================================
-
-"""
-# After line 1818 in cricket_stats.py addstats command:
-# Add this code to calculate fantasy points
-
-        # Calculate fantasy points
-        fantasy_points = calculate_fantasy_points_for_match(matches)
-        
-        # Optionally send notification about fantasy points
-        if fantasy_points:
-            fantasy_summary = "\\n".join([
-                f"<@{uid}>: +{pts} fantasy pts" 
-                for uid, pts in fantasy_points.items()
-            ])
-            
-            # Post to fantasy channel or include in response
-            fantasy_channel_id = 1471951626058207292
-            fantasy_channel = self.bot.get_channel(fantasy_channel_id)
-            
-            if fantasy_channel:
-                fantasy_embed = discord.Embed(
-                    title="📊 Fantasy Points Awarded!",
-                    description=f"Points from **{team1} vs {team2}**\\n\\n{fantasy_summary}",
-                    color=0x00FF00
-                )
-                await fantasy_channel.send(embed=fantasy_embed)
-"""
-
-
-# ============================================================
-# PART 7: FANTASY LEADERBOARD COMMAND
-# Add this to cricket_stats.py
-# ============================================================
-
-class FantasyLeaderboardView(discord.ui.View):
-    def __init__(self, bot, all_entries, items_per_page=10):
-        super().__init__(timeout=120)
-        self.bot = bot
-        self.all_entries = all_entries
-        self.items_per_page = items_per_page
-        self.current_page = 0
-        self.max_pages = max(1, (len(all_entries) + items_per_page - 1) // items_per_page)
-        
-    def get_page_embed(self):
-        start_idx = self.current_page * self.items_per_page
-        end_idx = start_idx + self.items_per_page
-        page_entries = self.all_entries[start_idx:end_idx]
-        
-        embed = discord.Embed(
-            title="🏆 Fantasy Cricket Leaderboard",
-            description=f"**Top Fantasy 11 Teams**\n\n*Points are earned from player performances in matches*",
-            color=0xFFD700
-        )
-        
-        leaderboard_text = ""
-        for i, (user_id, total_points, team_data_json) in enumerate(page_entries, start=start_idx + 1):
-            team_data = json.loads(team_data_json)
-            
-            # Get user
-            user = self.bot.get_user(user_id)
-            username = user.name if user else f"User {user_id}"
-            
-            # Medal for top 3
-            medal = ""
-            if i == 1:
-                medal = "🥇"
-            elif i == 2:
-                medal = "🥈"
-            elif i == 3:
-                medal = "🥉"
-            
-            player_count = len(team_data['players'])
-            
-            leaderboard_text += f"{medal} **{i}.** {username}\n"
-            leaderboard_text += f"    └ **{total_points}** pts • {player_count} players\n\n"
-        
-        embed.add_field(
-            name=f"Rankings ({start_idx + 1}-{min(end_idx, len(self.all_entries))} of {len(self.all_entries)})",
-            value=leaderboard_text if leaderboard_text else "No teams yet!",
-            inline=False
-        )
-        
-        embed.set_footer(text=f"Page {self.current_page + 1}/{self.max_pages} • Create your team with /createfantasy11")
-        
-        return embed
-    
-    @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.gray)
-    async def previous_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.current_page > 0:
-            self.current_page -= 1
-            await interaction.response.edit_message(embed=self.get_page_embed(), view=self)
-        else:
-            await interaction.response.send_message("You're already on the first page!", ephemeral=True)
-    
-    @discord.ui.button(label="▶️ Next", style=discord.ButtonStyle.gray)
-    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.current_page < self.max_pages - 1:
-            self.current_page += 1
-            await interaction.response.edit_message(embed=self.get_page_embed(), view=self)
-        else:
-            await interaction.response.send_message("You're already on the last page!", ephemeral=True)
-
-
-@commands.command(name="fantasylb", aliases=["flb", "fantasylead"])
-async def fantasylb(ctx):
-    """View fantasy cricket leaderboard"""
-    from cricket_stats import get_fantasy_leaderboard
-    entries = get_fantasy_leaderboard()
-    if not entries:
-        await ctx.send("❌ No fantasy teams found yet!")
-        return
-    
-    view = FantasyLeaderboardView(bot, entries)
-    await ctx.send(embed=view.get_page_embed(), view=view)
 
 token = os.getenv('TOKEN')
 if token:
