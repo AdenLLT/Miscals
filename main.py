@@ -69,65 +69,92 @@ class PlayerSelectionView(discord.ui.View):
         
         all_players = india_players + nz_players
         
+        options1 = []
+        for player in all_players[:25]:
+            rep = get_representative(player)
+            desc = f"{'🇮🇳 India' if player in india_players else '🇳🇿 NZ'}"
+            if rep:
+                desc += f" (Claimed by @{rep[1]})"
+            else:
+                desc += " (Unclaimed)"
+            options1.append(discord.SelectOption(
+                label=player[:100],
+                value=player,
+                description=desc[:100]
+            ))
+
         # Create a single select with up to 11 selections
         select = discord.ui.Select(
-            placeholder="Select your 11 players",
-            min_values=11,
+            placeholder="Select up to 11 players",
+            min_values=1,
             max_values=11,
-            options=[
-                discord.SelectOption(
-                    label=player[:100],  # Discord limit
-                    value=player,
-                    description=f"{'🇮🇳 India' if player in india_players else '🇳🇿 NZ'}"[:100]
-                )
-                for player in all_players[:25]  # First 25 players (Discord limit)
-            ]
+            options=options1
         )
         select.callback = self.player_select_callback
         self.add_item(select)
         
         # If more than 25 players, add another select
         if len(all_players) > 25:
+            options2 = []
+            for player in all_players[25:50]:
+                rep = get_representative(player)
+                desc = f"{'🇮🇳 India' if player in india_players else '🇳🇿 NZ'}"
+                if rep:
+                    desc += f" (Claimed by @{rep[1]})"
+                else:
+                    desc += " (Unclaimed)"
+                options2.append(discord.SelectOption(
+                    label=player[:100],
+                    value=player,
+                    description=desc[:100]
+                ))
             select2 = discord.ui.Select(
                 placeholder="More players (26-50)",
                 min_values=0,
                 max_values=11,
-                options=[
-                    discord.SelectOption(
-                        label=player[:100],
-                        value=player,
-                        description=f"{'🇮🇳 India' if player in india_players else '🇳🇿 NZ'}"[:100]
-                    )
-                    for player in all_players[25:50]
-                ]
+                options=options2
             )
             select2.callback = self.player_select_callback
             self.add_item(select2)
     
     async def player_select_callback(self, interaction: discord.Interaction):
-        selected = interaction.data['values']
+        # We need to aggregate selections from all select menus in the view
+        all_selected = []
+        for child in self.children:
+            if isinstance(child, discord.ui.Select):
+                if child.values:
+                    all_selected.extend(child.values)
         
-        # Replace old selection with new
-        self.selected_players = selected
+        # Ensure uniqueness if they select from multiple menus
+        self.selected_players = list(dict.fromkeys(all_selected))
+        
+        if len(self.selected_players) > 11:
+            await interaction.response.send_message("❌ You can only select up to 11 players!", ephemeral=True)
+            return
+
+        # If they selected 11, we can auto-complete, but let's allow them to confirm manually if they want fewer
+        # The create_fantasy11 logic checks for != 11, I should relax that too or keep it for the "exactly 11" if that's implied.
+        # User said "only 11 players max", implying 1-11 is fine.
+        
+        content = f"**Selecting Fantasy 11** ({len(self.selected_players)}/11)\n\n" + \
+                  "\n".join([f"{i+1}. {p}" for i, p in enumerate(self.selected_players)])
         
         if len(self.selected_players) == 11:
-            self.selection_complete = True
-            for child in self.children:
-                child.disabled = True
-            
-            await interaction.response.edit_message(
-                content=f"✅ **Team Selected!** (11/11 players)\n\n" + 
-                        "\n".join([f"{i+1}. {p}" for i, p in enumerate(self.selected_players)]) +
-                        "\n\n**Proceed to confirm your team.**",
-                view=self
-            )
+            content += "\n\n✅ **Max team size reached!** Proceed to confirm."
         else:
-            await interaction.response.edit_message(
-                content=f"**Selecting Fantasy 11** ({len(self.selected_players)}/11)\n\n" +
-                        "\n".join([f"{i+1}. {p}" for i, p in enumerate(self.selected_players)]) +
-                        f"\n\n⚠️ Select exactly 11 players!",
-                view=self
-            )
+            content += f"\n\n⚠️ You can select up to {11 - len(self.selected_players)} more players."
+
+        await interaction.response.edit_message(content=content, view=self)
+
+    @discord.ui.button(label="Finish Selection", style=discord.ButtonStyle.primary, row=2)
+    async def finish_selection(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.selected_players:
+            await interaction.response.send_message("❌ Please select at least one player!", ephemeral=True)
+            return
+        
+        self.selection_complete = True
+        self.stop()
+        await interaction.response.edit_message(content=f"✅ **Selection Finished!** ({len(self.selected_players)} players)", view=None)
 
 
 class ConfirmationView(discord.ui.View):
@@ -171,7 +198,7 @@ async def create_fantasy11(interaction: discord.Interaction):
     
     await interaction.followup.send(
         "**🏏 Create Your Fantasy 11 Team**\n\n"
-        "Select **exactly 11 players** from India 🇮🇳 and New Zealand 🇳🇿.\n"
+        "Select **up to 11 players** from India 🇮🇳 and New Zealand 🇳🇿.\n"
         "⚠️ You can only create ONE team and CANNOT edit it!\n\n"
         f"**Available:** {len(india_players)} India, {len(nz_players)} NZ players",
         view=view,
@@ -180,7 +207,7 @@ async def create_fantasy11(interaction: discord.Interaction):
     
     await view.wait()
     
-    if not view.selection_complete or len(view.selected_players) != 11:
+    if not view.selection_complete or not view.selected_players:
         await interaction.followup.send("❌ Team creation cancelled or incomplete.", ephemeral=True)
         return
     
@@ -188,7 +215,7 @@ async def create_fantasy11(interaction: discord.Interaction):
     nz_count = sum(1 for p in view.selected_players if p in nz_players)
     
     confirm_embed = discord.Embed(
-        title="🏆 Confirm Your Fantasy 11 Team",
+        title="🏆 Confirm Your Fantasy Team",
         description="**⚠️ Once confirmed, you CANNOT edit or create a new team!**",
         color=0xFFD700
     )
