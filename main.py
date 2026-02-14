@@ -48,6 +48,7 @@ bot = commands.Bot(
 async def on_ready():
     global elite_players
     init_db()
+    init_fantasy_db()  # ADD THIS LINE
     init_nicknames_db()  # ADD THIS LINE
     elite_players = load_elite_players()
     # Load the stats cog
@@ -126,6 +127,28 @@ def init_db():
     conn.commit()
     conn.close()
 
+def init_fantasy_db():
+    """Initialize fantasy cricket database tables"""
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS fantasy_teams
+                 (user_id INTEGER PRIMARY KEY,
+                  team_data TEXT,
+                  total_points INTEGER DEFAULT 0,
+                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS fantasy_points_log
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  user_id INTEGER,
+                  player_name TEXT,
+                  match_id INTEGER,
+                  points_earned INTEGER,
+                  timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    
+    conn.commit()
+    conn.close()
+
 def init_nicknames_db():
     conn = sqlite3.connect('players.db')
     c = conn.cursor()
@@ -156,6 +179,67 @@ def load_players():
     except FileNotFoundError:
         print("❌ players.json file not found!")
         return []
+
+def get_india_nz_players():
+    """Get all players from India and New Zealand teams"""
+    try:
+        with open('players.json', 'r', encoding='utf-8') as f:
+            teams_data = json.load(f)
+        
+        india_players = []
+        nz_players = []
+        
+        for team in teams_data:
+            if team['team'] == 'India':
+                india_players = [p['name'] for p in team['players']]
+            elif team['team'] == 'New Zealand':
+                nz_players = [p['name'] for p in team['players']]
+        
+        return india_players, nz_players
+    except:
+        return [], []
+
+def get_fantasy_team(user_id):
+    """Get user's fantasy team"""
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute("SELECT team_data, total_points FROM fantasy_teams WHERE user_id = ?", (user_id,))
+    result = c.fetchone()
+    conn.close()
+    
+    if result:
+        return json.loads(result[0]), result[1]
+    return None, 0
+
+def save_fantasy_team(user_id, team_data):
+    """Save user's fantasy team"""
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute("""INSERT OR REPLACE INTO fantasy_teams (user_id, team_data, total_points)
+                 VALUES (?, ?, COALESCE((SELECT total_points FROM fantasy_teams WHERE user_id = ?), 0))""",
+              (user_id, json.dumps(team_data), user_id))
+    conn.commit()
+    conn.close()
+
+def update_fantasy_points(user_id, points_to_add):
+    """Update fantasy team total points"""
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute("UPDATE fantasy_teams SET total_points = total_points + ? WHERE user_id = ?",
+              (points_to_add, user_id))
+    conn.commit()
+    conn.close()
+
+def get_fantasy_leaderboard():
+    """Get fantasy leaderboard data"""
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute("""SELECT user_id, total_points, team_data 
+                 FROM fantasy_teams 
+                 ORDER BY total_points DESC""")
+    results = c.fetchall()
+    conn.close()
+    return results
 
 # Get team color based on team name
 def get_team_color(team_name):
