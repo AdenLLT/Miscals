@@ -208,7 +208,7 @@ async def create_fantasy11(interaction: discord.Interaction):
     await view.wait()
     
     if not view.selection_complete or not view.selected_players:
-        await interaction.followup.send("❌ Team creation cancelled or incomplete.", ephemeral=True)
+        await interaction.followup.send("❌ **Team creation cancelled or incomplete.**", ephemeral=True)
         return
     
     india_count = sum(1 for p in view.selected_players if p in india_players)
@@ -238,7 +238,7 @@ async def create_fantasy11(interaction: discord.Interaction):
     await confirm_view.wait()
     
     if not confirm_view.confirmed:
-        await interaction.followup.send("❌ Team creation cancelled.", ephemeral=True)
+        await interaction.followup.send("❌ **Team creation cancelled.**", ephemeral=True)
         return
     
     team_data = {
@@ -283,7 +283,61 @@ async def create_fantasy11(interaction: discord.Interaction):
         
         await fantasy_channel.send(embed=team_embed)
 
-@bot.tree.command(name="sendmsg", description="Send a custom message in this channel")
+    @bot.command(name="fantasylb", aliases=["flb"], help="Fantasy Cricket leaderboard")
+    async def fantasy_leaderboard_command(self, ctx):
+        results = get_fantasy_leaderboard()
+        
+        if not results:
+            embed = discord.Embed(
+                title="📊 Fantasy Cricket Leaderboard",
+                description="❌ No fantasy teams yet! Use `/createfantasy11`",
+                color=discord.Color.red()
+            )
+            await ctx.send(embed=embed)
+            return
+
+        leaderboard_text = ""
+        for i, (user_id, points, _) in enumerate(results[:10]):
+            leaderboard_text += f"{i+1}. <@{user_id}>: **{points}** pts\n"
+
+        embed = discord.Embed(
+            title="📊 Fantasy Cricket Leaderboard",
+            description=f"✅ Current Standings:\n\n{leaderboard_text}",
+            color=discord.Color.gold()
+        )
+        await ctx.send(embed=embed)
+
+@bot.tree.command(name="myfantasy11", description="View your current Fantasy 11 team")
+async def myfantasy11(interaction: discord.Interaction):
+    user_id = interaction.user.id
+    team_data, points = get_fantasy_team(user_id)
+    
+    if not team_data:
+        await interaction.response.send_message("❌ You don't have a fantasy team yet! Use `/createfantasy11` to create one.", ephemeral=True)
+        return
+        
+    players = team_data.get('players', [])
+    india_count = team_data.get('india_count', 0)
+    nz_count = team_data.get('nz_count', 0)
+    
+    embed = discord.Embed(
+        title=f"🏆 {interaction.user.name}'s Fantasy 11",
+        description=f"✅ **Total Points:** {points}\n\n🇮🇳 India: {india_count} | 🇳🇿 NZ: {nz_count}",
+        color=0xFFD700
+    )
+    
+    india_players, nz_players = get_india_nz_players()
+    
+    india_in_team = [p for p in players if p in india_players]
+    nz_in_team = [p for p in players if p in nz_players]
+    
+    if india_in_team:
+        embed.add_field(name="🇮🇳 India Players", value="\n".join([f"• {p}" for p in india_in_team]), inline=True)
+    if nz_in_team:
+        embed.add_field(name="🇳🇿 NZ Players", value="\n".join([f"• {p}" for p in nz_in_team]), inline=True)
+        
+    embed.set_thumbnail(url=interaction.user.display_avatar.url)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 @app_commands.describe(
     message="The message content to send",
     image="Optional image to attach"
