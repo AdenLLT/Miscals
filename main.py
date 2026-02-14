@@ -59,6 +59,203 @@ async def on_ready():
     print(f'{bot.user} has connected to Discord!')
     print(f'Bot is ready! Prefix: .')
 
+class PlayerSelectionView(discord.ui.View):
+    def __init__(self, india_players, nz_players):
+        super().__init__(timeout=300)
+        self.selected_players = []
+        self.india_players = india_players
+        self.nz_players = nz_players
+        self.selection_complete = False
+        
+        all_players = india_players + nz_players
+        
+        # Create a single select with up to 11 selections
+        select = discord.ui.Select(
+            placeholder="Select your 11 players",
+            min_values=11,
+            max_values=11,
+            options=[
+                discord.SelectOption(
+                    label=player[:100],  # Discord limit
+                    value=player,
+                    description=f"{'🇮🇳 India' if player in india_players else '🇳🇿 NZ'}"[:100]
+                )
+                for player in all_players[:25]  # First 25 players (Discord limit)
+            ]
+        )
+        select.callback = self.player_select_callback
+        self.add_item(select)
+        
+        # If more than 25 players, add another select
+        if len(all_players) > 25:
+            select2 = discord.ui.Select(
+                placeholder="More players (26-50)",
+                min_values=0,
+                max_values=11,
+                options=[
+                    discord.SelectOption(
+                        label=player[:100],
+                        value=player,
+                        description=f"{'🇮🇳 India' if player in india_players else '🇳🇿 NZ'}"[:100]
+                    )
+                    for player in all_players[25:50]
+                ]
+            )
+            select2.callback = self.player_select_callback
+            self.add_item(select2)
+    
+    async def player_select_callback(self, interaction: discord.Interaction):
+        selected = interaction.data['values']
+        
+        # Replace old selection with new
+        self.selected_players = selected
+        
+        if len(self.selected_players) == 11:
+            self.selection_complete = True
+            for child in self.children:
+                child.disabled = True
+            
+            await interaction.response.edit_message(
+                content=f"✅ **Team Selected!** (11/11 players)\n\n" + 
+                        "\n".join([f"{i+1}. {p}" for i, p in enumerate(self.selected_players)]) +
+                        "\n\n**Proceed to confirm your team.**",
+                view=self
+            )
+        else:
+            await interaction.response.edit_message(
+                content=f"**Selecting Fantasy 11** ({len(self.selected_players)}/11)\n\n" +
+                        "\n".join([f"{i+1}. {p}" for i, p in enumerate(self.selected_players)]) +
+                        f"\n\n⚠️ Select exactly 11 players!",
+                view=self
+            )
+
+
+class ConfirmationView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=60)
+        self.confirmed = False
+    
+    @discord.ui.button(label="✅ Confirm Team", style=discord.ButtonStyle.success)
+    async def confirm_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.confirmed = True
+        self.stop()
+        await interaction.response.defer()
+    
+    @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.danger)
+    async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.confirmed = False
+        self.stop()
+        await interaction.response.defer()
+
+@bot.tree.command(name="createfantasy11", description="Create your Fantasy 11 from India & NZ players")
+async def create_fantasy11(interaction: discord.Interaction):
+    user_id = interaction.user.id
+    
+    existing_team, _ = get_fantasy_team(user_id)
+    if existing_team:
+        await interaction.response.send_message(
+            "❌ You already have a Fantasy 11 team! You can only create one team.",
+            ephemeral=True
+        )
+        return
+    
+    await interaction.response.defer(ephemeral=True)
+    
+    india_players, nz_players = get_india_nz_players()
+    
+    if not india_players or not nz_players:
+        await interaction.followup.send("❌ Could not load player data.", ephemeral=True)
+        return
+    
+    view = PlayerSelectionView(india_players, nz_players)
+    
+    await interaction.followup.send(
+        "**🏏 Create Your Fantasy 11 Team**\n\n"
+        "Select **exactly 11 players** from India 🇮🇳 and New Zealand 🇳🇿.\n"
+        "⚠️ You can only create ONE team and CANNOT edit it!\n\n"
+        f"**Available:** {len(india_players)} India, {len(nz_players)} NZ players",
+        view=view,
+        ephemeral=True
+    )
+    
+    await view.wait()
+    
+    if not view.selection_complete or len(view.selected_players) != 11:
+        await interaction.followup.send("❌ Team creation cancelled or incomplete.", ephemeral=True)
+        return
+    
+    india_count = sum(1 for p in view.selected_players if p in india_players)
+    nz_count = sum(1 for p in view.selected_players if p in nz_players)
+    
+    confirm_embed = discord.Embed(
+        title="🏆 Confirm Your Fantasy 11 Team",
+        description="**⚠️ Once confirmed, you CANNOT edit or create a new team!**",
+        color=0xFFD700
+    )
+    
+    players_list = "\n".join([
+        f"{i+1}. {'🇮🇳' if p in india_players else '🇳🇿'} {p}"
+        for i, p in enumerate(view.selected_players)
+    ])
+    
+    confirm_embed.add_field(name="Selected Players", value=players_list, inline=False)
+    confirm_embed.add_field(
+        name="Team Composition",
+        value=f"🇮🇳 India: **{india_count}**\n🇳🇿 New Zealand: **{nz_count}**",
+        inline=False
+    )
+    
+    confirm_view = ConfirmationView()
+    await interaction.followup.send(embed=confirm_embed, view=confirm_view, ephemeral=True)
+    
+    await confirm_view.wait()
+    
+    if not confirm_view.confirmed:
+        await interaction.followup.send("❌ Team creation cancelled.", ephemeral=True)
+        return
+    
+    team_data = {
+        'players': view.selected_players,
+        'india_count': india_count,
+        'nz_count': nz_count
+    }
+    
+    save_fantasy_team(user_id, team_data)
+    
+    await interaction.followup.send("✅ **Fantasy 11 created!** Check channel 1471951626058207292", ephemeral=True)
+    
+    # Post to channel
+    fantasy_channel = bot.get_channel(1471951626058207292)
+    
+    if fantasy_channel:
+        team_embed = discord.Embed(
+            title=f"🏆 {interaction.user.name}'s Fantasy 11 Team",
+            description=f"**Total Points:** 0\n\n🇮🇳 India: {india_count} | 🇳🇿 NZ: {nz_count}",
+            color=0xFFD700
+        )
+        
+        india_in_team = [p for p in view.selected_players if p in india_players]
+        nz_in_team = [p for p in view.selected_players if p in nz_players]
+        
+        if india_in_team:
+            team_embed.add_field(
+                name="🇮🇳 India Players",
+                value="\n".join([f"• {p}" for p in india_in_team]),
+                inline=True
+            )
+        
+        if nz_in_team:
+            team_embed.add_field(
+                name="🇳🇿 New Zealand Players",
+                value="\n".join([f"• {p}" for p in nz_in_team]),
+                inline=True
+            )
+        
+        team_embed.set_thumbnail(url=interaction.user.display_avatar.url)
+        team_embed.set_footer(text=f"Created by {interaction.user.name}")
+        
+        await fantasy_channel.send(embed=team_embed)
+
 @bot.tree.command(name="sendmsg", description="Send a custom message in this channel")
 @app_commands.describe(
     message="The message content to send",
