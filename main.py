@@ -283,37 +283,13 @@ async def create_fantasy11(interaction: discord.Interaction):
         
         await fantasy_channel.send(embed=team_embed)
 
-    @bot.command(name="fantasylb", aliases=["flb"], help="Fantasy Cricket leaderboard")
-    async def fantasy_leaderboard_command(self, ctx):
-        results = get_fantasy_leaderboard()
-        
-        if not results:
-            embed = discord.Embed(
-                title="📊 Fantasy Cricket Leaderboard",
-                description="❌ No fantasy teams yet! Use `/createfantasy11`",
-                color=discord.Color.red()
-            )
-            await ctx.send(embed=embed)
-            return
-
-        leaderboard_text = ""
-        for i, (user_id, points, _) in enumerate(results[:10]):
-            leaderboard_text += f"{i+1}. <@{user_id}>: **{points}** pts\n"
-
-        embed = discord.Embed(
-            title="📊 Fantasy Cricket Leaderboard",
-            description=f"✅ Current Standings:\n\n{leaderboard_text}",
-            color=discord.Color.gold()
-        )
-        await ctx.send(embed=embed)
-
 @bot.tree.command(name="myfantasy11", description="View your current Fantasy 11 team")
 async def myfantasy11(interaction: discord.Interaction):
     user_id = interaction.user.id
     team_data, points = get_fantasy_team(user_id)
     
     if not team_data:
-        await interaction.response.send_message("❌ You don't have a fantasy team yet! Use `/createfantasy11` to create one.", ephemeral=True)
+        await interaction.response.send_message("❌ **You don't have a fantasy team yet!** Use `/createfantasy11` to create one.", ephemeral=True)
         return
         
     players = team_data.get('players', [])
@@ -338,6 +314,30 @@ async def myfantasy11(interaction: discord.Interaction):
         
     embed.set_thumbnail(url=interaction.user.display_avatar.url)
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@bot.command(name="fantasylb", aliases=["flb"], help="Fantasy Cricket leaderboard")
+async def fantasy_leaderboard_command(ctx):
+    results = get_fantasy_leaderboard()
+    
+    if not results:
+        embed = discord.Embed(
+            title="📊 Fantasy Cricket Leaderboard",
+            description="❌ **No fantasy teams yet!** Use `/createfantasy11`",
+            color=discord.Color.red()
+        )
+        await ctx.send(embed=embed)
+        return
+
+    leaderboard_text = ""
+    for i, (user_id, points, _) in enumerate(results[:10]):
+        leaderboard_text += f"{i+1}. <@{user_id}>: **{points}** pts\n"
+
+    embed = discord.Embed(
+        title="📊 Fantasy Cricket Leaderboard",
+        description=f"✅ **Current Standings:**\n\n{leaderboard_text}",
+        color=discord.Color.gold()
+    )
+    await ctx.send(embed=embed)
 @app_commands.describe(
     message="The message content to send",
     image="Optional image to attach"
