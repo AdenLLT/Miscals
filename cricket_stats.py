@@ -251,39 +251,39 @@ def calculate_fantasy_points_for_match(matches, bot):
     c = conn.cursor()
     c.execute("SELECT user_id, team_data FROM fantasy_teams")
     fantasy_teams = c.fetchall()
-    
+
     player_impact_points = {}
-    
+
     for match in matches:
         user_id, runs, balls_faced, runs_conceded, balls_bowled, wickets, not_out = map(int, match)
-        
+
         player_name = get_player_name_by_user_id(user_id)
         if not player_name:
             continue
-        
+
         # Impact points formula: runs + (wickets * 20)
         impact_points = runs + (wickets * 20)
         player_impact_points[player_name] = impact_points
-    
+
     points_awarded = {}
-    
+
     for fantasy_user_id, team_data_json in fantasy_teams:
         team_data = json.loads(team_data_json)
         players_in_team = team_data['players']
-        
+
         total_points = 0
         for player_name, impact in player_impact_points.items():
             if player_name in players_in_team:
                 total_points += impact
-        
+
         if total_points > 0:
             points_awarded[fantasy_user_id] = total_points
             c.execute("UPDATE fantasy_teams SET total_points = total_points + ? WHERE user_id = ?",
                      (total_points, fantasy_user_id))
-    
+
     conn.commit()
     conn.close()
-    
+
     return points_awarded
 
 class FantasyLeaderboardView(discord.ui.View):
@@ -294,25 +294,25 @@ class FantasyLeaderboardView(discord.ui.View):
         self.items_per_page = items_per_page
         self.current_page = 0
         self.max_pages = max(1, (len(all_entries) + items_per_page - 1) // items_per_page)
-        
+
     def get_page_embed(self):
         start_idx = self.current_page * self.items_per_page
         end_idx = start_idx + self.items_per_page
         page_entries = self.all_entries[start_idx:end_idx]
-        
+
         embed = discord.Embed(
             title="🏆 Fantasy Cricket Leaderboard",
             description="**Top Fantasy 11 Teams**",
             color=0xFFD700
         )
-        
+
         leaderboard_text = ""
         for i, (user_id, total_points, team_data_json) in enumerate(page_entries, start=start_idx + 1):
             team_data = json.loads(team_data_json)
-            
+
             user = self.bot.get_user(user_id)
             username = user.name if user else f"User {user_id}"
-            
+
             medal = ""
             if i == 1:
                 medal = "🥇"
@@ -320,22 +320,22 @@ class FantasyLeaderboardView(discord.ui.View):
                 medal = "🥈"
             elif i == 3:
                 medal = "🥉"
-            
+
             player_count = len(team_data['players'])
-            
+
             leaderboard_text += f"{medal} **{i}.** {username}\n"
             leaderboard_text += f"    └ **{total_points}** pts • {player_count} players\n\n"
-        
+
         embed.add_field(
             name=f"Rankings ({start_idx + 1}-{min(end_idx, len(self.all_entries))})",
             value=leaderboard_text if leaderboard_text else "No teams yet!",
             inline=False
         )
-        
+
         embed.set_footer(text=f"Page {self.current_page + 1}/{self.max_pages}")
-        
+
         return embed
-    
+
     @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.gray)
     async def previous_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self.current_page > 0:
@@ -343,7 +343,7 @@ class FantasyLeaderboardView(discord.ui.View):
             await interaction.response.edit_message(embed=self.get_page_embed(), view=self)
         else:
             await interaction.response.send_message("First page!", ephemeral=True)
-    
+
     @discord.ui.button(label="▶️ Next", style=discord.ButtonStyle.gray)
     async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self.current_page < self.max_pages - 1:
@@ -1928,16 +1928,16 @@ class CricketStats(commands.Cog):
         # Calculate and award fantasy points
         try:
             fantasy_points = calculate_fantasy_points_for_match(matches, self.bot)
-            
+
             if fantasy_points:
                 fantasy_channel = self.bot.get_channel(1471951626058207292)
-                
+
                 if fantasy_channel:
                     fantasy_summary = "\n".join([
                         f"<@{uid}>: +{pts} fantasy pts" 
                         for uid, pts in fantasy_points.items()
                     ])
-                    
+
                     fantasy_embed = discord.Embed(
                         title="📊 Fantasy Points Awarded!",
                         description=f"**Match:** {team1} vs {team2}\n\n{fantasy_summary}",
