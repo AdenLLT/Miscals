@@ -23,6 +23,9 @@ def init_tournament_db():
                   name TEXT UNIQUE,
                   is_active INTEGER DEFAULT 1,
                   current_round INTEGER DEFAULT 0,
+                  is_archived INTEGER DEFAULT 0,
+                  winner TEXT,
+                  archived_at TIMESTAMP,
                   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
 
     # Participating teams
@@ -39,7 +42,7 @@ def init_tournament_db():
                   qualified INTEGER DEFAULT 0,
                   FOREIGN KEY (tournament_id) REFERENCES tournaments(id))''')
 
-    # Fixtures
+    # Fixtures (existing)
     c.execute('''CREATE TABLE IF NOT EXISTS fixtures
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   tournament_id INTEGER,
@@ -50,6 +53,16 @@ def init_tournament_db():
                   is_played INTEGER DEFAULT 0,
                   is_reserved INTEGER DEFAULT 0,
                   winner TEXT,
+                  FOREIGN KEY (tournament_id) REFERENCES tournaments(id))''')
+
+    # Trophy data for players
+    c.execute('''CREATE TABLE IF NOT EXISTS player_trophies
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  user_id INTEGER,
+                  tournament_id INTEGER,
+                  tournament_name TEXT,
+                  team_name TEXT,
+                  won_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                   FOREIGN KEY (tournament_id) REFERENCES tournaments(id))''')
 
     conn.commit()
@@ -1101,11 +1114,11 @@ class RoundFixturesView(View):
 
 
 def get_active_tournament():
-    """Get the currently active tournament"""
+    """Get the currently active tournament (not archived)"""
     conn = sqlite3.connect('players.db')
     c = conn.cursor()
     c.execute(
-        "SELECT id, name, current_round FROM tournaments WHERE is_active = 1 LIMIT 1"
+        "SELECT id, name, current_round FROM tournaments WHERE is_active = 1 AND is_archived = 0 LIMIT 1"
     )
     result = c.fetchone()
     conn.close()
@@ -3776,8 +3789,275 @@ class Tournament(commands.Cog):
 
         await ctx.send(embed=embed)
 
+    @commands.command(name="archivetournament", aliases=["at"], help="[ADMIN] Archive the current tournament")
+    @commands.has_permissions(administrator=True)
+    async def archivetournament(self, ctx):
+        """Archive the current tournament and award trophies to winning team"""
+        tournament = get_active_tournament()
+        if not tournament:
+            await ctx.send("❌ No active tournament found!")
+            return
 
+        tournament_id, tournament_name, current_round = tournament
 
+        # Get all teams
+        conn = sqlite3.connect('players.db')
+        c = conn.cursor()
+        c.execute(
+            "SELECT team_name FROM tournament_teams WHERE tournament_id = ? ORDER BY team_name",
+            (tournament_id,))
+        all_teams = [row[0] for row in c.fetchall()]
+        conn.close()
 
+        if not all_teams:
+            await ctx.send("❌ No teams found in tournament!")
+            return
+
+        # Create team selection view
+        class WinnerSelectionView(View):
+            def __init__(self):
+                super().__init__(timeout=120)
+                self.selected_winner = None
+                self.add_team_select()
+
+            def add_team_select(self):
+                team_options = []
+                for team in all_teams[:25]:
+                    flag = get_team_flag(team)
+                    team_options.append(
+                        discord.SelectOption(
+                            label=team,
+                            value=team,
+                            emoji=flag
+                        )
+                    )
+
+                select = Select(
+                    placeholder="🏆 Select Tournament Winner",
+                    options=team_options,
+                    custom_id="winner_select"
+                )
+                select.callback = self.winner_callback
+                self.add_item(select)
+
+            async def winner_callback(self, interaction: discord.Interaction):
+                if interaction.user.id != ctx.author.id:
+                    await interaction.response.send_message("❌ This is not your menu!", ephemeral=True)
+                    return
+
+                self.selected_winner = interaction.data['values'][0]
+
+                # Confirm selection
+                flag = get_team_flag(self.selected_winner)
+                confirm_embed = discord.Embed(
+                    title="🏆 Confirm Tournament Winner",
+                    description=f"{flag} **{self.selected_winner}**\n\nThis will:\n"
+                                f"• Award trophies to all players of {self.selected_winner}\n"
+                                f"• Archive the tournament\n"
+                                f"• Make it viewable in -oldtournaments\n\n"
+                                f"**Continue?**",
+                    color=get_team_color(self.selected_winner)
+                )
+
+                confirm_view = View(timeout=60)
+
+                async def confirm_final(inter: discord.Interaction):
+                    if inter.user.id != ctx.author.id:
+                        await inter.response.send_message("❌ Only the command author can confirm!", ephemeral=True)
+                        return
+
+                    await inter.response.defer()
+
+                    # Archive the tournament
+                    conn = sqlite3.connect('players.db')
+                    c = conn.cursor()
+
+                    # Mark tournament as archived
+                    c.execute("""UPDATE tournaments 
+                                SET is_active = 0, is_archived = 1, winner = ?, archived_at = CURRENT_TIMESTAMP
+                                WHERE id = ?""",
+                              (self.selected_winner, tournament_id))
+
+                    # Get all players from winning team
+                    import json
+                    try:
+                        with open('players.json', 'r', encoding='utf-8') as f:
+                            teams_data = json.load(f)
+
+                        winning_players = []
+                        for team_data in teams_data:
+                            if team_data['team'] == self.selected_winner:
+                                winning_players = team_data['players']
+                                break
+
+                        # Award trophies to claimed players
+                        trophy_count = 0
+                        for player in winning_players:
+                            c.execute(
+                                "SELECT user_id FROM player_representatives WHERE player_name = ?",
+                                (player['name'],))
+                            result = c.fetchone()
+                            if result:
+                                user_id = result[0]
+                                c.execute("""INSERT INTO player_trophies 
+                                           (user_id, tournament_id, tournament_name, team_name)
+                                           VALUES (?, ?, ?, ?)""",
+                                          (user_id, tournament_id, tournament_name, self.selected_winner))
+                                trophy_count += 1
+
+                        conn.commit()
+                        conn.close()
+
+                        # Success message
+                        success_embed = discord.Embed(
+                            title="✅ Tournament Archived",
+                            description=f"**{tournament_name}**\n\n"
+                                        f"🏆 Winner: {flag} **{self.selected_winner}**\n"
+                                        f"🎖️ Trophies awarded: **{trophy_count}** players\n\n"
+                                        f"The tournament has been archived and can be viewed with `-oldtournaments`.",
+                            color=0xFFD700
+                        )
+
+                        for item in confirm_view.children:
+                            item.disabled = True
+
+                        await inter.message.edit(embed=success_embed, view=None)
+
+                    except Exception as e:
+                        await inter.followup.send(f"❌ Error archiving tournament: {e}", ephemeral=True)
+
+                async def cancel_final(inter: discord.Interaction):
+                    if inter.user.id != ctx.author.id:
+                        await inter.response.send_message("❌ Only the command author can cancel!", ephemeral=True)
+                        return
+
+                    await inter.response.edit_message(content="❌ Archiving cancelled.", embed=None, view=None)
+
+                confirm_btn = Button(label="✅ Confirm Archive", style=discord.ButtonStyle.success)
+                cancel_btn = Button(label="❌ Cancel", style=discord.ButtonStyle.secondary)
+
+                confirm_btn.callback = confirm_final
+                cancel_btn.callback = cancel_final
+
+                confirm_view.add_item(confirm_btn)
+                confirm_view.add_item(cancel_btn)
+
+                await interaction.response.edit_message(embed=confirm_embed, view=confirm_view)
+
+        # Send initial selection
+        embed = discord.Embed(
+            title="🏆 Archive Tournament",
+            description=f"**{tournament_name}**\n\nSelect the winning team:",
+            color=0xFFD700
+        )
+
+        view = WinnerSelectionView()
+        await ctx.send(embed=embed, view=view)
+
+    @commands.command(name="oldtournaments", aliases=["ot"], help="View archived tournaments")
+    async def oldtournaments(self, ctx):
+        """View all archived tournaments"""
+        conn = sqlite3.connect('players.db')
+        c = conn.cursor()
+        c.execute("""SELECT id, name, winner, archived_at 
+                    FROM tournaments 
+                    WHERE is_archived = 1 
+                    ORDER BY archived_at DESC""")
+        tournaments = c.fetchall()
+        conn.close()
+
+        if not tournaments:
+            await ctx.send("📚 No archived tournaments found!")
+            return
+
+        class TournamentSelectView(View):
+            def __init__(self):
+                super().__init__(timeout=180)
+                self.add_tournament_select()
+
+            def add_tournament_select(self):
+                tournament_options = []
+                for tid, name, winner, archived_at in tournaments[:25]:
+                    flag = get_team_flag(winner) if winner else "🏆"
+                    tournament_options.append(
+                        discord.SelectOption(
+                            label=name,
+                            value=str(tid),
+                            description=f"Winner: {winner}" if winner else "No winner recorded",
+                            emoji=flag
+                        )
+                    )
+
+                select = Select(
+                    placeholder="📚 Select a tournament to view",
+                    options=tournament_options,
+                    custom_id="tournament_select"
+                )
+                select.callback = self.tournament_callback
+                self.add_item(select)
+
+            async def tournament_callback(self, interaction: discord.Interaction):
+                if interaction.user.id != ctx.author.id:
+                    await interaction.response.send_message("❌ This is not your menu!", ephemeral=True)
+                    return
+
+                await interaction.response.defer()
+
+                selected_tid = int(interaction.data['values'][0])
+
+                # Get tournament data
+                conn = sqlite3.connect('players.db')
+                c = conn.cursor()
+
+                c.execute("SELECT name, winner, archived_at FROM tournaments WHERE id = ?", (selected_tid,))
+                t_data = c.fetchone()
+                t_name, t_winner, t_archived = t_data
+
+                # Get team standings
+                c.execute("PRAGMA table_info(tournament_teams)")
+                columns = [column[1] for column in c.fetchall()]
+
+                if 'qualified' in columns:
+                    c.execute("""SELECT team_name, points, matches_played, wins, losses, nrr, fpp, qualified
+                                FROM tournament_teams 
+                                WHERE tournament_id = ?
+                                ORDER BY points DESC, nrr DESC""", (selected_tid,))
+                else:
+                    c.execute("""SELECT team_name, points, matches_played, wins, losses, nrr, fpp, 0
+                                FROM tournament_teams 
+                                WHERE tournament_id = ?
+                                ORDER BY points DESC, nrr DESC""", (selected_tid,))
+
+                teams = c.fetchall()
+                conn.close()
+
+                # Create points table image
+                table_image = await create_points_table_image(t_name, teams)
+
+                if table_image:
+                    file = discord.File(table_image, filename="archived_points_table.png")
+                    embed = discord.Embed(
+                        title=f"📚 {t_name} (Archived)",
+                        description=f"🏆 Winner: {get_team_flag(t_winner)} **{t_winner}**" if t_winner else "No winner recorded",
+                        color=0xFFD700
+                    )
+                    embed.set_image(url="attachment://archived_points_table.png")
+                    embed.set_footer(text=f"Archived on {t_archived.split()[0] if t_archived else 'Unknown'}")
+
+                    await interaction.followup.send(embed=embed, file=file)
+                else:
+                    await interaction.followup.send("❌ Failed to create points table!", ephemeral=True)
+
+        # Send tournament list
+        embed = discord.Embed(
+            title="📚 Archived Tournaments",
+            description=f"**{len(tournaments)}** archived tournament(s)\n\nSelect a tournament to view its final standings:",
+            color=0x0066CC
+        )
+
+        view = TournamentSelectView()
+        await ctx.send(embed=embed, view=view)
+
+    
 async def setup(bot):
     await bot.add_cog(Tournament(bot))

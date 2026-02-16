@@ -4920,7 +4920,7 @@ async def commentate(interaction: discord.Interaction, text: str):
 
     # Create embed
     embed = discord.Embed(
-        title="Live",
+        title="LIVE MATCH",
         description=f'*"{text}"*',
         color=discord.Color.blue()
     )
@@ -4945,7 +4945,14 @@ async def commentate(interaction: discord.Interaction, text: str):
     await interaction.response.send_message("✅ Commentary posted!", ephemeral=True)
 
     # Send the embed to the channel
-    await interaction.channel.send(embed=embed)
+    message = await interaction.channel.send(embed=embed)
+
+    # Add reaction emojis
+    await message.add_reaction("🔥")
+    await message.add_reaction("😭")
+    await message.add_reaction("🤯")
+    await message.add_reaction("👍")
+    await message.add_reaction("🥱")
 
 @assign_commentator.error
 async def assign_commentator_error(ctx, error):

@@ -161,7 +161,17 @@ def get_leaderboard_data(stat_type):
     elif stat_type == "impact_points":
         c.execute("""
             SELECT user_id, 
-                   SUM(runs + (wickets * 20)) as total_impact
+                   SUM(
+                       runs + (wickets * 7) +
+                       CASE WHEN wickets >= 5 THEN 70
+                            WHEN wickets >= 3 THEN 40
+                            ELSE 0 END +
+                       CASE WHEN runs >= 100 THEN 100
+                            WHEN runs >= 50 THEN 65
+                            ELSE 0 END +
+                       CASE WHEN balls_faced >= 12 AND (CAST(runs AS FLOAT) / balls_faced * 100) >= 150 THEN 35
+                            ELSE 0 END
+                   ) as total_impact
             FROM match_stats
             GROUP BY user_id
             ORDER BY total_impact DESC
@@ -208,6 +218,7 @@ def get_leaderboard_data(stat_type):
     results = c.fetchall()
     conn.close()
     return results
+
 
 def get_player_name_by_user_id(user_id):
     conn = sqlite3.connect('players.db')
@@ -1092,15 +1103,16 @@ async def create_top5_graphic(stat_type, data, guild, bot):
 
 # ========== VIEW CLASSES ==========
 
-# Personal Stats View
 class PersonalStatsView(View):
-    def __init__(self, ctx, user_id):
+    def __init__(self, ctx, user_id, bot):
         super().__init__(timeout=180)
         self.ctx = ctx
         self.user_id = user_id
+        self.bot = bot
         self.message = None
+        self.current_page = "overview"
 
-    async def create_stats_embed(self, stat_type):
+    async def create_stats_embed(self):
         stats = get_user_stats(self.user_id)
         if not stats or stats[0] is None:
             embed = discord.Embed(title="📊 Statistics", description="No match data available yet!", color=0xFF0000)
@@ -1110,7 +1122,7 @@ class PersonalStatsView(View):
         member = self.ctx.guild.get_member(self.user_id)
         player_name = get_player_name_by_user_id(self.user_id)
         team_name = get_user_team(self.user_id)
-        color = get_team_color(team_name) if team_name else 0x0066CC
+        color = get_team_color(team_name) if team_name else 0x0066FF
         player_data = None
         if player_name:
             players, _ = find_player(player_name)
@@ -1133,10 +1145,8 @@ class PersonalStatsView(View):
 
         if player_data and player_data.get('image'):
             embed.set_thumbnail(url=player_data['image'])
-        if member and member.avatar:
-            embed.set_image(url=member.avatar.url)
 
-        # Show role and style
+        # Player Info
         if player_data:
             role_emoji = get_role_emoji(player_data['role'])
             role_text = f"{role_emoji} **{player_data['role']}**\n"
@@ -1151,7 +1161,7 @@ class PersonalStatsView(View):
         economy = (total_runs_conceded / (total_balls_bowled / 6)) if total_balls_bowled > 0 else 0
         bowl_avg = (total_runs_conceded / total_wickets) if total_wickets > 0 else 0
 
-        # Overall stats HORIZONTAL
+        # Overall stats
         overall_text = f"**Matches:** {matches_played}  •  **Innings:** {matches_played}  •  **Not Outs:** {times_not_out or 0}"
         embed.add_field(name="📈 Overall", value=overall_text, inline=False)
 
@@ -1164,12 +1174,91 @@ class PersonalStatsView(View):
                        f"**Economy:** {economy:.2f}  •  **Average:** {bowl_avg_str}")
         embed.add_field(name="🎳 Bowling", value=bowling_text, inline=True)
 
-        if member and member.avatar:
-            embed.set_footer(text="Nations Player 2025-2026", icon_url=member.avatar.url)
-        else:
-            embed.set_footer(text="Nations Player 2025-2026")
+        embed.set_footer(text="🌍 All-Time International Stats • Use button to view recent matches")
 
         return embed
+
+    async def create_recent_matches_embed(self):
+        conn = sqlite3.connect('players.db')
+        c = conn.cursor()
+
+        c.execute("""
+            SELECT runs, balls_faced, wickets, balls_bowled, runs_conceded, not_out, id
+            FROM match_stats
+            WHERE user_id = ?
+            ORDER BY id DESC
+            LIMIT 5
+        """, (self.user_id,))
+
+        recent = c.fetchall()
+        conn.close()
+
+        player_name = get_player_name_by_user_id(self.user_id)
+        member = self.ctx.guild.get_member(self.user_id)
+        team_name = get_user_team(self.user_id)
+        color = get_team_color(team_name) if team_name else 0x0066FF
+
+        embed = discord.Embed(
+            title=f"📊 Recent Match Performances",
+            description=f"**{player_name}** (@{member.name if member else 'Unknown'})",
+            color=color
+        )
+
+        if not recent:
+            embed.add_field(name="No Matches", value="No recent matches found.", inline=False)
+        else:
+            for idx, match in enumerate(recent, 1):
+                runs, balls_faced, wickets, balls_bowled, runs_conceded, not_out, match_id = match
+
+                # Batting
+                overs_bat = balls_faced // 6
+                balls_bat = balls_faced % 6
+                overs_bat_str = f"{overs_bat}.{balls_bat}" if balls_bat > 0 else str(overs_bat)
+
+                # Bowling
+                overs_bowl = balls_bowled // 6
+                balls_bowl = balls_bowled % 6
+                overs_bowl_str = f"{overs_bowl}.{balls_bowl}" if balls_bowl > 0 else str(overs_bowl)
+
+                match_text = f"🏏 **{runs}** ({overs_bat_str})"
+                if not_out:
+                    match_text += "*"
+                match_text += f" • 🎯 **{wickets}/{runs_conceded}** ({overs_bowl_str})"
+
+                embed.add_field(name=f"Match #{idx}", value=match_text, inline=False)
+
+        embed.set_footer(text="* = Not Out • Latest 5 matches shown")
+
+        return embed
+
+    @discord.ui.button(label="📊 Overview", style=discord.ButtonStyle.primary, row=0)
+    async def overview_button(self, interaction: discord.Interaction, button: Button):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("❌ This is not your menu!", ephemeral=True)
+            return
+
+        self.current_page = "overview"
+        embed = await self.create_stats_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="📅 Recent Matches", style=discord.ButtonStyle.success, row=0)
+    async def recent_button(self, interaction: discord.Interaction, button: Button):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("❌ This is not your menu!", ephemeral=True)
+            return
+
+        self.current_page = "recent"
+        embed = await self.create_recent_matches_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    async def on_timeout(self):
+        for child in self.children:
+            child.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except:
+                pass
 
 
 # Leaderboard View with pagination
@@ -2324,6 +2413,524 @@ class CricketStats(commands.Cog):
             f"🏏 **Match Scoreboard**\n🏆 **{winner} WON**\n📊 **{len(matches)} players**",
             file=file
         )
+
+    async def create_international_leaderboard_graphic(stat_type, data, guild, bot):
+        """Create beautiful international leaderboard with white/blue theme"""
+        width, height = 2400, 1400
+        img = Image.new('RGB', (width, height), (255, 255, 255))
+        draw = ImageDraw.Draw(img)
+
+        # Blue gradient background
+        for y in range(height):
+            ratio = y / height
+            r = int(240 + (0 - 240) * ratio)
+            g = int(248 + (102 - 248) * ratio)
+            b = int(255 + (204 - 255) * ratio)
+            draw.rectangle([(0, y), (width, y+1)], fill=(r, g, b))
+
+        # Load fonts
+        try:
+            title_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 90)
+            name_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 52)
+            username_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 50)
+            stats_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 60)
+        except:
+            title_font = ImageFont.load_default()
+            name_font = title_font
+            username_font = title_font
+            stats_font = title_font
+
+        # Title
+        titles = {
+            "runs": "🏏 INTERNATIONAL RUNS LEADERBOARD",
+            "wickets": "🎯 INTERNATIONAL WICKETS LEADERBOARD"
+        }
+        title_text = titles.get(stat_type, "LEADERBOARD")
+        title_bbox = draw.textbbox((0, 0), title_text, font=title_font)
+        title_width = title_bbox[2] - title_bbox[0]
+        draw.text(((width - title_width) / 2, 50), title_text, fill=(0, 102, 204), font=title_font)
+
+        # Player cards
+        card_width = 450
+        card_height = 850
+        spacing = 40
+        start_y = 250
+        total_width = (card_width * 5) + (spacing * 4)
+        start_x = (width - total_width) / 2
+
+        async with aiohttp.ClientSession() as session:
+            for idx, row in enumerate(data[:5]):
+                user_id = row[0]
+                player_name = get_player_name_by_user_id(user_id)
+                member = guild.get_member(user_id)
+
+                if not player_name or not member:
+                    continue
+
+                player_data, team_name = get_player_data(player_name)
+
+                card_x = int(start_x + (idx * (card_width + spacing)))
+                card_y = start_y
+
+                # Card with white/blue gradient
+                card = Image.new('RGBA', (card_width, card_height), (0, 0, 0, 0))
+                card_draw = ImageDraw.Draw(card)
+
+                for y in range(card_height):
+                    ratio = y / card_height
+                    alpha = int(250 - (50 * ratio))
+                    card_draw.rectangle([(0, y), (card_width, y+1)], fill=(255, 255, 255, alpha))
+
+                # Blue border
+                card_draw.rectangle([(0, 0), (card_width-1, card_height-1)], outline=(0, 102, 204, 255), width=5)
+
+                # Rank badge
+                rank_size = 90
+                rank_badge = Image.new('RGBA', (rank_size, rank_size), (0, 0, 0, 0))
+                rank_draw = ImageDraw.Draw(rank_badge)
+
+                medal_colors = [(255, 215, 0), (192, 192, 192), (205, 127, 50), (0, 102, 204), (0, 102, 204)]
+                rank_draw.ellipse([(0, 0), (rank_size, rank_size)], fill=medal_colors[idx] + (255,))
+
+                rank_text = str(idx + 1)
+                rank_bbox = rank_draw.textbbox((0, 0), rank_text, font=stats_font)
+                rank_text_width = rank_bbox[2] - rank_bbox[0]
+                rank_text_height = rank_bbox[3] - rank_bbox[1]
+                rank_draw.text(((rank_size - rank_text_width) / 2, (rank_size - rank_text_height) / 2 - 5), 
+                              rank_text, fill=(255, 255, 255, 255), font=stats_font)
+
+                card.paste(rank_badge, (15, 15), rank_badge)
+
+                # Flag
+                if team_name:
+                    flag_size = 90
+                    if team_name.lower() == "west indies":
+                        try:
+                            flag_img = Image.open("westindies.jpg").convert('RGBA')
+                            flag_img = flag_img.resize((flag_size, flag_size), Image.Resampling.LANCZOS)
+                            mask = Image.new('L', (flag_size, flag_size), 0)
+                            mask_draw = ImageDraw.Draw(mask)
+                            mask_draw.ellipse((0, 0, flag_size, flag_size), fill=255)
+                            circular_flag = Image.new('RGBA', (flag_size, flag_size), (0, 0, 0, 0))
+                            circular_flag.paste(flag_img, (0, 0), mask)
+                            flag_x = card_width - flag_size - 15
+                            flag_y = 15
+                            card.paste(circular_flag, (flag_x, flag_y), circular_flag)
+                        except:
+                            pass
+                    else:
+                        flag_url = get_team_flag_url(team_name)
+                        if flag_url:
+                            try:
+                                async with session.get(flag_url) as resp:
+                                    if resp.status == 200:
+                                        flag_data = await resp.read()
+                                        flag_img = Image.open(io.BytesIO(flag_data)).convert('RGBA')
+                                        flag_img = flag_img.resize((flag_size, flag_size), Image.Resampling.LANCZOS)
+                                        mask = Image.new('L', (flag_size, flag_size), 0)
+                                        mask_draw = ImageDraw.Draw(mask)
+                                        mask_draw.ellipse((0, 0, flag_size, flag_size), fill=255)
+                                        circular_flag = Image.new('RGBA', (flag_size, flag_size), (0, 0, 0, 0))
+                                        circular_flag.paste(flag_img, (0, 0), mask)
+                                        flag_x = card_width - flag_size - 15
+                                        flag_y = 15
+                                        card.paste(circular_flag, (flag_x, flag_y), circular_flag)
+                            except:
+                                pass
+
+                # Player image
+                if player_data and player_data.get('image'):
+                    try:
+                        async with session.get(player_data['image']) as resp:
+                            if resp.status == 200:
+                                img_data = await resp.read()
+                                player_img = Image.open(io.BytesIO(img_data)).convert('RGBA')
+                                player_img = player_img.resize((380, 380), Image.Resampling.LANCZOS)
+                                card.paste(player_img, (35, 130), player_img)
+                    except:
+                        pass
+
+                # Player name
+                name_y = 530
+                name_font_size = 52
+                max_name_width = card_width - 40
+
+                while name_font_size > 28:
+                    try:
+                        test_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", name_font_size)
+                    except:
+                        test_font = ImageFont.load_default()
+
+                    name_bbox = card_draw.textbbox((0, 0), player_name, font=test_font)
+                    name_width = name_bbox[2] - name_bbox[0]
+
+                    if name_width <= max_name_width:
+                        break
+                    name_font_size -= 2
+
+                try:
+                    fitted_name_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", name_font_size)
+                except:
+                    fitted_name_font = ImageFont.load_default()
+
+                name_bbox = card_draw.textbbox((0, 0), player_name, font=fitted_name_font)
+                name_width = name_bbox[2] - name_bbox[0]
+                card_draw.text(((card_width - name_width) / 2, name_y), player_name, fill=(0, 0, 0, 255), font=fitted_name_font)
+
+                # Username
+                username_text = f"@{member.name}"
+                username_y = 650
+                username_bbox = card_draw.textbbox((0, 0), username_text, font=username_font)
+                username_width = username_bbox[2] - username_bbox[0]
+                card_draw.text(((card_width - username_width) / 2, username_y), username_text, fill=(100, 100, 100, 255), font=username_font)
+
+                # Stats
+                if stat_type == "runs":
+                    stat_text = f"{row[1]} RUNS"
+                else:
+                    stat_text = f"{row[1]} WICKETS"
+
+                stat_y = 750
+                stat_bbox = card_draw.textbbox((0, 0), stat_text, font=stats_font)
+                stat_width = stat_bbox[2] - stat_bbox[0]
+                card_draw.text(((card_width - stat_width) / 2, stat_y), stat_text, fill=(0, 102, 204, 255), font=stats_font)
+
+                img.paste(card, (card_x, card_y), card)
+
+        output = io.BytesIO()
+        img.save(output, format='PNG', quality=95)
+        output.seek(0)
+        return output
+
+        output = io.BytesIO()
+        img.save(output, format='PNG', quality=95)
+        output.seek(0)
+        return output
+
+    @commands.command(name="lbi", aliases=["internationallb"], help="View international (all-time) leaderboard")
+    async def lbi(self, ctx):
+        view = InternationalLeaderboardView(ctx, "runs", self.bot)
+        embed, graphic = await view.create_leaderboard_embed(0)
+
+        if graphic:
+            file = discord.File(graphic, filename="international_top5.png")
+            view.message = await ctx.send(embed=embed, file=file, view=view)
+        else:
+            view.message = await ctx.send(embed=embed, view=view)
+
+        view.update_buttons()
+class InternationalLeaderboardView(View):
+    def __init__(self, ctx, stat_type, bot):
+        super().__init__(timeout=180)
+        self.ctx = ctx
+        self.stat_type = stat_type
+        self.bot = bot
+        self.current_page = 0
+        self.message = None
+
+    async def get_international_data(self, stat_type):
+        conn = sqlite3.connect('players.db')
+        c = conn.cursor()
+
+        if stat_type == "runs":
+            c.execute("""
+                SELECT user_id, SUM(runs) as total, SUM(balls_faced) as balls
+                FROM match_stats
+                GROUP BY user_id
+                HAVING total > 0
+                ORDER BY total DESC
+                LIMIT 100
+            """)
+        elif stat_type == "wickets":
+            c.execute("""
+                SELECT user_id, SUM(wickets) as total, SUM(balls_bowled) as balls
+                FROM match_stats
+                GROUP BY user_id
+                HAVING total > 0
+                ORDER BY total DESC
+                LIMIT 100
+            """)
+
+        results = c.fetchall()
+        conn.close()
+        return results
+
+    async def create_leaderboard_embed(self, page=0):
+        titles = {
+            "runs": "🏏 International Runs Leaderboard",
+            "wickets": "🎯 International Wickets Leaderboard"
+        }
+
+        data = await self.get_international_data(self.stat_type)
+
+        if not data:
+            embed = discord.Embed(
+                title=titles[self.stat_type],
+                description="No data available yet.",
+                color=0x0066FF
+            )
+            return embed, None
+
+        players_per_page = 10
+
+        if page == 0:
+            # Graphic page
+            embed = discord.Embed(
+                title=titles[self.stat_type],
+                description="🌍 **Top 5 International Performers** 🌍",
+                color=0x0066FF
+            )
+            embed.set_image(url="attachment://international_top5.png")
+
+            total_pages = ((len(data) - 1) // players_per_page) + 2
+            embed.set_footer(text=f"Page 1 of {total_pages} • All-Time Career Stats")
+
+            graphic = await create_international_leaderboard_graphic(self.stat_type, data, self.ctx.guild, self.bot)
+            return embed, graphic
+        else:
+            # Text pages
+            text_page = page - 1
+            start_idx = text_page * players_per_page
+            end_idx = start_idx + players_per_page
+            page_data = data[start_idx:end_idx]
+
+            embed = discord.Embed(
+                title=titles[self.stat_type],
+                color=0x0066FF
+            )
+
+            description = ""
+            for idx, row in enumerate(page_data, start=start_idx + 1):
+                user_id = row[0]
+                player_name = get_player_name_by_user_id(user_id)
+                member = self.ctx.guild.get_member(user_id)
+                username = member.name if member else "Unknown"
+
+                team_name = get_user_team(user_id)
+                flag = get_team_flag(team_name) if team_name else ""
+                emoji = get_player_emoji(player_name, self.bot) if player_name else "👤"
+
+                player_display = f"{flag} {emoji} **{player_name}** (@{username})" if player_name else f"@{username}"
+
+                # Medals for top 3
+                if idx == 1:
+                    rank = "🥇"
+                elif idx == 2:
+                    rank = "🥈"
+                elif idx == 3:
+                    rank = "🥉"
+                else:
+                    rank = f"**{idx}.**"
+
+                if self.stat_type == "runs":
+                    balls = int(row[2])
+                    overs = balls // 6
+                    remaining_balls = balls % 6
+                    overs_str = f"{overs}.{remaining_balls}" if remaining_balls > 0 else str(overs)
+                    line = f"{rank} {player_display}\n    └ {row[1]} runs ({overs_str} overs)\n\n"
+                else:
+                    balls = int(row[2])
+                    overs = balls // 6
+                    remaining_balls = balls % 6
+                    overs_str = f"{overs}.{remaining_balls}" if remaining_balls > 0 else str(overs)
+                    line = f"{rank} {player_display}\n    └ {row[1]} wickets ({overs_str} overs)\n\n"
+
+                description += line
+
+            embed.description = description
+
+            total_pages = ((len(data) - 1) // players_per_page) + 2
+            embed.set_footer(text=f"Page {page + 1} of {total_pages} • All-Time Career Stats")
+            return embed, None
+
+    def update_buttons(self):
+        # Placeholder for button logic
+        pass
+
+    @discord.ui.button(label="🏏 Runs", style=discord.ButtonStyle.primary, row=0)
+    async def runs_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("❌ This is not your menu!", ephemeral=True)
+            return
+
+        self.stat_type = "runs"
+        self.current_page = 0
+
+        embed, graphic = await self.create_leaderboard_embed(0)
+        self.update_buttons()
+
+        if graphic:
+            file = discord.File(graphic, filename="international_top5.png")
+            await interaction.response.edit_message(embed=embed, attachments=[file], view=self)
+        else:
+            await interaction.response.edit_message(embed=embed, attachments=[], view=self)
+
+    @discord.ui.button(label="🎯 Wickets", style=discord.ButtonStyle.primary, row=0)
+    async def wickets_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("❌ This is not your menu!", ephemeral=True)
+            return
+
+        self.stat_type = "wickets"
+        self.current_page = 0
+
+        embed, graphic = await self.create_leaderboard_embed(0)
+        self.update_buttons()
+
+        if graphic:
+            file = discord.File(graphic, filename="international_top5.png")
+            await interaction.response.edit_message(embed=embed, attachments=[file], view=self)
+        else:
+            await interaction.response.edit_message(embed=embed, attachments=[], view=self)
+
+    @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.secondary, row=0)
+    async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("❌ This is not your menu!", ephemeral=True)
+            return
+
+        if self.current_page > 0:
+            self.current_page -= 1
+
+        embed, graphic = await self.create_leaderboard_embed(self.current_page)
+        self.update_buttons()
+
+        if graphic:
+            file = discord.File(graphic, filename="international_top5.png")
+            await interaction.response.edit_message(embed=embed, attachments=[file], view=self)
+        else:
+            await interaction.response.edit_message(embed=embed, attachments=[], view=self)
+
+    @discord.ui.button(label="Next ➡️", style=discord.ButtonStyle.secondary, row=0)
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("❌ This is not your menu!", ephemeral=True)
+            return
+
+        self.current_page += 1
+
+        embed, graphic = await self.create_leaderboard_embed(self.current_page)
+        self.update_buttons()
+
+        if graphic:
+            file = discord.File(graphic, filename="international_top5.png")
+            await interaction.response.edit_message(embed=embed, attachments=[file], view=self)
+        else:
+            await interaction.response.edit_message(embed=embed, attachments=[], view=self)
+
+    async def on_timeout(self):
+        for child in self.children:
+            child.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except:
+                pass
+
+        def update_buttons(self):
+            # We can't easily run async in a sync method here without complex logic, 
+            # but since we just need total_pages, we can assume it's calculated or passed.
+            # However, for simplicity and to avoid NameError, let's keep it similar but un-nested.
+            pass
+
+        @discord.ui.button(label="🏏 Runs", style=discord.ButtonStyle.primary, row=0)
+        async def runs_button(self, interaction: discord.Interaction, button: Button):
+            if interaction.user.id != self.ctx.author.id:
+                await interaction.response.send_message("❌ This is not your menu!", ephemeral=True)
+                return
+
+            self.stat_type = "runs"
+            self.current_page = 0
+
+            embed, graphic = await self.create_leaderboard_embed(0)
+            self.update_buttons()
+
+            if graphic:
+                file = discord.File(graphic, filename="international_top5.png")
+                await interaction.response.edit_message(embed=embed, attachments=[file], view=self)
+            else:
+                await interaction.response.edit_message(embed=embed, attachments=[], view=self)
+
+        @discord.ui.button(label="🎯 Wickets", style=discord.ButtonStyle.primary, row=0)
+        async def wickets_button(self, interaction: discord.Interaction, button: Button):
+            if interaction.user.id != self.ctx.author.id:
+                await interaction.response.send_message("❌ This is not your menu!", ephemeral=True)
+                return
+
+            self.stat_type = "wickets"
+            self.current_page = 0
+
+            embed, graphic = await self.create_leaderboard_embed(0)
+            self.update_buttons()
+
+            if graphic:
+                file = discord.File(graphic, filename="international_top5.png")
+                await interaction.response.edit_message(embed=embed, attachments=[file], view=self)
+            else:
+                await interaction.response.edit_message(embed=embed, attachments=[], view=self)
+
+        @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.secondary, row=0)
+        async def prev_button(self, interaction: discord.Interaction, button: Button):
+            if interaction.user.id != self.ctx.author.id:
+                await interaction.response.send_message("❌ This is not your menu!", ephemeral=True)
+                return
+
+            if self.current_page > 0:
+                self.current_page -= 1
+
+            embed, graphic = await self.create_leaderboard_embed(self.current_page)
+            self.update_buttons()
+
+            if graphic:
+                file = discord.File(graphic, filename="international_top5.png")
+                await interaction.response.edit_message(embed=embed, attachments=[file], view=self)
+            else:
+                await interaction.response.edit_message(embed=embed, attachments=[], view=self)
+
+        @discord.ui.button(label="Next ➡️", style=discord.ButtonStyle.secondary, row=0)
+        async def next_button(self, interaction: discord.Interaction, button: Button):
+            if interaction.user.id != self.ctx.author.id:
+                await interaction.response.send_message("❌ This is not your menu!", ephemeral=True)
+                return
+
+            self.current_page += 1
+
+            embed, graphic = await self.create_leaderboard_embed(self.current_page)
+            self.update_buttons()
+
+            if graphic:
+                file = discord.File(graphic, filename="international_top5.png")
+                await interaction.response.edit_message(embed=embed, attachments=[file], view=self)
+            else:
+                await interaction.response.edit_message(embed=embed, attachments=[], view=self)
+
+        async def on_timeout(self):
+            for child in self.children:
+                child.disabled = True
+            if self.message:
+                try:
+                    await self.message.edit(view=self)
+                except:
+                    pass
+
+    @commands.command(name="statsi", aliases=["internationalstats"], help="View your international (all-time) stats")
+    async def statsi(self, ctx, member: discord.Member = None):
+        if not member:
+            member = ctx.author
+
+        player_name = get_player_name_by_user_id(member.id)
+        if not player_name:
+            await ctx.send(f"❌ {'You have' if member == ctx.author else f'{member.name} has'} not claimed a player!")
+            return
+
+        stats = get_user_stats(member.id)
+        if not stats or stats[0] is None:
+            await ctx.send(f"❌ No international stats found for {player_name}!")
+            return
+
+        view = PersonalStatsView(ctx, member.id, self.bot)
+        embed = await view.create_stats_embed()
+        view.message = await ctx.send(embed=embed, view=view)
 
 async def setup(bot):
     await bot.add_cog(CricketStats(bot))
