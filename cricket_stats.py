@@ -1701,12 +1701,13 @@ class LeaderboardView(View):
             await interaction.response.send_message("❌ This is not your menu!", ephemeral=True)
             return
 
+        await interaction.response.defer()
         self.stat_type = "average"
         self.current_page = 0
 
         embed, _ = await self.create_leaderboard_embed(0)
         self.update_buttons()
-        await interaction.response.edit_message(embed=embed, attachments=[], view=self)
+        await interaction.followup.edit_message(message_id=interaction.message.id, embed=embed, attachments=[], view=self)
 
     @discord.ui.button(label="🎳 Bowl Average", style=discord.ButtonStyle.primary, row=1)
     async def bowl_avg_button(self, interaction: discord.Interaction, button: Button):
@@ -1714,12 +1715,13 @@ class LeaderboardView(View):
             await interaction.response.send_message("❌ This is not your menu!", ephemeral=True)
             return
 
+        await interaction.response.defer()
         self.stat_type = "bowling_average"
         self.current_page = 0
 
         embed, _ = await self.create_leaderboard_embed(0)
         self.update_buttons()
-        await interaction.response.edit_message(embed=embed, attachments=[], view=self)
+        await interaction.followup.edit_message(message_id=interaction.message.id, embed=embed, attachments=[], view=self)
 
     @discord.ui.button(label="💯 Centuries", style=discord.ButtonStyle.primary, row=1)
     async def centuries_button(self, interaction: discord.Interaction, button: Button):
@@ -1727,12 +1729,13 @@ class LeaderboardView(View):
             await interaction.response.send_message("❌ This is not your menu!", ephemeral=True)
             return
 
+        await interaction.response.defer()
         self.stat_type = "centuries"
         self.current_page = 0
 
         embed, _ = await self.create_leaderboard_embed(0)
         self.update_buttons()
-        await interaction.response.edit_message(embed=embed, attachments=[], view=self)
+        await interaction.followup.edit_message(message_id=interaction.message.id, embed=embed, attachments=[], view=self)
 
     @discord.ui.button(label="5️⃣0️⃣ Fifties", style=discord.ButtonStyle.primary, row=1)
     async def fifties_button(self, interaction: discord.Interaction, button: Button):
@@ -1740,12 +1743,13 @@ class LeaderboardView(View):
             await interaction.response.send_message("❌ This is not your menu!", ephemeral=True)
             return
 
+        await interaction.response.defer()
         self.stat_type = "fifties"
         self.current_page = 0
 
         embed, _ = await self.create_leaderboard_embed(0)
         self.update_buttons()
-        await interaction.response.edit_message(embed=embed, attachments=[], view=self)
+        await interaction.followup.edit_message(message_id=interaction.message.id, embed=embed, attachments=[], view=self)
 
     @discord.ui.button(label="🔥 5-fers", style=discord.ButtonStyle.danger, row=2)
     async def five_wickets_button(self, interaction: discord.Interaction, button: Button):
@@ -1753,12 +1757,13 @@ class LeaderboardView(View):
             await interaction.response.send_message("❌ This is not your menu!", ephemeral=True)
             return
 
+        await interaction.response.defer()
         self.stat_type = "five_wickets"
         self.current_page = 0
 
         embed, _ = await self.create_leaderboard_embed(0)
         self.update_buttons()
-        await interaction.response.edit_message(embed=embed, attachments=[], view=self)
+        await interaction.followup.edit_message(message_id=interaction.message.id, embed=embed, attachments=[], view=self)
 
     @discord.ui.button(label="⭐ Impact", style=discord.ButtonStyle.danger, row=2)
     async def impact_button(self, interaction: discord.Interaction, button: Button):
@@ -1766,12 +1771,13 @@ class LeaderboardView(View):
             await interaction.response.send_message("❌ This is not your menu!", ephemeral=True)
             return
 
+        await interaction.response.defer()
         self.stat_type = "impact_points"
         self.current_page = 0
 
         embed, _ = await self.create_leaderboard_embed(0)
         self.update_buttons()
-        await interaction.response.edit_message(embed=embed, attachments=[], view=self)
+        await interaction.followup.edit_message(message_id=interaction.message.id, embed=embed, attachments=[], view=self)
 
     @discord.ui.button(label="🏆 High Score", style=discord.ButtonStyle.danger, row=2)
     async def highest_score_button(self, interaction: discord.Interaction, button: Button):
@@ -1779,12 +1785,13 @@ class LeaderboardView(View):
             await interaction.response.send_message("❌ This is not your menu!", ephemeral=True)
             return
 
+        await interaction.response.defer()
         self.stat_type = "highest_score"
         self.current_page = 0
 
         embed, _ = await self.create_leaderboard_embed(0)
         self.update_buttons()
-        await interaction.response.edit_message(embed=embed, attachments=[], view=self)
+        await interaction.followup.edit_message(message_id=interaction.message.id, embed=embed, attachments=[], view=self)
 
     @discord.ui.button(label="🎯 Best Bowl", style=discord.ButtonStyle.danger, row=2)
     async def best_bowling_button(self, interaction: discord.Interaction, button: Button):
@@ -1792,12 +1799,13 @@ class LeaderboardView(View):
             await interaction.response.send_message("❌ This is not your menu!", ephemeral=True)
             return
 
+        await interaction.response.defer()
         self.stat_type = "best_bowling"
         self.current_page = 0
 
         embed, _ = await self.create_leaderboard_embed(0)
         self.update_buttons()
-        await interaction.response.edit_message(embed=embed, attachments=[], view=self)
+        await interaction.followup.edit_message(message_id=interaction.message.id, embed=embed, attachments=[], view=self)
 
     @discord.ui.button(label="🦆 Ducks", style=discord.ButtonStyle.secondary, row=3)
     async def ducks_button(self, interaction: discord.Interaction, button: Button):
@@ -1805,12 +1813,13 @@ class LeaderboardView(View):
             await interaction.response.send_message("❌ This is not your menu!", ephemeral=True)
             return
 
+        await interaction.response.defer()
         self.stat_type = "ducks"
         self.current_page = 0
 
         embed, _ = await self.create_leaderboard_embed(0)
         self.update_buttons()
-        await interaction.response.edit_message(embed=embed, attachments=[], view=self)
+        await interaction.followup.edit_message(message_id=interaction.message.id, embed=embed, attachments=[], view=self)
 
     @discord.ui.button(label="💸 Runs Conceded", style=discord.ButtonStyle.secondary, row=3)
     async def runs_conceded_button(self, interaction: discord.Interaction, button: Button):
@@ -1818,12 +1827,13 @@ class LeaderboardView(View):
             await interaction.response.send_message("❌ This is not your menu!", ephemeral=True)
             return
 
+        await interaction.response.defer()
         self.stat_type = "most_runs_conceded"
         self.current_page = 0
 
         embed, _ = await self.create_leaderboard_embed(0)
         self.update_buttons()
-        await interaction.response.edit_message(embed=embed, attachments=[], view=self)
+        await interaction.followup.edit_message(message_id=interaction.message.id, embed=embed, attachments=[], view=self)
 
     @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.secondary, row=3)
     async def prev_button(self, interaction: discord.Interaction, button: Button):
