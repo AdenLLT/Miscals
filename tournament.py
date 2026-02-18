@@ -28,6 +28,25 @@ def init_tournament_db():
                   archived_at TIMESTAMP,
                   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
 
+    c.execute('''CREATE TABLE IF NOT EXISTS tournaments
+     (id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT UNIQUE,
+      is_active INTEGER DEFAULT 1,
+      current_round INTEGER DEFAULT 0,
+      is_archived INTEGER DEFAULT 0,
+      winner TEXT,
+      archived_at TIMESTAMP,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+
+    c.execute('''CREATE TABLE IF NOT EXISTS player_trophies
+     (id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER,
+      tournament_id INTEGER,
+      tournament_name TEXT,
+      team_name TEXT,
+      won_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (tournament_id) REFERENCES tournaments(id))''')
+
     # Participating teams
     c.execute('''CREATE TABLE IF NOT EXISTS tournament_teams
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -4014,20 +4033,10 @@ class Tournament(commands.Cog):
                 t_name, t_winner, t_archived = t_data
 
                 # Get team standings
-                c.execute("PRAGMA table_info(tournament_teams)")
-                columns = [column[1] for column in c.fetchall()]
-
-                if 'qualified' in columns:
-                    c.execute("""SELECT team_name, points, matches_played, wins, losses, nrr, fpp, qualified
-                                FROM tournament_teams 
-                                WHERE tournament_id = ?
-                                ORDER BY points DESC, nrr DESC""", (selected_tid,))
-                else:
-                    c.execute("""SELECT team_name, points, matches_played, wins, losses, nrr, fpp, 0
-                                FROM tournament_teams 
-                                WHERE tournament_id = ?
-                                ORDER BY points DESC, nrr DESC""", (selected_tid,))
-
+                c.execute("""SELECT team_name, points, matches_played, wins, losses, nrr, fpp
+                            FROM tournament_teams 
+                            WHERE tournament_id = ?
+                            ORDER BY points DESC, nrr DESC""", (selected_tid,))
                 teams = c.fetchall()
                 conn.close()
 
