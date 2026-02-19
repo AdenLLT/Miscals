@@ -1342,14 +1342,13 @@ async def create_top5_graphic_international(stat_type, data, guild, bot):
 
 # Personal Stats View
 class PersonalStatsView(View):
-    def __init__(self, ctx, user_id, bot=None):
+    def __init__(self, ctx, user_id):
         super().__init__(timeout=180)
         self.ctx = ctx
         self.user_id = user_id
-        self.bot = bot
         self.message = None
 
-    async def create_stats_embed(self):
+    async def create_stats_embed(self, stat_type):
         stats = get_user_stats(self.user_id)
         if not stats or stats[0] is None:
             embed = discord.Embed(title="📊 Statistics", description="No match data available yet!", color=0xFF0000)
@@ -1382,8 +1381,8 @@ class PersonalStatsView(View):
 
         if player_data and player_data.get('image'):
             embed.set_thumbnail(url=player_data['image'])
-        elif member and member.avatar:
-            embed.set_thumbnail(url=member.avatar.url)
+        if member and member.avatar:
+            embed.set_image(url=member.avatar.url)
 
         # Show role and style
         if player_data:
@@ -1419,70 +1418,6 @@ class PersonalStatsView(View):
             embed.set_footer(text="Nations Player 2025-2026")
 
         return embed
-
-    async def create_more_stats_embed(self):
-        member = self.ctx.guild.get_member(self.user_id)
-        player_name = get_player_name_by_user_id(self.user_id)
-        team_name = get_user_team(self.user_id)
-        color = get_team_color(team_name) if team_name else 0x0066CC
-        
-        embed = discord.Embed(title=f"🏆 Honors & Recent Performance", color=color)
-        if member:
-            embed.set_author(name=f"{player_name if player_name else member.name}", icon_url=member.avatar.url if member.avatar else None)
-        
-        # Trophies
-        conn = sqlite3.connect('players.db')
-        c = conn.cursor()
-        c.execute("SELECT tournament_name, team_name, won_at FROM player_trophies WHERE user_id = ? ORDER BY won_at DESC", (self.user_id,))
-        trophies = c.fetchall()
-        
-        if trophies:
-            trophy_text = ""
-            for t_name, team, won_at in trophies:
-                trophy_text += f"🏆 **{t_name}** - {team}\n"
-            embed.add_field(name="Trophies", value=trophy_text, inline=False)
-        else:
-            embed.add_field(name="Trophies", value="No trophies won yet. Keep playing!", inline=False)
-            
-        # Recent performances with team grouping
-        c.execute("""
-            SELECT ms.runs, ms.wickets, ms.match_date, 
-                   (SELECT team_name FROM tournament_teams tt 
-                    JOIN fixtures f ON (f.team1_id = tt.id OR f.team2_id = tt.id)
-                    WHERE (f.team1_id = (SELECT id FROM tournament_teams WHERE user_id = ms.user_id LIMIT 1) 
-                           OR f.team2_id = (SELECT id FROM tournament_teams WHERE user_id = ms.user_id LIMIT 1))
-                    AND tt.user_id != ms.user_id LIMIT 1) as opponent
-            FROM match_stats ms
-            WHERE ms.user_id = ? 
-            ORDER BY ms.match_date DESC 
-            LIMIT 5
-        """, (self.user_id,))
-        recent = c.fetchall()
-        
-        if recent:
-            recent_text = ""
-            for r_runs, r_wickets, r_date, opponent in recent:
-                date_str = r_date.split(' ')[0] if ' ' in r_date else r_date
-                opp_str = f" vs {opponent}" if opponent else ""
-                recent_text += f"📅 {date_str}{opp_str}: **{r_runs}** runs, **{r_wickets}** wkts\n"
-            embed.add_field(name="Recent Performances", value=recent_text, inline=False)
-        else:
-            embed.add_field(name="Recent Performances", value="No recent match data.", inline=False)
-            
-        conn.close()
-        embed.set_footer(text="Nations Player Achievements")
-        return embed
-
-    @discord.ui.button(label="View More", style=discord.ButtonStyle.secondary)
-    async def view_more(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.user_id and interaction.user.id != self.ctx.author.id:
-            await interaction.response.send_message("❌ This is not your menu!", ephemeral=True)
-            return
-            
-        await interaction.response.defer()
-        embed = await self.create_more_stats_embed()
-        button.disabled = True
-        await interaction.followup.edit_message(message_id=interaction.message.id, embed=embed, view=self)
 
 
 # Leaderboard View with pagination
@@ -2741,7 +2676,7 @@ class CricketStats(commands.Cog):
 
         # Add international branding
         embed.color = 0x1E90FF  # Blue theme
-        embed.title = "🌍 " + embed.title.replace("✦", "International")
+        embed.title = "🌍 " + embed.title.replace("✦", "✦ International")
 
         if embed.footer:
             footer_text = "International Cricket • All-Time Statistics"

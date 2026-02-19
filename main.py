@@ -524,6 +524,11 @@ def init_db():
     # ADD THIS NEW TABLE FOR CAPTAINS
     c.execute('''CREATE TABLE IF NOT EXISTS team_captains
                  (team_name TEXT PRIMARY KEY, player_name TEXT, user_id INTEGER, username TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS old_representatives
+     (id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER,
+      player_name TEXT,
+      removed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     conn.commit()
     conn.close()
 
@@ -1726,7 +1731,6 @@ class PlayerSelectView(View):
 
 # Main represent command
 @bot.command(name="represent", aliases=["rep"], help="Request to represent a cricket player")
-@commands.has_permissions(administrator=True)
 async def represent_command(ctx):
     # Check if user already represents a player
     conn = sqlite3.connect('players.db')
@@ -1758,12 +1762,10 @@ async def represent_command(ctx):
 
 # Unrepresent command
 @bot.command(name="unrepresent", aliases=["unrep"], help="Remove yourself as a player representative")
-@commands.has_permissions(administrator=True)
 async def unrepresent_command(ctx):
     conn = sqlite3.connect('players.db')
     c = conn.cursor()
 
-    # Check if user represents a player
     c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", 
               (ctx.author.id,))
     result = c.fetchone()
@@ -1774,16 +1776,124 @@ async def unrepresent_command(ctx):
         return
 
     player_name = result[0]
+    conn.close()
 
-    # Remove the representation
+    # Warning embed
+    warn_embed = discord.Embed(
+        title="⚠️ Warning: Stats Will Be Reset",
+        description=(
+            f"You are about to stop representing **{player_name}**.\n\n"
+            f"**⚠️ This will permanently reset ALL your cricket stats** (runs, wickets, matches, etc.) tied to this player.\n\n"
+            f"Your old player will be recorded in history via `-oldreps`.\n\n"
+            f"Are you sure you want to continue?"
+        ),
+        color=0xFF0000
+    )
+
+    confirm_view = ConfirmationView()
+    msg = await ctx.send(embed=warn_embed, view=confirm_view)
+    await confirm_view.wait()
+
+    if not confirm_view.confirmed:
+        await msg.edit(embed=discord.Embed(
+            title="❌ Cancelled",
+            description="Your representation was not changed.",
+            color=0x808080
+        ), view=None)
+        return
+
+    # Save to old reps history
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+
+    c.execute('''CREATE TABLE IF NOT EXISTS old_representatives
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  user_id INTEGER,
+                  player_name TEXT,
+                  removed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+
+    c.execute("INSERT INTO old_representatives (user_id, player_name) VALUES (?, ?)",
+              (ctx.author.id, player_name))
+
+    # Reset stats
+    c.execute("DELETE FROM match_stats WHERE user_id = ?", (ctx.author.id,))
+    c.execute("DELETE FROM player_trophies WHERE user_id = ?", (ctx.author.id,))
+    
+    # Remove representation
     c.execute("DELETE FROM player_representatives WHERE user_id = ?", (ctx.author.id,))
+
+    # Remove from captains if applicable
+    c.execute("DELETE FROM team_captains WHERE player_name = ?", (player_name,))
+
     conn.commit()
     conn.close()
 
-    await ctx.send(
-        f"✅ You are no longer representing **{player_name}**.\n"
-        f"You can use `-represent` to claim a new player."
+    await msg.edit(embed=discord.Embed(
+        title="✅ Done",
+        description=(
+            f"You are no longer representing **{player_name}**.\n"
+            f"Your cricket stats and trophies have been reset.\n"
+            f"Use `-represent` to claim a new player."
+        ),
+        color=0x00FF00
+    ), view=None)
+
+@bot.command(name="resetmanualstats", help="[ADMIN] Manually reset stats for a user who changed players recently")
+@commands.has_permissions(administrator=True)
+async def resetmanualstats_command(ctx, member: discord.Member):
+    """Manually reset stats of a user if they unrepped and switched in the last 5 days"""
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    
+    # Check if they unrepped in the last 5 days
+    five_days_ago = (datetime.utcnow() - timedelta(days=5)).strftime('%Y-%m-%d %H:%M:%S')
+    c.execute("SELECT player_name, removed_at FROM old_representatives WHERE user_id = ? AND removed_at > ? ORDER BY removed_at DESC LIMIT 1", 
+              (member.id, five_days_ago))
+    last_unrep = c.fetchone()
+    
+    if not last_unrep:
+        await ctx.send(f"❌ {member.display_name} has not unrepped a player in the last 5 days.")
+        conn.close()
+        return
+        
+    old_player, unrep_time = last_unrep
+    
+    # Check if they currently represent someone
+    c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (member.id,))
+    current_rep = c.fetchone()
+    
+    if not current_rep:
+        await ctx.send(f"❌ {member.display_name} currently does not represent any player. Use `-unrep` normally.")
+        conn.close()
+        return
+        
+    current_player = current_rep[0]
+    
+    # Confirmation
+    confirm_embed = discord.Embed(
+        title="⚠️ Confirm Manual Stats Reset",
+        description=(
+            f"User: {member.mention}\n"
+            f"Old Player: **{old_player}** (Unrepped at {unrep_time})\n"
+            f"Current Player: **{current_player}**\n\n"
+            "This will permanently delete all match stats and trophies for this user."
+        ),
+        color=0xFF0000
     )
+    
+    confirm_view = ConfirmationView()
+    conf_msg = await ctx.send(embed=confirm_embed, view=confirm_view)
+    await confirm_view.wait()
+    
+    if confirm_view.confirmed:
+        c.execute("DELETE FROM match_stats WHERE user_id = ?", (member.id,))
+        c.execute("DELETE FROM player_trophies WHERE user_id = ?", (member.id,))
+        conn.commit()
+        await conf_msg.edit(content=f"✅ Stats and trophies reset for {member.mention}.", embed=None, view=None)
+    else:
+        await conf_msg.edit(content="❌ Reset cancelled.", embed=None, view=None)
+        
+    conn.close()
 
 # Server IDs to upload emojis to
 EMOJI_SERVERS = [
@@ -2978,125 +3088,114 @@ async def forceupload_command(ctx, *, player_name: str):
     except Exception as e:
         await ctx.send(f"❌ Error uploading emoji: {e}")
 
-@bot.command(name="syncroles", aliases=["sr"], help="[ADMIN] Sync nationality roles for all claimed players")
+@bot.command(name="syncroles", aliases=["sr"], help="[ADMIN] Sync nationality roles for all members")
 @commands.has_permissions(administrator=True)
 async def syncroles_command(ctx):
-    await ctx.send("🔄 Syncing nationality roles for all claimed players...")
+    await ctx.send("🔄 Syncing nationality roles...")
 
-    # Get all team names for role checking
     teams_data = load_players()
     all_team_names = [team['team'] for team in teams_data]
 
+    # Build role_ids map
+    role_ids = {
+        team_name: discord.utils.find(lambda r: team_name.lower() in r.name.lower(), ctx.guild.roles)
+        for team_name in all_team_names
+    }
+    all_nationality_roles = [r for r in role_ids.values() if r]
+
     conn = sqlite3.connect('players.db')
     c = conn.cursor()
-
-    # Fetch all current claims
     c.execute("SELECT player_name, user_id, username FROM player_representatives")
     all_claims = c.fetchall()
-
     conn.close()
 
+    claimed_user_ids = {user_id: (player_name, username) for player_name, user_id, username in all_claims}
+
     synced_count = 0
+    removed_count = 0
     failed_list = []
     already_had = 0
     roles_fixed = 0
-    roles_fixed_list = []
 
-    for player_name, user_id, username in all_claims:
-        # Find the player's team
-        players, team_names = find_player(player_name)
-
-        if not players or not team_names:
-            failed_list.append(f"{player_name} (@{username}) - Player data not found")
+    # --- Process ALL guild members ---
+    for member in ctx.guild.members:
+        if member.bot:
             continue
 
-        correct_team = team_names[0]
+        member_nat_roles = [r for r in member.roles if r in all_nationality_roles]
 
-        # Get the member
-        member = ctx.guild.get_member(user_id)
+        if member.id in claimed_user_ids:
+            # Has a claim - ensure they have the correct role only
+            player_name, username = claimed_user_ids[member.id]
+            players, team_names = find_player(player_name)
 
-        if not member:
-            failed_list.append(f"{player_name} (@{username}) - Member not in server")
-            continue
+            if not players or not team_names:
+                failed_list.append(f"{player_name} (@{username}) - Player data not found")
+                continue
 
-        # Find the correct role with the team name
-        correct_role = discord.utils.find(lambda r: correct_team.lower() in r.name.lower(), ctx.guild.roles)
+            correct_team = team_names[0]
+            correct_role = role_ids.get(correct_team)
 
-        if not correct_role:
-            failed_list.append(f"{player_name} (@{username}) - Role for {correct_team} not found")
-            continue
+            if not correct_role:
+                failed_list.append(f"{player_name} (@{username}) - Role for {correct_team} not found")
+                continue
 
-        # Find all nationality roles the member has
-        member_nationality_roles = []
-        for role in member.roles:
-            for team_name in all_team_names:
-                if team_name.lower() in role.name.lower():
-                    member_nationality_roles.append((role, team_name))
-                    break
+            has_correct_only = len(member_nat_roles) == 1 and member_nat_roles[0] == correct_role
 
-        # Check if member has the correct role only
-        has_correct_role_only = (
-            len(member_nationality_roles) == 1 and 
-            member_nationality_roles[0][1] == correct_team
-        )
+            if has_correct_only:
+                already_had += 1
+                continue
 
-        if has_correct_role_only:
-            already_had += 1
-            continue
+            try:
+                # Remove wrong nationality roles
+                for role in member_nat_roles:
+                    if role != correct_role:
+                        await member.remove_roles(role, reason="Syncing: removing incorrect nationality role")
 
-        # Member has wrong roles or multiple nationality roles - fix it
-        try:
-            # Remove all nationality roles
-            for role, team_name in member_nationality_roles:
-                await member.remove_roles(role, reason=f"Syncing roles - removing incorrect nationality")
+                # Add correct role if missing
+                if correct_role not in member.roles:
+                    await member.add_roles(correct_role, reason=f"Synced nationality role for {player_name}")
+                    synced_count += 1
+                else:
+                    roles_fixed += 1
 
-            # Add correct role
-            await member.add_roles(correct_role, reason=f"Synced nationality role for {player_name}")
+            except discord.Forbidden:
+                failed_list.append(f"{player_name} (@{username}) - No permission")
+            except discord.HTTPException as e:
+                failed_list.append(f"{player_name} (@{username}) - HTTP error: {e}")
 
-            if len(member_nationality_roles) > 1 or (len(member_nationality_roles) == 1 and member_nationality_roles[0][1] != correct_team):
-                roles_fixed += 1
-                wrong_roles = ", ".join([team for _, team in member_nationality_roles])
-                roles_fixed_list.append(f"{player_name} (@{username}) - Fixed from [{wrong_roles}] to {correct_team}")
-            else:
-                synced_count += 1
+        else:
+            # No claim - remove any nationality roles they have
+            if not member_nat_roles:
+                continue
 
-        except discord.Forbidden:
-            failed_list.append(f"{player_name} (@{username}) - No permission to modify roles")
-        except discord.HTTPException as e:
-            failed_list.append(f"{player_name} (@{username}) - HTTP error: {e}")
+            try:
+                await member.remove_roles(*member_nat_roles, reason="Syncing: member has no claimed player")
+                removed_count += len(member_nat_roles)
+            except discord.Forbidden:
+                failed_list.append(f"{member.name} - No permission to remove roles")
+            except discord.HTTPException as e:
+                failed_list.append(f"{member.name} - HTTP error: {e}")
 
-    # Create summary embed
-    embed = discord.Embed(
-        title="🌍 Role Sync Complete",
-        color=0x00FF00
+    embed = discord.Embed(title="🌍 Role Sync Complete", color=0x00FF00)
+
+    summary = (
+        f"✅ **Roles Added:** {synced_count}\n"
+        f"🔧 **Roles Fixed:** {roles_fixed}\n"
+        f"🗑️ **Roles Removed (unclaimed):** {removed_count}\n"
+        f"ℹ️ **Already Correct:** {already_had}\n"
+        f"❌ **Failed:** {len(failed_list)}"
     )
-
-    summary = f"✅ **Roles Added:** {synced_count}\n"
-    summary += f"🔧 **Roles Fixed (wrong/multiple):** {roles_fixed}\n"
-    summary += f"ℹ️ **Already Correct:** {already_had}\n"
-    summary += f"❌ **Failed:** {len(failed_list)}"
-
     embed.add_field(name="Summary", value=summary, inline=False)
 
-    if roles_fixed_list:
-        # Show first 10 fixed roles
-        fixed = "\n".join([f"• {f}" for f in roles_fixed_list[:10]])
-        if len(roles_fixed_list) > 10:
-            fixed += f"\n...and {len(roles_fixed_list) - 10} more."
-
-        embed.add_field(name="Fixed Roles", value=fixed, inline=False)
-
     if failed_list:
-        # Show first 10 failures
         failures = "\n".join([f"• {f}" for f in failed_list[:10]])
         if len(failed_list) > 10:
             failures += f"\n...and {len(failed_list) - 10} more."
-
         embed.add_field(name="Failed", value=failures, inline=False)
 
     embed.set_footer(text=f"Synced by {ctx.author.name}")
     embed.timestamp = discord.utils.utcnow()
-
     await ctx.send(embed=embed)
 
 @bot.command(name="playeremojiremove", aliases=["per"], help="[ADMIN] Remove emoji for a specific player")
@@ -4958,6 +5057,52 @@ async def commentate(interaction: discord.Interaction, text: str):
 async def assign_commentator_error(ctx, error):
     if isinstance(error, commands.MissingPermissions):
         await ctx.send("❌ You need administrator permissions to assign commentators!")
+
+    @bot.command(name="oldreps", help="View all players you previously represented")
+    async def oldreps_command(ctx, member: discord.Member = None):
+        target = member or ctx.author
+
+        conn = sqlite3.connect('players.db')
+        c = conn.cursor()
+
+        c.execute('''CREATE TABLE IF NOT EXISTS old_representatives
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      user_id INTEGER,
+                      player_name TEXT,
+                      removed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+
+        c.execute("""SELECT player_name, removed_at FROM old_representatives 
+                     WHERE user_id = ? ORDER BY removed_at DESC""", (target.id,))
+        results = c.fetchall()
+        conn.close()
+
+        if not results:
+            await ctx.send(f"❌ {'You have' if target == ctx.author else f'{target.name} has'} no previous player history.")
+            return
+
+        embed = discord.Embed(
+            title=f"📜 {target.name}'s Player History",
+            description=f"All players previously represented by {target.mention}:",
+            color=0x0066CC
+        )
+
+        history_text = ""
+        for player_name, removed_at in results:
+            players, team_names = find_player(player_name)
+            flag = get_team_flag(team_names[0]) if team_names else "🏳️"
+            try:
+                dt = datetime.strptime(removed_at, '%Y-%m-%d %H:%M:%S')
+                timestamp = f"<t:{int(dt.timestamp())}:D>"
+            except:
+                timestamp = removed_at
+
+            history_text += f"{flag} **{player_name}** — left {timestamp}\n"
+
+        embed.description = history_text
+        embed.set_thumbnail(url=target.display_avatar.url)
+        await ctx.send(embed=embed)
+
+
 
 token = os.getenv('TOKEN')
 if token:
