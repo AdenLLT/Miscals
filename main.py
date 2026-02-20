@@ -3918,8 +3918,8 @@ def update_custom_nickname(user_id, custom_nickname):
 @bot.command(name="syncnicknames", aliases=["sn"], help="[ADMIN] Sync nicknames for all claimed players")
 @commands.has_permissions(administrator=True)
 async def syncnicknames_command(ctx):
-    """Sync nicknames for all claimed players"""
-    loading_msg = await ctx.send("🔄 Syncing nicknames for all claimed players...")
+    """Sync nicknames for all claimed players: Reset first, then re-sync with length limits"""
+    loading_msg = await ctx.send("🔄 **Phase 1:** Resetting all nicknames to default...")
 
     conn = sqlite3.connect('players.db')
     c = conn.cursor()
@@ -3927,70 +3927,79 @@ async def syncnicknames_command(ctx):
     all_claims = c.fetchall()
     conn.close()
 
+    reset_count = 0
     synced_count = 0
     failed_list = []
-    skipped_count = 0
 
-    for player_name, user_id, username in all_claims:
-        # Try to fetch member from guild (forces cache update)
+    # Phase 1: Reset all claimed users' nicknames
+    for _, user_id, username in all_claims:
         try:
             member = await ctx.guild.fetch_member(user_id)
-        except discord.NotFound:
-            failed_list.append(f"{player_name} (@{username}) - Not in server")
+            if member:
+                await member.edit(nick=None, reason="Nickname sync reset phase")
+                reset_count += 1
+        except Exception:
             continue
-        except discord.HTTPException:
-            # Fallback to cache if fetch fails
+
+    await loading_msg.edit(content=f"🔄 **Phase 2:** Applying formatted nicknames for {len(all_claims)} players...")
+
+    # Phase 2: Apply formatted nicknames
+    for player_name, user_id, username in all_claims:
+        try:
+            member = await ctx.guild.fetch_member(user_id)
+        except (discord.NotFound, discord.HTTPException):
             member = ctx.guild.get_member(user_id)
             if not member:
                 failed_list.append(f"{player_name} (@{username}) - Not in server")
                 continue
 
         # Save original nickname if not already saved
-        current_nickname = member.display_name
-        save_original_nickname(user_id, current_nickname)
+        current_display = member.display_name
+        save_original_nickname(user_id, current_display)
 
-        # Get custom nickname (if user hasn't set one, use their current display name)
+        # Get custom nickname or use current
         custom_nickname = get_user_custom_nickname(user_id)
         if not custom_nickname:
-            custom_nickname = current_nickname
+            custom_nickname = member.name # Use discord username as base
             update_custom_nickname(user_id, custom_nickname)
 
-        # Format new nickname
-        new_nickname = format_player_nickname(player_name, custom_nickname)
-
-        # Skip if nickname is already correct
-        if member.display_name == new_nickname:
-            skipped_count += 1
-            continue
+        # Format new nickname: "Player Name | Custom Nick"
+        # Discord limit is 32 characters
+        formatted_name = format_player_nickname(player_name, custom_nickname)
+        
+        # Ensure it fits 32 chars
+        if len(formatted_name) > 32:
+            # Try to trim custom nickname part
+            max_custom_len = 32 - len(player_name) - 3 # " | " is 3 chars
+            if max_custom_len > 0:
+                trimmed_custom = custom_nickname[:max_custom_len]
+                formatted_name = f"{player_name} | {trimmed_custom}"
+            else:
+                # If player name itself is too long, just use first 32 chars
+                formatted_name = player_name[:32]
 
         try:
-            await member.edit(nick=new_nickname, reason=f"Nickname sync by {ctx.author}")
+            await member.edit(nick=formatted_name, reason=f"Nickname sync by {ctx.author}")
             synced_count += 1
         except discord.Forbidden:
             failed_list.append(f"{player_name} (@{username}) - No permission")
         except discord.HTTPException as e:
-            failed_list.append(f"{player_name} (@{username}) - HTTP error: {e}")
+            failed_list.append(f"{player_name} (@{username}) - Error: {e}")
 
     # Create summary embed
     embed = discord.Embed(
         title="✅ Nickname Sync Complete",
+        description=f"Successfully reset {reset_count} and re-synced {synced_count} nicknames.",
         color=0x00FF00
     )
-
-    summary = f"✅ **Synced:** {synced_count}\n"
-    summary += f"ℹ️ **Already Correct:** {skipped_count}\n"
-    summary += f"❌ **Failed:** {len(failed_list)}"
-
-    embed.add_field(name="Summary", value=summary, inline=False)
 
     if failed_list:
         failures = "\n".join([f"• {f}" for f in failed_list[:10]])
         if len(failed_list) > 10:
             failures += f"\n...and {len(failed_list) - 10} more."
+        embed.add_field(name="Failed/Skipped", value=failures, inline=False)
 
-        embed.add_field(name="Failed", value=failures, inline=False)
-
-    embed.set_footer(text=f"Synced by {ctx.author.name}")
+    embed.set_footer(text=f"Action by {ctx.author.name}")
     embed.timestamp = discord.utils.utcnow()
 
     await loading_msg.delete()
