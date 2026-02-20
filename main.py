@@ -3963,20 +3963,25 @@ async def syncnicknames_command(ctx):
             custom_nickname = member.name # Use discord username as base
             update_custom_nickname(user_id, custom_nickname)
 
-        # Format new nickname: "Player Name | Custom Nick"
+        # Format new nickname: "M. Adair ○ customnick"
         # Discord limit is 32 characters
         formatted_name = format_player_nickname(player_name, custom_nickname)
         
         # Ensure it fits 32 chars
         if len(formatted_name) > 32:
-            # Try to trim custom nickname part
-            max_custom_len = 32 - len(player_name) - 3 # " | " is 3 chars
-            if max_custom_len > 0:
-                trimmed_custom = custom_nickname[:max_custom_len]
-                formatted_name = f"{player_name} | {trimmed_custom}"
+            # Calculate length of "M. Adair ○ " part
+            parts = player_name.split()
+            if len(parts) > 0:
+                prefix = f"{parts[0][0]}. {parts[-1]} ○ "
+                max_custom_len = 32 - len(prefix)
+                if max_custom_len > 0:
+                    trimmed_custom = custom_nickname[:max_custom_len]
+                    formatted_name = f"{prefix}{trimmed_custom}"
+                else:
+                    # If prefix itself is too long (unlikely), just use first 32 chars
+                    formatted_name = prefix[:32]
             else:
-                # If player name itself is too long, just use first 32 chars
-                formatted_name = player_name[:32]
+                formatted_name = custom_nickname[:32]
 
         try:
             await member.edit(nick=formatted_name, reason=f"Nickname sync by {ctx.author}")
