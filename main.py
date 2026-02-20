@@ -1838,60 +1838,105 @@ async def unrepresent_command(ctx):
         color=0x00FF00
     ), view=None)
 
-@bot.command(name="resetmanualstats", help="[ADMIN] Manually reset stats for a user who changed players recently")
+@bot.command(name="resetmanualstats", help="[ADMIN] Manually reset stats for a user or 'all' who changed players recently")
 @commands.has_permissions(administrator=True)
-async def resetmanualstats_command(ctx, member: discord.Member):
-    """Manually reset stats of a user if they unrepped and switched in the last 5 days"""
+async def resetmanualstats_command(ctx, target: str):
+    """Manually reset stats of a user or all users if they unrepped and switched in the last 5 days"""
     conn = sqlite3.connect('players.db')
     c = conn.cursor()
-    
-    # Check if they unrepped in the last 5 days
     five_days_ago = (datetime.utcnow() - timedelta(days=5)).strftime('%Y-%m-%d %H:%M:%S')
-    c.execute("SELECT player_name, removed_at FROM old_representatives WHERE user_id = ? AND removed_at > ? ORDER BY removed_at DESC LIMIT 1", 
-              (member.id, five_days_ago))
-    last_unrep = c.fetchone()
-    
-    if not last_unrep:
-        await ctx.send(f"❌ {member.display_name} has not unrepped a player in the last 5 days.")
-        conn.close()
-        return
+
+    if target.lower() == "all":
+        # Find all users who unrepped in the last 5 days AND currently represent someone
+        c.execute("""
+            SELECT DISTINCT user_id 
+            FROM old_representatives 
+            WHERE removed_at > ? 
+            AND user_id IN (SELECT user_id FROM player_representatives)
+        """, (five_days_ago,))
+        users = c.fetchall()
+
+        if not users:
+            await ctx.send("❌ No users found who unrepped in the last 5 days and currently represent a player.")
+            conn.close()
+            return
+
+        confirm_embed = discord.Embed(
+            title="⚠️ Confirm Bulk Manual Stats Reset",
+            description=f"This will reset stats and trophies for **{len(users)}** users who switched players in the last 5 days.\n\n**This cannot be undone!**",
+            color=0xFF0000
+        )
         
-    old_player, unrep_time = last_unrep
-    
-    # Check if they currently represent someone
-    c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (member.id,))
-    current_rep = c.fetchone()
-    
-    if not current_rep:
-        await ctx.send(f"❌ {member.display_name} currently does not represent any player. Use `-unrep` normally.")
-        conn.close()
-        return
-        
-    current_player = current_rep[0]
-    
-    # Confirmation
-    confirm_embed = discord.Embed(
-        title="⚠️ Confirm Manual Stats Reset",
-        description=(
-            f"User: {member.mention}\n"
-            f"Old Player: **{old_player}** (Unrepped at {unrep_time})\n"
-            f"Current Player: **{current_player}**\n\n"
-            "This will permanently delete all match stats and trophies for this user."
-        ),
-        color=0xFF0000
-    )
-    
-    confirm_view = ConfirmationView()
-    conf_msg = await ctx.send(embed=confirm_embed, view=confirm_view)
-    await confirm_view.wait()
-    
-    if confirm_view.confirmed:
-        c.execute("DELETE FROM match_stats WHERE user_id = ?", (member.id,))
-        c.execute("DELETE FROM player_trophies WHERE user_id = ?", (member.id,))
-        conn.commit()
-        await conf_msg.edit(content=f"✅ Stats and trophies reset for {member.mention}.", embed=None, view=None)
+        confirm_view = ConfirmationView()
+        conf_msg = await ctx.send(embed=confirm_embed, view=confirm_view)
+        await confirm_view.wait()
+
+        if confirm_view.confirmed:
+            reset_count = 0
+            for (u_id,) in users:
+                c.execute("DELETE FROM match_stats WHERE user_id = ?", (u_id,))
+                c.execute("DELETE FROM player_trophies WHERE user_id = ?", (u_id,))
+                reset_count += 1
+            conn.commit()
+            await conf_msg.edit(content=f"✅ Stats and trophies reset for {reset_count} users.", embed=None, view=None)
+        else:
+            await conf_msg.edit(content="❌ Bulk reset cancelled.", embed=None, view=None)
+            
     else:
-        await conf_msg.edit(content="❌ Reset cancelled.", embed=None, view=None)
+        # Handle single member
+        try:
+            member = await commands.MemberConverter().convert(ctx, target)
+        except commands.MemberError:
+            await ctx.send("❌ Invalid member provided. Use a mention, ID, or 'all'.")
+            conn.close()
+            return
+
+        # Check if they unrepped in the last 5 days
+        c.execute("SELECT player_name, removed_at FROM old_representatives WHERE user_id = ? AND removed_at > ? ORDER BY removed_at DESC LIMIT 1", 
+                  (member.id, five_days_ago))
+        last_unrep = c.fetchone()
+        
+        if not last_unrep:
+            await ctx.send(f"❌ {member.display_name} has not unrepped a player in the last 5 days.")
+            conn.close()
+            return
+            
+        old_player, unrep_time = last_unrep
+        
+        # Check if they currently represent someone
+        c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (member.id,))
+        current_rep = c.fetchone()
+        
+        if not current_rep:
+            await ctx.send(f"❌ {member.display_name} currently does not represent any player. Use `-unrep` normally.")
+            conn.close()
+            return
+            
+        current_player = current_rep[0]
+        
+        # Confirmation
+        confirm_embed = discord.Embed(
+            title="⚠️ Confirm Manual Stats Reset",
+            description=(
+                f"User: {member.mention}\n"
+                f"Old Player: **{old_player}** (Unrepped at {unrep_time})\n"
+                f"Current Player: **{current_player}**\n\n"
+                "This will permanently delete all match stats and trophies for this user."
+            ),
+            color=0xFF0000
+        )
+        
+        confirm_view = ConfirmationView()
+        conf_msg = await ctx.send(embed=confirm_embed, view=confirm_view)
+        await confirm_view.wait()
+        
+        if confirm_view.confirmed:
+            c.execute("DELETE FROM match_stats WHERE user_id = ?", (member.id,))
+            c.execute("DELETE FROM player_trophies WHERE user_id = ?", (member.id,))
+            conn.commit()
+            await conf_msg.edit(content=f"✅ Stats and trophies reset for {member.mention}.", embed=None, view=None)
+        else:
+            await conf_msg.edit(content="❌ Reset cancelled.", embed=None, view=None)
         
     conn.close()
 
