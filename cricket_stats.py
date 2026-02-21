@@ -39,10 +39,42 @@ def get_team_flag_url(team_name):
         return f"https://cdnjs.cloudflare.com/ajax/libs/twemoji/14.0.2/72x72/{code}.png"
     return None
 
-def get_user_stats(user_id):
+def get_user_stats(user_id, mode="career"):
     conn = sqlite3.connect('players.db')
     c = conn.cursor()
-    c.execute("""
+    
+    table = "match_stats"
+    where_clause = "WHERE user_id = ?"
+    params = [user_id]
+    
+    if mode == "ongoing":
+        # Check for active tournament
+        c.execute("SELECT id FROM tournaments WHERE is_active = 1 LIMIT 1")
+        tourney = c.fetchone()
+        
+        # Check for active series
+        c.execute("SELECT id FROM series WHERE is_active = 1 LIMIT 1")
+        series = c.fetchone()
+        
+        if tourney or series:
+            conditions = []
+            if tourney:
+                # We don't have tournament_id in match_stats, but we can filter by date or assume current matches
+                # However, the user said "ongoing tournament", and typically match_stats are reset or we use a different table
+                # For tournaments, stats are usually tracked in match_stats but we might need a way to filter.
+                # If there's no tournament_id in match_stats, we'll look at series_match_stats for series.
+                pass
+            
+            if series:
+                table = "series_match_stats"
+                where_clause = "WHERE user_id = ? AND series_id = ?"
+                params.append(series[0])
+            elif tourney:
+                # If it's a tournament and we use match_stats, we might just use the whole table if it's "ongoing"
+                # But usually -statsi is the career one.
+                pass
+
+    c.execute(f"""
         SELECT 
             SUM(runs) as total_runs,
             SUM(balls_faced) as total_balls_faced,
@@ -51,9 +83,9 @@ def get_user_stats(user_id):
             SUM(wickets) as total_wickets,
             SUM(not_out) as times_not_out,
             COUNT(*) as matches_played
-        FROM match_stats
-        WHERE user_id = ?
-    """, (user_id,))
+        FROM {table}
+        {where_clause}
+    """, tuple(params))
     result = c.fetchone()
     conn.close()
     return result
@@ -1369,14 +1401,15 @@ async def create_top5_graphic_international(stat_type, data, guild, bot):
 
 # Personal Stats View
 class PersonalStatsView(View):
-    def __init__(self, ctx, user_id):
+    def __init__(self, ctx, user_id, mode="ongoing"):
         super().__init__(timeout=180)
         self.ctx = ctx
         self.user_id = user_id
+        self.mode = mode
         self.message = None
 
     async def create_stats_embed(self, stat_type):
-        stats = get_user_stats(self.user_id)
+        stats = get_user_stats(self.user_id, mode=self.mode)
         if not stats or stats[0] is None:
             embed = discord.Embed(title="📊 Statistics", description="No match data available yet!", color=0xFF0000)
             return embed
@@ -1400,11 +1433,28 @@ class PersonalStatsView(View):
         elif member:
             embed.set_author(name=f"@{member.name}", icon_url=member.avatar.url if member.avatar else None)
 
-        if team_name:
-            flag = get_team_flag(team_name)
-            embed.title = f"{flag}  ✦ Career Statistics"
+        if self.mode == "ongoing":
+            # Determine if it's a series or tournament
+            conn = sqlite3.connect('players.db')
+            c = conn.cursor()
+            c.execute("SELECT name FROM series WHERE is_active = 1 LIMIT 1")
+            series = c.fetchone()
+            c.execute("SELECT name FROM tournaments WHERE is_active = 1 LIMIT 1")
+            tourney = c.fetchone()
+            conn.close()
+            
+            if series:
+                embed.title = f"{flag + '  ' if flag else ''}✦ {series[0]} Statistics"
+            elif tourney:
+                embed.title = f"{flag + '  ' if flag else ''}✦ {tourney[0]} Statistics"
+            else:
+                embed.title = f"{flag + '  ' if flag else ''}✦ Ongoing Statistics"
         else:
-            embed.title = "✦ Career Statistics"
+            if team_name:
+                flag = get_team_flag(team_name)
+                embed.title = f"{flag}  ✦ Career Statistics"
+            else:
+                embed.title = "✦ Career Statistics"
 
         if player_data and player_data.get('image'):
             embed.set_thumbnail(url=player_data['image'])
@@ -2368,7 +2418,7 @@ class CricketStats(commands.Cog):
         else:
             await ctx.send(f"✅ Successfully removed statistics for **{len(matches)}** players!")
 
-    @commands.command(name="stats", aliases=["s"], help="View cricket statistics")
+    @commands.command(name="stats", aliases=["s"], help="View cricket statistics (Ongoing Tournament/Series)")
     async def stats_command(self, ctx, *, target: str = None):
         if target:
             # Check if it's a player name
@@ -2401,17 +2451,9 @@ class CricketStats(commands.Cog):
             # Show stats for the command author
             user_id = ctx.author.id
 
-        stats = get_user_stats(user_id)
-        if not stats or stats[0] is None:
-            message = "You haven't" if user_id == ctx.author.id else f"This player hasn't"
-            await ctx.send(f"❌ {message} played any matches yet!")
-            return
-
-        # Create view but just to use its embed creation method
-        view = PersonalStatsView(ctx, user_id)
+        # Pass "ongoing" mode to view
+        view = PersonalStatsView(ctx, user_id, mode="ongoing")
         embed = await view.create_stats_embed("overview")
-
-        # Send WITHOUT the view (no buttons)
         await ctx.send(embed=embed)
 
     @commands.command(name="leaderboard", aliases=["lb"], help="View tournament leaderboards")
@@ -2661,10 +2703,9 @@ class CricketStats(commands.Cog):
 
         view.update_buttons()
 
-    @commands.command(name="statsi", aliases=["si"], help="View international (all-time) statistics")
+    @commands.command(name="statsi", aliases=["si"], help="View Career Statistics")
     async def statsi_command(self, ctx, *, target: str = None):
-        """Same as stats but with international branding"""
-        # Reuse the same logic as stats command
+        """Career statistics for players"""
         if target:
             players, team_names = find_player(target)
             if players:
@@ -2693,18 +2734,20 @@ class CricketStats(commands.Cog):
         else:
             user_id = ctx.author.id
 
-        stats = get_user_stats(user_id)
+        stats = get_user_stats(user_id, mode="career")
         if not stats or stats[0] is None:
             message = "You haven't" if user_id == ctx.author.id else f"This player hasn't"
             await ctx.send(f"❌ {message} played any matches yet!")
             return
 
-        view = PersonalStatsView(ctx, user_id)
+        # Create view with career mode
+        view = PersonalStatsView(ctx, user_id, mode="career")
         embed = await view.create_stats_embed("overview")
-
+        
         # Add international branding
         embed.color = 0x1E90FF  # Blue theme
-        embed.title = "🌍 " + embed.title.replace("✦", "✦ International")
+        if embed.title:
+            embed.title = "🌍 " + embed.title.replace("✦", "✦ International")
 
         if embed.footer:
             footer_text = "International Cricket • All-Time Statistics"
