@@ -1416,6 +1416,167 @@ def get_team_flag_url(team_name):
     return None
 
 
+async def create_international_points_table(teams_data):
+    """International points table - blue themed, no FPP column"""
+    try:
+        width = 1400
+        header_height = 80
+        row_height = 90
+        top_padding = 40
+        total_height = top_padding + header_height + (len(teams_data) * row_height) + 80
+
+        img = Image.new('RGB', (width, total_height), (255, 255, 255))
+        draw = ImageDraw.Draw(img)
+
+        # Blue gradient background
+        for y in range(total_height):
+            ratio = y / total_height
+            r = int(5 + (20 - 5) * ratio)
+            g = int(30 + (60 - 30) * ratio)
+            b = int(100 + (160 - 100) * ratio)
+            draw.rectangle([(0, y), (width, y+1)], fill=(r, g, b))
+
+        try:
+            title_font = ImageFont.truetype("nor.otf", 70)
+            header_font = ImageFont.truetype("nor.otf", 42)
+            cell_font = ImageFont.truetype("nor.otf", 40)
+            footer_font = ImageFont.truetype("nor.otf", 38)
+        except:
+            title_font = ImageFont.load_default()
+            header_font = title_font
+            cell_font = title_font
+            footer_font = title_font
+
+        # Title
+        title_text = "International Rankings"
+        title_bbox = draw.textbbox((0, 0), title_text, font=title_font)
+        title_width = title_bbox[2] - title_bbox[0]
+        draw.text(((width - title_width) // 2, 10), title_text, fill=(255, 255, 255), font=title_font)
+
+        cols = {
+            'pos': 50,
+            'flag': 120,
+            'team': 200,
+            'wins': 680,
+            'pts': 800,
+            'matches': 920,
+            'losses': 1040,
+            'nrr': 1160,
+        }
+
+        # Header row - white on dark blue
+        header_y = top_padding + 70
+        header_bg = Image.new('RGB', (width, 60), (0, 50, 120))
+        header_draw = ImageDraw.Draw(header_bg)
+        for x in range(width):
+            progress = x / width
+            r = int(0 + (30 - 0) * progress)
+            g = int(80 + (120 - 80) * progress)
+            b = int(200 + (255 - 200) * progress)
+            header_draw.line([(x, 0), (x, 60)], fill=(r, g, b))
+        img.paste(header_bg, (0, header_y))
+
+        headers = {
+            'pos': 'POS', 'team': 'TEAM', 'wins': 'W',
+            'pts': 'PTS', 'matches': 'M', 'losses': 'L', 'nrr': 'NRR'
+        }
+        for key, text in headers.items():
+            draw.text((cols[key], header_y + 12), text, fill=(255, 255, 255), font=header_font)
+
+        # Download flags
+        flag_cache = {}
+        async with aiohttp.ClientSession() as session:
+            for team_data in teams_data:
+                team_name = team_data[0]
+                flag_url = get_team_flag_url(team_name)
+                if flag_url and team_name not in flag_cache:
+                    try:
+                        async with session.get(flag_url) as resp:
+                            if resp.status == 200:
+                                flag_data = await resp.read()
+                                flag_img = Image.open(io.BytesIO(flag_data)).convert('RGBA')
+                                flag_img = flag_img.resize((55, 55), Image.Resampling.LANCZOS)
+                                flag_cache[team_name] = flag_img
+                    except:
+                        pass
+
+        for idx, (team_name, points, matches, wins, losses, nrr, _) in enumerate(teams_data):
+            row_y = header_y + 60 + (idx * row_height)
+
+            # Alternating row - light blue tones
+            if idx % 2 == 0:
+                draw.rectangle([(0, row_y), (width, row_y + row_height)], fill=(20, 60, 140))
+            else:
+                draw.rectangle([(0, row_y), (width, row_y + row_height)], fill=(10, 40, 110))
+
+            # Team color left accent bar
+            team_color = get_team_color_rgb(team_name)
+            for x in range(12):
+                progress = x / 12
+                for y in range(row_height):
+                    r = int(team_color[0] * (1 - progress * 0.3))
+                    g = int(team_color[1] * (1 - progress * 0.3))
+                    b = int(team_color[2] * (1 - progress * 0.3))
+                    draw.point((x, row_y + y), fill=(r, g, b))
+
+            # Top 3 gold/silver/bronze highlight
+            if idx == 0:
+                highlight = (255, 215, 0, 40)
+            elif idx == 1:
+                highlight = (192, 192, 192, 30)
+            elif idx == 2:
+                highlight = (205, 127, 50, 30)
+            else:
+                highlight = None
+
+            if highlight:
+                hl = Image.new('RGBA', (width, row_height), highlight)
+                img_rgba = img.convert('RGBA')
+                img_rgba.paste(hl, (0, row_y), hl)
+                img = img_rgba.convert('RGB')
+                draw = ImageDraw.Draw(img)
+
+            # Position
+            pos_color = (255, 215, 0) if idx == 0 else (200, 200, 200) if idx == 1 else (205, 127, 50) if idx == 2 else (255, 255, 255)
+            draw.text((cols['pos'], row_y + 25), str(idx + 1), fill=pos_color, font=cell_font)
+
+            # Flag
+            if team_name in flag_cache:
+                img.paste(flag_cache[team_name], (cols['flag'], row_y + 18), flag_cache[team_name])
+
+            # Team name
+            draw.text((cols['team'], row_y + 25), team_name, fill=(255, 255, 255), font=cell_font)
+
+            # Wins - green
+            draw.text((cols['wins'], row_y + 25), str(wins), fill=(100, 255, 100), font=cell_font)
+
+            # Points - yellow
+            draw.text((cols['pts'], row_y + 25), str(points), fill=(255, 215, 0), font=cell_font)
+
+            # Matches
+            draw.text((cols['matches'], row_y + 25), str(matches), fill=(255, 255, 255), font=cell_font)
+
+            # Losses - red
+            draw.text((cols['losses'], row_y + 25), str(losses), fill=(255, 100, 100), font=cell_font)
+
+            # NRR
+            nrr_color = (100, 255, 100) if nrr >= 0 else (255, 100, 100)
+            draw.text((cols['nrr'], row_y + 25), f"{nrr:+.3f}", fill=nrr_color, font=cell_font)
+
+            # Divider
+            draw.line([(0, row_y + row_height - 1), (width, row_y + row_height - 1)], fill=(50, 80, 180), width=1)
+
+        output = io.BytesIO()
+        img.save(output, format='PNG', quality=95)
+        output.seek(0)
+        return output
+
+    except Exception as e:
+        print(f"Error creating international points table: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
 async def create_points_table_image(tournament_name, teams_data):
     """Create a beautiful points table image with team gradients and dividers"""
     try:
@@ -1636,6 +1797,8 @@ async def create_points_table_image(tournament_name, teams_data):
         import traceback
         traceback.print_exc()
         return None
+
+
 
 
 def get_played_matchups(tournament_id):
@@ -4066,6 +4229,61 @@ class Tournament(commands.Cog):
 
         view = TournamentSelectView()
         await ctx.send(embed=embed, view=view)
+
+    @commands.command(name="ptsi", help="View international (all-time) points table for ALL teams")
+    async def ptsi_command(self, ctx):
+        """International points table - shows ALL teams' all-time stats"""
+        import json
+
+        try:
+            with open('players.json', 'r', encoding='utf-8') as f:
+                teams_data = json.load(f)
+            all_teams = [team['team'] for team in teams_data]
+        except:
+            await ctx.send("❌ Could not load teams data!")
+            return
+
+        conn = sqlite3.connect('players.db')
+        c = conn.cursor()
+
+        # Aggregate all-time stats across ALL tournaments for each team
+        teams_stats = []
+        for team_name in all_teams:
+            c.execute("""
+                SELECT 
+                    COALESCE(SUM(points), 0),
+                    COALESCE(SUM(matches_played), 0),
+                    COALESCE(SUM(wins), 0),
+                    COALESCE(SUM(losses), 0),
+                    COALESCE(SUM(nrr), 0.0)
+                FROM tournament_teams
+                WHERE team_name = ?
+            """, (team_name,))
+            row = c.fetchone()
+            if row and row[1] > 0:  # Only include teams that have played
+                pts, mp, w, l, nrr = row
+                teams_stats.append((team_name, pts, mp, w, l, nrr, 0))  # 0 for fpp placeholder
+
+        conn.close()
+
+        if not teams_stats:
+            await ctx.send("❌ No international match data found!")
+            return
+
+        # Sort by wins desc, then points desc, then NRR desc
+        teams_stats.sort(key=lambda x: (-x[3], -x[1], -x[5]))
+
+        table_image = await create_international_points_table(teams_stats)
+
+        if not table_image:
+            await ctx.send("❌ Failed to create international points table!")
+            return
+
+        file = discord.File(table_image, filename="international_pts.png")
+        embed = discord.Embed(title="🌍 International Cricket — All-Time Table", color=0x1E90FF)
+        embed.set_image(url="attachment://international_pts.png")
+        embed.set_footer(text="All-time stats across all tournaments")
+        await ctx.send(embed=embed, file=file)
 
     
 async def setup(bot):
