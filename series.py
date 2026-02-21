@@ -918,54 +918,22 @@ class Series(commands.Cog):
                     return
                 
                 series_id = int(self.values[0])
-                await interaction.response.defer()
+                from cricket_stats import LeaderboardView
                 
-                conn = sqlite3.connect('players.db')
-                c = conn.cursor()
-                c.execute("SELECT name FROM series WHERE id = ?", (series_id,))
-                s_name = c.fetchone()[0]
+                view = LeaderboardView(ctx, "runs", self.bot, series_id=series_id)
                 
-                # Top run scorers in series
-                c.execute("""
-                    SELECT user_id, SUM(runs) as total_runs, SUM(balls_faced) as balls
-                    FROM series_match_stats
-                    WHERE series_id = ?
-                    GROUP BY user_id
-                    ORDER BY total_runs DESC
-                    LIMIT 10
-                """, (series_id,))
-                runs_data = c.fetchall()
+                embed, graphic = await view.create_leaderboard_embed(0)
                 
-                # Top wicket takers in series
-                c.execute("""
-                    SELECT user_id, SUM(wickets) as total_wickets, SUM(balls_bowled) as balls
-                    FROM series_match_stats
-                    WHERE series_id = ?
-                    GROUP BY user_id
-                    ORDER BY total_wickets DESC
-                    LIMIT 10
-                """, (series_id,))
-                wickets_data = c.fetchall()
-                conn.close()
+                # Make sure to update buttons after creating embed to reflect correct page count
+                view.update_buttons()
                 
-                embed = discord.Embed(title=f"🏆 {s_name} Leaderboard", color=0xFFD700)
+                if graphic:
+                    file = discord.File(graphic, filename="leaderboard_top5.png")
+                    await interaction.response.edit_message(embed=embed, attachments=[file], view=view)
+                else:
+                    await interaction.response.edit_message(embed=embed, view=view)
                 
-                runs_text = ""
-                for i, (uid, runs, balls) in enumerate(runs_data, 1):
-                    member = ctx.guild.get_member(uid)
-                    name = member.display_name if member else f"User {uid}"
-                    runs_text += f"**{i}.** {name}: **{runs}** runs ({balls}b)\n"
-                
-                wickets_text = ""
-                for i, (uid, wickets, balls) in enumerate(wickets_data, 1):
-                    member = ctx.guild.get_member(uid)
-                    name = member.display_name if member else f"User {uid}"
-                    wickets_text += f"**{i}.** {name}: **{wickets}** wkts\n"
-                
-                embed.add_field(name="🏏 Top Run Scorers", value=runs_text or "No data", inline=True)
-                embed.add_field(name="🎯 Top Wicket Takers", value=wickets_text or "No data", inline=True)
-                
-                await interaction.followup.edit_message(message_id=interaction.message.id, embed=embed, view=None)
+                view.message = interaction.message
 
         view = View()
         view.add_item(SeriesSelect(active_series))

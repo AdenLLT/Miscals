@@ -58,108 +58,134 @@ def get_user_stats(user_id):
     conn.close()
     return result
 
-def get_leaderboard_data(stat_type):
+def get_leaderboard_data(stat_type, series_id=None):
     conn = sqlite3.connect('players.db')
     c = conn.cursor()
 
+    table = "series_match_stats" if series_id else "match_stats"
+    where_clause = f"WHERE series_id = {series_id}" if series_id else ""
+
     if stat_type == "runs":
-        c.execute("""
+        c.execute(f"""
             SELECT user_id, SUM(runs) as total, SUM(balls_faced) as balls
-            FROM match_stats
+            FROM {table}
+            {where_clause}
             GROUP BY user_id
             HAVING total > 0
             ORDER BY total DESC
             LIMIT 100
         """)
     elif stat_type == "wickets":
-        c.execute("""
+        c.execute(f"""
             SELECT user_id, SUM(wickets) as total, SUM(balls_bowled) as balls
-            FROM match_stats
+            FROM {table}
+            {where_clause}
             GROUP BY user_id
             HAVING total > 0
             ORDER BY total DESC
             LIMIT 100
         """)
     elif stat_type == "economy":
-        c.execute("""
+        c.execute(f"""
             SELECT user_id, 
                    SUM(runs_conceded) as runs, 
                    SUM(balls_bowled) as balls,
-                   CAST(SUM(runs_conceded) AS FLOAT) / (CAST(SUM(balls_bowled) AS FLOAT) / 6.0) as economy
-            FROM match_stats
-            WHERE balls_bowled > 0
+                   CAST(SUM(runs_conceded) AS FLOAT) / (NULLIF(CAST(SUM(balls_bowled) AS FLOAT), 0) / 6.0) as economy
+            FROM {table}
+            {where_clause}
             GROUP BY user_id
             HAVING balls >= 6
             ORDER BY economy ASC
             LIMIT 100
         """)
     elif stat_type == "strike_rate":
-        c.execute("""
+        c.execute(f"""
             SELECT user_id,
                    SUM(runs) as runs,
                    SUM(balls_faced) as balls,
-                   (CAST(SUM(runs) AS FLOAT) / CAST(SUM(balls_faced) AS FLOAT)) * 100 as sr
-            FROM match_stats
-            WHERE balls_faced > 0
+                   (CAST(SUM(runs) AS FLOAT) / NULLIF(CAST(SUM(balls_faced) AS FLOAT), 0)) * 100 as sr
+            FROM {table}
+            {where_clause}
             GROUP BY user_id
             HAVING balls >= 10
             ORDER BY sr DESC
             LIMIT 100
         """)
     elif stat_type == "average":
-        c.execute("""
+        c.execute(f"""
             SELECT user_id,
                    SUM(runs) as runs,
                    COUNT(*) - SUM(not_out) as dismissals,
-                   CAST(SUM(runs) AS FLOAT) / CAST(COUNT(*) - SUM(not_out) AS FLOAT) as avg
-            FROM match_stats
-            WHERE balls_faced > 0
+                   CAST(SUM(runs) AS FLOAT) / NULLIF(CAST(COUNT(*) - SUM(not_out) AS FLOAT), 0) as avg
+            FROM {table}
+            {where_clause}
             GROUP BY user_id
             HAVING dismissals > 0
             ORDER BY avg DESC
             LIMIT 100
         """)
     elif stat_type == "bowling_average":
-        c.execute("""
+        c.execute(f"""
             SELECT user_id,
                    SUM(runs_conceded) as runs,
                    SUM(wickets) as wickets,
-                   CAST(SUM(runs_conceded) AS FLOAT) / CAST(SUM(wickets) AS FLOAT) as avg
-            FROM match_stats
-            WHERE wickets > 0
+                   CAST(SUM(runs_conceded) AS FLOAT) / NULLIF(CAST(SUM(wickets) AS FLOAT), 0) as avg
+            FROM {table}
+            {where_clause}
             GROUP BY user_id
             ORDER BY avg ASC
             LIMIT 100
         """)
     elif stat_type == "centuries":
-        c.execute("""
+        c.execute(f"""
             SELECT user_id, COUNT(*) as total
-            FROM match_stats
+            FROM {table}
+            {where_clause} AND runs >= 100
+            GROUP BY user_id
+            ORDER BY total DESC
+            LIMIT 100
+        """) if series_id else c.execute(f"""
+            SELECT user_id, COUNT(*) as total
+            FROM {table}
             WHERE runs >= 100
             GROUP BY user_id
             ORDER BY total DESC
             LIMIT 100
         """)
     elif stat_type == "fifties":
-        c.execute("""
+        c.execute(f"""
             SELECT user_id, COUNT(*) as total
-            FROM match_stats
+            FROM {table}
+            {where_clause} AND runs >= 50 AND runs < 100
+            GROUP BY user_id
+            ORDER BY total DESC
+            LIMIT 100
+        """) if series_id else c.execute(f"""
+            SELECT user_id, COUNT(*) as total
+            FROM {table}
             WHERE runs >= 50 AND runs < 100
             GROUP BY user_id
             ORDER BY total DESC
             LIMIT 100
         """)
     elif stat_type == "five_wickets":
-        c.execute("""
+        c.execute(f"""
             SELECT user_id, COUNT(*) as total
-            FROM match_stats
+            FROM {table}
+            {where_clause} AND wickets >= 5
+            GROUP BY user_id
+            ORDER BY total DESC
+            LIMIT 100
+        """) if series_id else c.execute(f"""
+            SELECT user_id, COUNT(*) as total
+            FROM {table}
             WHERE wickets >= 5
             GROUP BY user_id
             ORDER BY total DESC
             LIMIT 100
         """)
     elif stat_type == "impact_points":
-        c.execute("""
+        c.execute(f"""
             SELECT user_id, 
                    SUM(
                        runs + (wickets * 7) +
@@ -169,47 +195,48 @@ def get_leaderboard_data(stat_type):
                        CASE WHEN runs >= 100 THEN 100
                             WHEN runs >= 50 THEN 65
                             ELSE 0 END +
-                       CASE WHEN balls_faced >= 12 AND (CAST(runs AS FLOAT) / balls_faced * 100) >= 150 THEN 35
+                       CASE WHEN balls_faced >= 12 AND (CAST(runs AS FLOAT) / NULLIF(balls_faced, 0) * 100) >= 150 THEN 35
                             ELSE 0 END
                    ) as total_impact
-            FROM match_stats
+            FROM {table}
+            {where_clause}
             GROUP BY user_id
             ORDER BY total_impact DESC
             LIMIT 100
         """)
     elif stat_type == "highest_score":
-        c.execute("""
+        c.execute(f"""
             SELECT user_id, MAX(runs) as highest, balls_faced
-            FROM match_stats
-            WHERE runs > 0
+            FROM {table}
+            {where_clause} {"AND" if series_id else "WHERE"} runs > 0
             GROUP BY user_id
             ORDER BY highest DESC
             LIMIT 100
         """)
     elif stat_type == "best_bowling":
-        c.execute("""
+        c.execute(f"""
             SELECT user_id, MAX(wickets) as best_wickets, 
                    runs_conceded, balls_bowled
-            FROM match_stats
-            WHERE wickets > 0
+            FROM {table}
+            {where_clause} {"AND" if series_id else "WHERE"} wickets > 0
             GROUP BY user_id
             ORDER BY best_wickets DESC, runs_conceded ASC
             LIMIT 100
         """)
     elif stat_type == "ducks":
-        c.execute("""
+        c.execute(f"""
             SELECT user_id, COUNT(*) as total
-            FROM match_stats
-            WHERE runs = 0 AND balls_faced > 0 AND not_out = 0
+            FROM {table}
+            {where_clause} {"AND" if series_id else "WHERE"} runs = 0 AND balls_faced > 0 AND not_out = 0
             GROUP BY user_id
             ORDER BY total DESC
             LIMIT 100
         """)
     elif stat_type == "most_runs_conceded":
-        c.execute("""
+        c.execute(f"""
             SELECT user_id, SUM(runs_conceded) as total
-            FROM match_stats
-            WHERE balls_bowled > 0
+            FROM {table}
+            {where_clause} {"AND" if series_id else "WHERE"} balls_bowled > 0
             GROUP BY user_id
             ORDER BY total DESC
             LIMIT 100
@@ -1422,7 +1449,7 @@ class PersonalStatsView(View):
 
 # Leaderboard View with pagination
 class LeaderboardView(View):
-    def __init__(self, ctx, stat_type, bot):
+    def __init__(self, ctx, stat_type, bot, series_id=None):
         super().__init__(timeout=180)
         self.ctx = ctx
         self.stat_type = stat_type
@@ -1430,6 +1457,7 @@ class LeaderboardView(View):
         self.current_page = 0
         self.message = None
         self.graphic_created = False
+        self.series_id = series_id
 
     async def create_leaderboard_embed(self, page=0):
         titles = {
@@ -1449,7 +1477,7 @@ class LeaderboardView(View):
             "most_runs_conceded": "💸 Most Runs Conceded"
         }
 
-        data = get_leaderboard_data(self.stat_type)
+        data = get_leaderboard_data(self.stat_type, self.series_id)
 
         if not data:
             embed = discord.Embed(
@@ -1604,7 +1632,7 @@ class LeaderboardView(View):
             return embed, None
 
     def update_buttons(self):
-        data = get_leaderboard_data(self.stat_type)
+        data = get_leaderboard_data(self.stat_type, self.series_id)
 
         if self.stat_type in ["runs", "wickets"]:
             total_pages = ((len(data) - 1) // 10) + 2  # +1 for graphic, +1 for ceiling
@@ -1861,7 +1889,7 @@ class LeaderboardView(View):
             return
 
         await interaction.response.defer()
-        data = get_leaderboard_data(self.stat_type)
+        data = get_leaderboard_data(self.stat_type, self.series_id)
 
         if self.stat_type in ["runs", "wickets"]:
             total_pages = ((len(data) - 1) // 10) + 2
@@ -2613,7 +2641,7 @@ class CricketStats(commands.Cog):
 
                 # Replace graphic with international-themed one for page 0 of runs/wickets
                 if page == 0 and self.stat_type in ["runs", "wickets"]:
-                    data = get_leaderboard_data(self.stat_type)
+                    data = get_leaderboard_data(self.stat_type, self.series_id)
                     graphic = await create_top5_graphic_international(self.stat_type, data, self.ctx.guild, self.bot)
 
                 if embed.footer:
