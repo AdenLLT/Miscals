@@ -712,9 +712,9 @@ class Series(commands.Cog):
             user_team = get_user_team(user_id)
             bat_order = 1 if user_team == bat_first else 2
             
-            c.execute("""INSERT INTO match_stats (user_id, runs, balls_faced, runs_conceded, balls_bowled, wickets, not_out, batting_order)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                      (user_id, runs, balls_faced, runs_conceded, balls_bowled, wickets, not_out, bat_order))
+            c.execute("""INSERT INTO match_stats (user_id, runs, balls_faced, runs_conceded, balls_bowled, wickets, not_out)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)""",
+              (user_id, runs, balls_faced, runs_conceded, balls_bowled, wickets, not_out))
 
         # 3) Update series_teams standings
         c.execute("""UPDATE series_teams 
@@ -908,35 +908,34 @@ class Series(commands.Cog):
             return
 
         class SeriesSelect(Select):
-            def __init__(self, series_list):
+            def __init__(self, series_list, bot):  # Add bot parameter
                 options = [discord.SelectOption(label=name, value=str(sid)) for sid, name in series_list]
                 super().__init__(placeholder="Select a series...", options=options)
+                self.bot = bot  # Store it
 
             async def callback(self, interaction: discord.Interaction):
                 if interaction.user.id != ctx.author.id:
                     await interaction.response.send_message("❌ Not your menu!", ephemeral=True)
                     return
-                
+
                 series_id = int(self.values[0])
                 from cricket_stats import LeaderboardView
-                
-                view = LeaderboardView(ctx, "runs", self.bot, series_id=series_id)
-                
+
+                view = LeaderboardView(ctx, "runs", self.bot, series_id=series_id)  # Now works
+
                 embed, graphic = await view.create_leaderboard_embed(0)
-                
-                # Make sure to update buttons after creating embed to reflect correct page count
                 view.update_buttons()
-                
+
                 if graphic:
                     file = discord.File(graphic, filename="leaderboard_top5.png")
                     await interaction.response.edit_message(embed=embed, attachments=[file], view=view)
                 else:
                     await interaction.response.edit_message(embed=embed, view=view)
-                
+
                 view.message = interaction.message
 
         view = View()
-        view.add_item(SeriesSelect(active_series))
+        view.add_item(SeriesSelect(active_series, self.bot))  # Pass self.bot here
         await ctx.send("📋 Select a series to view its leaderboard:", view=view)
 
 async def setup(bot):

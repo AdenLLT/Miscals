@@ -1433,6 +1433,7 @@ class PersonalStatsView(View):
         elif member:
             embed.set_author(name=f"@{member.name}", icon_url=member.avatar.url if member.avatar else None)
 
+        flag = get_team_flag(team_name) if team_name else ""
         if self.mode == "ongoing":
             # Determine if it's a series or tournament
             conn = sqlite3.connect('players.db')
@@ -1451,7 +1452,6 @@ class PersonalStatsView(View):
                 embed.title = f"{flag + '  ' if flag else ''}✦ Ongoing Statistics"
         else:
             if team_name:
-                flag = get_team_flag(team_name)
                 embed.title = f"{flag}  ✦ Career Statistics"
             else:
                 embed.title = "✦ Career Statistics"

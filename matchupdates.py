@@ -3,6 +3,7 @@ from discord.ext import commands
 import json
 import random
 import re
+import time
 from PIL import Image, ImageDraw, ImageFont
 import io
 import sqlite3
@@ -123,6 +124,382 @@ last_timelines = {}
 # Store last processed wickets to prevent duplicates (username + timestamp)
 last_wickets = {}
 
+
+def parse_nowstat_message(content):
+    """
+    Parse cricket bot messages for:
+    - Opening batters (role='bat')
+    - Opening bowler (role='bowl')
+    - Next batsman (role='bat')
+    - Next bowler (role='bowl')
+
+    Returns list of (user_id, role) or None
+    """
+    results = []
+
+    # Opening batters block
+    opening_bat_match = re.search(
+        r'Opening batters? are:\s*((?:\s*-\s*<@!?\d+>\s*)+)',
+        content, re.IGNORECASE
+    )
+    if opening_bat_match:
+        ids = re.findall(r'<@!?(\d+)>', opening_bat_match.group(1))
+        for uid in ids:
+            results.append((int(uid), 'bat'))
+
+    # Opening bowler block
+    opening_bowl_match = re.search(
+        r'Opening bowler is:\s*((?:\s*-\s*<@!?\d+>\s*)+)',
+        content, re.IGNORECASE
+    )
+    if opening_bowl_match:
+        ids = re.findall(r'<@!?(\d+)>', opening_bowl_match.group(1))
+        for uid in ids:
+            results.append((int(uid), 'bowl'))
+
+    if results:
+        return results
+
+    # "Next batsman: <@ID>"
+    next_bat = re.search(r'Next batsman[^:]*:\s*<@!?(\d+)>', content, re.IGNORECASE)
+    if next_bat:
+        results.append((int(next_bat.group(1)), 'bat'))
+        return results
+
+    # "Next bowler to bowl is: <@ID>"
+    next_bowl = re.search(r'Next bowler[^:]*:\s*<@!?(\d+)>', content, re.IGNORECASE)
+    if next_bowl:
+        results.append((int(next_bowl.group(1)), 'bowl'))
+        return results
+
+    return None
+
+
+def get_player_international_stats(user_id):
+    """Get career stats for a player from match_stats table"""
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute("""
+        SELECT 
+            COUNT(*) as matches,
+            COALESCE(SUM(runs), 0) as total_runs,
+            COALESCE(SUM(balls_faced), 0) as total_balls_faced,
+            COALESCE(SUM(runs_conceded), 0) as total_runs_conceded,
+            COALESCE(SUM(balls_bowled), 0) as total_balls_bowled,
+            COALESCE(SUM(wickets), 0) as total_wickets,
+            COALESCE(SUM(not_out), 0) as times_not_out,
+            COALESCE(MAX(runs), 0) as highest_score
+        FROM match_stats
+        WHERE user_id = ?
+    """, (user_id,))
+    result = c.fetchone()
+
+    # Best bowling figure
+    c.execute("""
+        SELECT wickets, runs_conceded FROM match_stats
+        WHERE user_id = ? AND wickets > 0
+        ORDER BY wickets DESC, runs_conceded ASC
+        LIMIT 1
+    """, (user_id,))
+    best_bowling = c.fetchone()
+
+    # Fifties and hundreds
+    c.execute("SELECT COUNT(*) FROM match_stats WHERE user_id = ? AND runs >= 50 AND runs < 100", (user_id,))
+    fifties = c.fetchone()[0]
+
+    c.execute("SELECT COUNT(*) FROM match_stats WHERE user_id = ? AND runs >= 100", (user_id,))
+    hundreds = c.fetchone()[0]
+
+    # 3-fers and 5-fers
+    c.execute("SELECT COUNT(*) FROM match_stats WHERE user_id = ? AND wickets >= 3 AND wickets < 5", (user_id,))
+    three_fers = c.fetchone()[0]
+
+    c.execute("SELECT COUNT(*) FROM match_stats WHERE user_id = ? AND wickets >= 5", (user_id,))
+    five_fers = c.fetchone()[0]
+
+    conn.close()
+
+    if not result:
+        return None
+
+    matches, total_runs, total_balls_faced, total_runs_conceded, total_balls_bowled, total_wickets, times_not_out, highest_score = result
+
+    dismissals = matches - times_not_out
+    bat_avg = total_runs / dismissals if dismissals > 0 else total_runs
+    bat_sr = (total_runs / total_balls_faced * 100) if total_balls_faced > 0 else 0
+    economy = (total_runs_conceded / (total_balls_bowled / 6)) if total_balls_bowled > 0 else 0
+    bowl_avg = (total_runs_conceded / total_wickets) if total_wickets > 0 else 0
+    best_bowling_str = f"{best_bowling[0]}/{best_bowling[1]}" if best_bowling else "0/0"
+
+    return {
+        'matches': matches,
+        'runs': total_runs,
+        'bat_avg': bat_avg,
+        'bat_sr': bat_sr,
+        'highest_score': highest_score,
+        'fifties': fifties,
+        'hundreds': hundreds,
+        'wickets': total_wickets,
+        'bowl_avg': bowl_avg,
+        'economy': economy,
+        'best_bowling': best_bowling_str,
+        'three_fers': three_fers,
+        'five_fers': five_fers,
+    }
+
+
+def get_icc_ranking(user_id, stat_type):
+    """Get ICC ranking for a player (runs or wickets)"""
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+
+    if stat_type == "runs":
+        c.execute("""
+            SELECT user_id, SUM(runs) as total
+            FROM match_stats
+            GROUP BY user_id
+            ORDER BY total DESC
+        """)
+    else:
+        c.execute("""
+            SELECT user_id, SUM(wickets) as total
+            FROM match_stats
+            GROUP BY user_id
+            ORDER BY total DESC
+        """)
+
+    rows = c.fetchall()
+    conn.close()
+
+    for idx, (uid, _) in enumerate(rows, 1):
+        if uid == user_id:
+            return idx
+    return None
+
+
+async def fetch_discord_avatar(user_id, bot, size=40):
+    """Fetch a user's discord avatar as a circular PIL Image"""
+    try:
+        user = bot.get_user(user_id) or await bot.fetch_user(user_id)
+        if not user or not user.avatar:
+            return None
+        avatar_url = str(user.avatar.with_size(128).url)
+        async with aiohttp.ClientSession() as session:
+            async with session.get(avatar_url) as resp:
+                if resp.status == 200:
+                    data = await resp.read()
+                    avatar_img = Image.open(io.BytesIO(data)).convert('RGBA')
+                    avatar_img = avatar_img.resize((size, size), Image.Resampling.LANCZOS)
+                    mask = Image.new('L', (size, size), 0)
+                    ImageDraw.Draw(mask).ellipse((0, 0, size, size), fill=255)
+                    avatar_img.putalpha(mask)
+                    return avatar_img
+    except Exception as e:
+        print(f"Error fetching avatar: {e}")
+    return None
+
+
+async def create_nowstat_image(user_id, role, guild, bot):
+    try:
+        img = Image.open("nowstat.png").convert('RGBA')
+        draw = ImageDraw.Draw(img)
+        width, height = img.size
+
+        # --- Get player info ---
+        conn = sqlite3.connect('players.db')
+        c = conn.cursor()
+        c.execute("SELECT player_name, username FROM player_representatives WHERE user_id = ?", (user_id,))
+        result = c.fetchone()
+        conn.close()
+
+        if not result:
+            print(f"❌ No player found for user_id {user_id}")
+            return None, None
+
+        player_name, db_username = result
+        team = find_player_team(player_name)
+
+        # Get player data from players.json
+        player_image_url = None
+        batting_style = ''
+        bowling_style = ''
+        try:
+            with open('players.json', 'r', encoding='utf-8') as f:
+                teams_data = json.load(f)
+            for team_data in teams_data:
+                for player in team_data['players']:
+                    if player['name'] == player_name:
+                        player_image_url = player.get('image')
+                        batting_style = player.get('batting_style', '')
+                        bowling_style = player.get('bowling_style', '')
+                        break
+        except Exception as e:
+            print(f"Error loading players.json: {e}")
+
+        stats = get_player_international_stats(user_id)
+        icc_rank = get_icc_ranking(user_id, "runs" if role == 'bat' else "wickets")
+
+        member = guild.get_member(user_id)
+        discord_username = member.name if member else db_username
+
+        # Load fonts
+        try:
+            name_font = ImageFont.truetype("nor.otf", 55)
+            username_font = ImageFont.truetype("nor.otf", 32)
+            stat_label_font = ImageFont.truetype("nor.otf", 30)
+            stat_value_font = ImageFont.truetype("nor.otf", 38)
+        except:
+            name_font = ImageFont.load_default()
+            username_font = name_font
+            stat_label_font = name_font
+            stat_value_font = name_font
+
+        WHITE = (255, 255, 255)
+
+        # === LEFT: Player image (stays in original position) ===
+        player_img_size = min(width // 4, height - 40)
+        player_img_x = 20
+        player_img_y = (height - player_img_size) // 2
+
+        if player_image_url:
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(player_image_url) as resp:
+                        if resp.status == 200:
+                            pdata = await resp.read()
+                            p_img = Image.open(io.BytesIO(pdata)).convert('RGBA')
+                            p_img = p_img.resize((player_img_size, player_img_size), Image.Resampling.LANCZOS)
+                            img.paste(p_img, (player_img_x, player_img_y), p_img)
+            except Exception as e:
+                print(f"Error loading player image: {e}")
+
+        # === RIGHT: Team flag (NON-circular, raw paste like timeline style) ===
+        flag_size = 120
+        flag_x = width - flag_size - 20
+        flag_y = (height - flag_size) // 2 - 40  # shifted up with content
+
+        if team:
+            if team.lower() == "west indies":
+                try:
+                    flag_img = Image.open("westindies.jpg").convert('RGBA')
+                    flag_img = flag_img.resize((flag_size, flag_size), Image.Resampling.LANCZOS)
+                    img.paste(flag_img, (flag_x, flag_y), flag_img)
+                except Exception as e:
+                    print(f"Error loading WI flag: {e}")
+            else:
+                flag_url = get_team_flag_url(team)
+                if flag_url:
+                    try:
+                        async with aiohttp.ClientSession() as session:
+                            async with session.get(flag_url) as resp:
+                                if resp.status == 200:
+                                    fdata = await resp.read()
+                                    flag_img = Image.open(io.BytesIO(fdata)).convert('RGBA')
+                                    flag_img = flag_img.resize((flag_size, flag_size), Image.Resampling.LANCZOS)
+                                    img.paste(flag_img, (flag_x, flag_y), flag_img)
+                    except Exception as e:
+                        print(f"Error loading flag: {e}")
+
+        # === CENTER: Name + username + stats (shifted UP) ===
+        content_x = player_img_x + player_img_size + 30
+        content_width = flag_x - content_x - 20
+        current_y = 15  # shifted up from 30
+
+        # Player name
+        draw.text((content_x, current_y), player_name.upper(), fill=WHITE, font=name_font)
+        current_y += 60  # tightened from 65
+
+        # Discord avatar + username
+        avatar_img = await fetch_discord_avatar(user_id, bot, size=40)
+        if avatar_img:
+            img.paste(avatar_img, (content_x, current_y), avatar_img)
+            draw.text((content_x + 50, current_y + 5), f"@{discord_username}", fill=WHITE, font=username_font)
+        else:
+            draw.text((content_x, current_y + 5), f"@{discord_username}", fill=WHITE, font=username_font)
+        current_y += 50  # tightened from 55
+
+        # Divider line
+        draw.line(
+            [(content_x, current_y), (content_x + content_width, current_y)],
+            fill=(150, 150, 150), width=2
+        )
+        current_y += 12  # tightened from 15
+
+        if stats:
+            if role == 'bat':
+                row1 = [
+                    ("Matches", str(stats['matches'])),
+                    ("Runs", str(stats['runs'])),
+                    ("Average", f"{stats['bat_avg']:.1f}"),
+                    ("SR", f"{stats['bat_sr']:.1f}"),
+                    ("Best", str(stats['highest_score'])),
+                ]
+                col_w = content_width // len(row1)
+                for i, (label, value) in enumerate(row1):
+                    cx = content_x + i * col_w
+                    draw.text((cx, current_y), label, fill=WHITE, font=stat_label_font)
+                    draw.text((cx, current_y + 32), value, fill=WHITE, font=stat_value_font)
+                current_y += 80  # tightened from 85
+
+                row2 = [
+                    ("50s", str(stats['fifties'])),
+                    ("100s", str(stats['hundreds'])),
+                    ("ICC Rank", f"#{icc_rank}" if icc_rank else "N/A"),
+                ]
+                col_w2 = content_width // len(row2)
+                for i, (label, value) in enumerate(row2):
+                    cx = content_x + i * col_w2
+                    draw.text((cx, current_y), label, fill=WHITE, font=stat_label_font)
+                    draw.text((cx, current_y + 32), value, fill=WHITE, font=stat_value_font)
+
+            else:  # bowl
+                row1 = [
+                    ("Matches", str(stats['matches'])),
+                    ("Wickets", str(stats['wickets'])),
+                    ("Average", f"{stats['bowl_avg']:.1f}"),
+                    ("Economy", f"{stats['economy']:.1f}"),
+                    ("Best", stats['best_bowling']),
+                ]
+                col_w = content_width // len(row1)
+                for i, (label, value) in enumerate(row1):
+                    cx = content_x + i * col_w
+                    draw.text((cx, current_y), label, fill=WHITE, font=stat_label_font)
+                    draw.text((cx, current_y + 32), value, fill=WHITE, font=stat_value_font)
+                current_y += 80  # tightened from 85
+
+                row2 = [
+                    ("3-Fers", str(stats['three_fers'])),
+                    ("5-Fers", str(stats['five_fers'])),
+                    ("ICC Rank", f"#{icc_rank}" if icc_rank else "N/A"),
+                ]
+                col_w2 = content_width // len(row2)
+                for i, (label, value) in enumerate(row2):
+                    cx = content_x + i * col_w2
+                    draw.text((cx, current_y), label, fill=WHITE, font=stat_label_font)
+                    draw.text((cx, current_y + 32), value, fill=WHITE, font=stat_value_font)
+        else:
+            draw.text((content_x, current_y), "No stats yet", fill=WHITE, font=stat_label_font)
+
+        # Convert to bytes
+        output = io.BytesIO()
+        img.save(output, format='PNG')
+        output.seek(0)
+
+        plain_text = f"__{batting_style}__ **Batsman** comes out to Play 🏏" if role == 'bat' and batting_style else (
+            f"__{bowling_style}__ **Bowler** comes into the Attack 💥" if role == 'bowl' and bowling_style else (
+                "Batsman comes out to Play 🏏" if role == 'bat' else "Bowler comes into the Attack 💥"
+            )
+        )
+
+        return output, plain_text
+
+    except Exception as e:
+        print(f"❌ Error creating nowstat image: {e}")
+        import traceback
+        traceback.print_exc()
+        return None, None
+
+
 def parse_embed_fields(embed):
     """Parse the embed fields to extract match data - FIXED VERSION"""
 
@@ -226,13 +603,13 @@ def parse_embed_fields(embed):
 
                     conn = sqlite3.connect('players.db')
                     c = conn.cursor()
-                    
+
                     if user_id_str:
                         user_id = int(user_id_str)
                         c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (user_id,))
                     else:
                         c.execute("SELECT player_name FROM player_representatives WHERE username = ?", (username,))
-                    
+
                     result = c.fetchone()
                     conn.close()
 
@@ -276,13 +653,13 @@ def parse_embed_fields(embed):
 
                 conn = sqlite3.connect('players.db')
                 c = conn.cursor()
-                
+
                 if user_id_str:
                     user_id = int(user_id_str)
                     c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (user_id,))
                 else:
                     c.execute("SELECT player_name FROM player_representatives WHERE username = ?", (username,))
-                
+
                 result = c.fetchone()
                 conn.close()
 
@@ -631,7 +1008,7 @@ async def create_wicket_image(wicket_data, guild):
         name_size = 90
         if len(out_player_name) > 15:
             name_size = 65  # Shrink if more than 15 characters
-        
+
         try:
             player_name_font = ImageFont.truetype("nor.otf", name_size)
         except:
@@ -922,6 +1299,36 @@ class MatchUpdates(commands.Cog):
         print(f"\n{'='*60}")
         print(f"✅ MESSAGE FROM CRICKET BOT!")
         print(f"{'='*60}")
+
+        # ===== NOWSTAT CHECK =====
+        if message.content:
+            players_to_show = parse_nowstat_message(message.content)
+            if players_to_show:
+                print(f"🆕 NOWSTAT: Found {len(players_to_show)} player(s)")
+                for user_id, role in players_to_show:
+                    conn = sqlite3.connect('players.db')
+                    c = conn.cursor()
+                    c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (user_id,))
+                    pname_result = c.fetchone()
+                    conn.close()
+
+                    if not pname_result:
+                        print(f"   ⚠️ No player found for user_id {user_id}, skipping")
+                        continue
+
+                    player_name = pname_result[0]
+                    print(f"   🎨 Creating nowstat for {player_name} (role={role})")
+
+                    result = await create_nowstat_image(user_id, role, message.guild, self.bot)
+
+                    if result and result[0]:
+                        image_bytes, plain_text = result
+                        file = discord.File(fp=image_bytes, filename="nowstat.png")
+                        await message.channel.send(content=plain_text, file=file)
+                        print(f"   ✅ Sent nowstat for {player_name}")
+                    else:
+                        print(f"   ❌ Failed to create nowstat for {player_name}")
+        # ===== END NOWSTAT CHECK =====
 
         # FIRST: Check if there's an embed with wicket info OR match data
         wicket_info = None
@@ -1295,6 +1702,34 @@ class MatchUpdates(commands.Cog):
         file = discord.File(fp=wicket_image, filename="test_wicket.png")
         await ctx.send(f"🧪 **Test Wicket Image Generated**", file=file)
         print(f"✅ Test wicket image sent!\n")
+
+    @commands.command(name='testnowstat', aliases=['tns'])
+    async def test_nowstat_image(self, ctx, member: discord.Member = None, role: str = 'bat'):
+        """Test nowstat command: -testnowstat @user [bat/bowl]"""
+
+        if not member:
+            await ctx.send("❌ Usage: `-testnowstat @user [bat/bowl]`\nRole defaults to `bat` if not specified.")
+            return
+
+        role = role.lower()
+        if role not in ['bat', 'bowl']:
+            await ctx.send("❌ Role must be `bat` or `bowl`!")
+            return
+
+        print(f"\n🧪 TEST NOWSTAT COMMAND TRIGGERED")
+        print(f"   Member: {member.name}")
+        print(f"   Role: {role}")
+
+        result = await create_nowstat_image(member.id, role, ctx.guild, self.bot)
+
+        if not result or not result[0]:
+            await ctx.send("❌ Failed to create nowstat image! Make sure the user has a claimed player.")
+            return
+
+        image_bytes, plain_text = result
+        file = discord.File(fp=image_bytes, filename="nowstat.png")
+        await ctx.send(content=f"🧪 **Test Nowstat** | {plain_text}", file=file)
+        print(f"✅ Test nowstat image sent!\n")
 
 async def setup(bot):
     await bot.add_cog(MatchUpdates(bot))
