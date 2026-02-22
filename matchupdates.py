@@ -118,7 +118,8 @@ EMOJI_MAPPING = {
     'PP4_emoji_33': '8LB'
 }
 
-# Store last processed timeline per channel
+# Store last processed timeline state per channel
+# Each entry: { 'fingerprint': str, 'bowler': str, 'sent_at': float }
 last_timelines = {}
 
 # Store last processed wickets to prevent duplicates (username + timestamp)
@@ -344,9 +345,9 @@ async def create_nowstat_image(user_id, role, guild, bot):
 
         # Load fonts
         try:
-            name_font = ImageFont.truetype("nor.otf", 75)  # Very big
+            name_font = ImageFont.truetype("nor.otf", 75)
             username_font = ImageFont.truetype("nor.otf", 45)
-            big_stat_font = ImageFont.truetype("nor.otf", 60) # For stats next to name
+            big_stat_font = ImageFont.truetype("nor.otf", 60)
             stat_label_font = ImageFont.truetype("nor.otf", 40)
             stat_value_font = ImageFont.truetype("nor.otf", 55)
         except:
@@ -378,7 +379,7 @@ async def create_nowstat_image(user_id, role, guild, bot):
         # === RIGHT: Team flag ===
         flag_size = 140
         flag_x = width - flag_size - 10
-        flag_y = 20 # Moved up
+        flag_y = 20
 
         if team:
             if team.lower() == "west indies":
@@ -406,21 +407,44 @@ async def create_nowstat_image(user_id, role, guild, bot):
         content_x = player_img_x + player_img_size + 25
         current_y = 10
 
-        # 1. Player Name + Big Stats (Matches, Runs/Wkts, Rank)
+        # 1. Player Name + Big Stats
         name_text = player_name.upper()
         draw.text((content_x, current_y), name_text, fill=WHITE, font=name_font)
-        
-        # Calculate offset for stats next to name
+
         name_bbox = draw.textbbox((content_x, current_y), name_text, font=name_font)
-        stats_x = name_bbox[2] + 40 # 40px space after name
-        
+        stats_x = name_bbox[2] + 40
+
         if stats:
             main_stat_val = str(stats['runs']) if role == 'bat' else str(stats['wickets'])
             main_stat_label = "RUNS" if role == 'bat' else "WKTS"
             rank_text = f"#{icc_rank}" if icc_rank else "N/A"
-            
-            top_stats_text = f"{stats['matches']} MAT | {main_stat_val} {main_stat_label} | RANK {rank_text}"
-            draw.text((stats_x, current_y + 10), top_stats_text, fill=(255, 215, 0), font=big_stat_font) # Gold color for main stats
+
+            col_labels = ["MATCHES", main_stat_label, "RANK"]
+            col_values = [str(stats['matches']), main_stat_val, rank_text]
+
+            # Adjust layout based on player name length
+            name_is_long = len(player_name) >= 18
+            if name_is_long:
+                # Long name: shift left, smaller fonts, tighter spacing
+                try:
+                    s_label_font = ImageFont.truetype("nor.otf", 30)
+                    s_value_font = ImageFont.truetype("nor.otf", 45)
+                except:
+                    s_label_font = stat_label_font
+                    s_value_font = big_stat_font
+                col_spacing = 220
+                extra_right_offset = 60  # much less offset to shift left
+            else:
+                s_label_font = stat_label_font
+                s_value_font = big_stat_font
+                col_spacing = 280
+                extra_right_offset = 120  # slightly left of previous 250
+
+            for ci, (lbl, val) in enumerate(zip(col_labels, col_values)):
+                cx = stats_x + extra_right_offset + ci * col_spacing
+                draw.text((cx, current_y + 5), lbl, fill=WHITE, font=s_label_font)
+                # Values drop a little further below label
+                draw.text((cx, current_y + 55), val, fill=WHITE, font=s_value_font)
 
         current_y += 85
 
@@ -431,14 +455,14 @@ async def create_nowstat_image(user_id, role, guild, bot):
             draw.text((content_x + 65, current_y + 5), f"@{discord_username}", fill=WHITE, font=username_font)
         else:
             draw.text((content_x, current_y + 5), f"@{discord_username}", fill=WHITE, font=username_font)
-        
+
         current_y += 75
 
         # 3. Divider
         draw.line([(content_x, current_y), (width - 20, current_y)], fill=(200, 200, 200), width=4)
         current_y += 25
 
-        # 4. Detailed Stats (All in one row/cluster to avoid the very bottom)
+        # 4. Detailed Stats
         if stats:
             if role == 'bat':
                 display_stats = [
@@ -453,19 +477,16 @@ async def create_nowstat_image(user_id, role, guild, bot):
                     ("AVG", f"{stats['bowl_avg']:.1f}"),
                     ("ECO", f"{stats['economy']:.1f}"),
                     ("BEST", stats['best_bowling']),
-                    ("3w", str(stats['three_fers'])),
-                    ("5w", str(stats['five_fers'])),
+                    ("3F", str(stats['three_fers'])),
+                    ("5F", str(stats['five_fers'])),
                 ]
-            
-            # Draw all stats in one wide row
+
             available_width = width - content_x - 30
             col_width = available_width // len(display_stats)
             for i, (label, value) in enumerate(display_stats):
                 sx = content_x + (i * col_width)
                 draw.text((sx, current_y), label, fill=WHITE, font=stat_label_font)
                 draw.text((sx, current_y + 45), value, fill=WHITE, font=stat_value_font)
-        else:
-            draw.text((content_x, current_y), "No international stats available", fill=WHITE, font=stat_label_font)
         else:
             draw.text((content_x, current_y), "No stats yet", fill=WHITE, font=stat_label_font)
 
@@ -474,11 +495,12 @@ async def create_nowstat_image(user_id, role, guild, bot):
         img.save(output, format='PNG')
         output.seek(0)
 
-        plain_text = f"__{batting_style}__ **Batsman** comes out to Play 🏏" if role == 'bat' and batting_style else (
-            f"__{bowling_style}__ **Bowler** comes into the Attack 💥" if role == 'bowl' and bowling_style else (
-                "Batsman comes out to Play 🏏" if role == 'bat' else "Bowler comes into the Attack 💥"
-            )
-        )
+        if role == 'bat':
+            plain_text = (f"__{batting_style}__ **Batsman** Walks Onto The Crease! 🏏"
+                          if batting_style else "Batsman comes out to Play 🏏")
+        else:
+            plain_text = (f"__{bowling_style}__ **Bowler** Comes Into The Attack 💥"
+                          if bowling_style else "Bowler comes into the Attack 💥")
 
         return output, plain_text
 
@@ -487,6 +509,33 @@ async def create_nowstat_image(user_id, role, guild, bot):
         import traceback
         traceback.print_exc()
         return None, None
+
+
+def get_full_message_text(message):
+    """
+    Build a single string from ALL parts of a discord message:
+    plain content + all embed titles/descriptions/fields/footers.
+    This ensures nowstat triggers regardless of where the bot puts it.
+    """
+    parts = []
+
+    if message.content:
+        parts.append(message.content)
+
+    for embed in message.embeds:
+        if embed.title:
+            parts.append(embed.title)
+        if embed.description:
+            parts.append(embed.description)
+        for field in embed.fields:
+            parts.append(field.name)
+            parts.append(field.value)
+        if embed.footer and embed.footer.text:
+            parts.append(embed.footer.text)
+        if embed.author and embed.author.name:
+            parts.append(embed.author.name)
+
+    return "\n".join(parts)
 
 
 def parse_embed_fields(embed):
@@ -507,8 +556,7 @@ def parse_embed_fields(embed):
         innings = innings_match.group(1) if innings_match else "ONE"
         print(f"   📍 Innings: {innings}")
 
-        # --- 2. EXTRACT ALL TEAM SCORES (can be any team names) ---
-        # Pattern matches: "TEAM NAME: score (overs)" - supports any case
+        # --- 2. EXTRACT ALL TEAM SCORES ---
         team_pattern = r'([A-Za-z\s]+)\s*[^\:]*:\s*(\d+/\d+)\s*\((\d+\.\d+)\s*overs\)'
         all_teams = re.findall(team_pattern, full_text)
 
@@ -516,7 +564,6 @@ def parse_embed_fields(embed):
             print("   ⚠️ Less than 2 teams found!")
             return {}
 
-        # Store both teams with their data
         team_info = {}
         for team_name, score, overs in all_teams:
             team_name_clean = team_name.strip()
@@ -527,12 +574,9 @@ def parse_embed_fields(embed):
             }
             print(f"   📊 {team_name_clean}: {score} ({overs} overs)")
 
-        # Sort teams by overs completed
         teams_sorted = sorted(team_info.items(), key=lambda x: x[1]['overs'], reverse=True)
 
-        # Determine which team is batting based on INNINGS
         if innings == "ONE":
-            # Innings 1: The team with MORE overs is currently batting
             batting_team_name = teams_sorted[0][0]
             batting_team_info = teams_sorted[0][1]
 
@@ -541,24 +585,20 @@ def parse_embed_fields(embed):
             print(f"   ✅ Innings 1: {batting_team_name} is batting: {batting_team_info['score']} ({batting_team_info['overs']})")
 
         elif innings == "TWO":
-            # Innings 2: The team with MORE overs COMPLETED innings 1 (finished)
-            # The team with FEWER overs is CURRENTLY BATTING in innings 2
-            innings1_team_name = teams_sorted[0][0]  # More overs = finished batting
+            innings1_team_name = teams_sorted[0][0]
             innings1_team_info = teams_sorted[0][1]
 
-            batting_team_name = teams_sorted[1][0]  # Fewer overs = currently batting
+            batting_team_name = teams_sorted[1][0]
             batting_team_info = teams_sorted[1][1]
 
             data['team_a_score'] = batting_team_info['score']
             data['overs'] = str(batting_team_info['overs'])
 
-            # Store team names for innings 2
             data['innings2_batting_team'] = batting_team_name
             data['innings2_opposition_team'] = innings1_team_name
 
             print(f"   ✅ Innings 2: {batting_team_name} is batting: {batting_team_info['score']} ({batting_team_info['overs']})")
 
-            # Calculate target from innings 1 team (the one with MORE overs)
             target = innings1_team_info['runs'] + 1
             data['target'] = f"Target {target}"
             print(f"   🎯 TARGET: {target} ({innings1_team_name} made {innings1_team_info['runs']} in innings 1)")
@@ -567,17 +607,15 @@ def parse_embed_fields(embed):
         batters_section = re.search(r'Batters:\s*(.+?)(?:Bowler:|Partnership:|$)', full_text, re.DOTALL)
         if batters_section:
             batters_text = batters_section.group(1)
-            # Find the user ID from the user mention: <@ID>
             batter_lines = [line.strip() for line in batters_text.split('\n') if line.strip() and 'runs' in line.lower()]
 
             batter_count = 0
 
             for line in batter_lines:
-                if 'no batsman' in line.lower(): continue
+                if 'no batsman' in line.lower():
+                    continue
 
                 clean_line = line.replace('*', '').strip()
-                # Pattern to match username and optional user mention/ID
-                # Format: "Username (<@ID>): 10 (5) runs"
                 match = re.search(r'^(.+?)(?:\s*\(<@!?(\d+)>\))?:\s*(\d+)\s*\((\d+)\)\s*runs', clean_line)
 
                 if match:
@@ -613,14 +651,7 @@ def parse_embed_fields(embed):
 
                     if team and 'batting_team' not in data:
                         data['batting_team'] = team
-
-                        # Check if this is innings 2
-                        if 'innings2_batting_team' in data:
-                            # Innings 2: Use batting team abbreviation, opposition team full name
-                            data['team_a_name'] = TEAM_ABBREVIATIONS.get(team, team[:3].upper())
-                        else:
-                            # Innings 1: Normal logic
-                            data['team_a_name'] = TEAM_ABBREVIATIONS.get(team, team[:3].upper())
+                        data['team_a_name'] = TEAM_ABBREVIATIONS.get(team, team[:3].upper())
 
                     if is_on_strike:
                         data['on_strike'] = batter_count
@@ -630,7 +661,6 @@ def parse_embed_fields(embed):
         if bowler_section:
             bowler_line = bowler_section.group(1).strip()
             clean_line = bowler_line.replace('*', '').strip()
-            # Format: "Username (<@ID>): 0-10 (1.0 overs)"
             match = re.search(r'^(.+?)(?:\s*\(<@!?(\d+)>\))?:\s*(\d+)\s*-\s*(\d+)\s*\((\d+(?:\.\d+)?)\s*overs?\)', clean_line)
 
             if match:
@@ -662,7 +692,6 @@ def parse_embed_fields(embed):
                 data['bowler_team'] = team if team else ""
 
                 if team:
-                    # Always use bowler's actual team name
                     data['team_b_name'] = team
 
         # --- 4. EXTRACT TIMELINE ---
@@ -671,8 +700,8 @@ def parse_embed_fields(embed):
             timeline_text = timeline_match.group(1)
             timeline = []
             for match in re.finditer(r':(?:(PP\d+)_)?emoji_(\d+):', timeline_text):
-                prefix = match.group(1)  # PP1, PP2, etc. or None
-                num = match.group(2)     # The number
+                prefix = match.group(1)
+                num = match.group(2)
 
                 if prefix:
                     key = f'{prefix}_emoji_{num}'
@@ -691,13 +720,22 @@ def parse_embed_fields(embed):
         traceback.print_exc()
         return {}
 
-def get_current_over_balls(timeline):
-    """Extract only the balls from the current over (reset after every 6 balls)"""
+def get_current_over_balls(timeline, force_current_only=False):
+    """Extract only the balls from the current over (reset after every 6 balls).
+    If force_current_only=True, only show balls since the last full-over boundary
+    (used when bowler changes to avoid showing previous bowler's balls).
+    """
     if not timeline:
         return []
 
     total_balls = len(timeline)
     current_over_position = total_balls % 6
+
+    if force_current_only:
+        # Only show balls in the current (incomplete) over
+        if current_over_position == 0:
+            return []  # We're at an over boundary — no balls yet this over
+        return timeline[-current_over_position:]
 
     if current_over_position == 0:
         return timeline[-6:] if len(timeline) >= 6 else timeline
@@ -749,7 +787,6 @@ async def create_match_image(match_data, guild):
         WHITE = (255, 255, 255)
         BLACK = (0, 0, 0)
 
-        # Parse match data
         team_a_name = match_data.get('team_a_name', '')
         team_b_name = match_data.get('team_b_name', '')
         batting_team = match_data.get('batting_team', '')
@@ -777,36 +814,27 @@ async def create_match_image(match_data, guild):
         print(f"   Score: {team_a_score} ({overs} overs)")
         print(f"   Target: {target}")
 
-        # CENTER - Team names and score
         center_x = width // 2
         center_y = 80
 
-        # Draw team abbreviations
         if team_a_name:
             draw.text((center_x - 200, center_y + 80), team_a_name, fill=PURPLE, font=biggie_font, anchor="mm")
 
         if team_b_name:
-            HOT_PINK =  (255, 0, 145)
             draw.text((center_x - 60, center_y + 200), f"VS {team_b_name}", fill=WHITE, font=vs_font, anchor="mm")
 
-        # Draw main score
         draw.text((center_x + 95, center_y + 68), team_a_score, fill=WHITE, font=score_font, anchor="mm")
-
-        # Draw overs
         draw.text((center_x + 150, center_y + 200), f"{overs} OV", fill=PURPLE, font=usersmol_font, anchor="mm")
 
-        # Draw target if exists (in center, below score) in BLUE
         if target:
             draw.text((center_x + 40, center_y - 40), target, fill=WHITE, font=usersmol_font, anchor="mm")
             print(f"   🎯 Drew target: {target}")
 
-        # LEFT SIDE - Batsmen
         left_x = 150
         batsman1_y = 160
         batsman2_y = 220
-        flag_size = 180  # INCREASED from 100
+        flag_size = 180
 
-        # Load red triangle for on-strike indicator
         try:
             triangle = Image.open("redt.png").convert('RGBA')
             triangle = triangle.resize((100, 50), Image.Resampling.LANCZOS)
@@ -814,7 +842,6 @@ async def create_match_image(match_data, guild):
             print(f"⚠️ Warning loading triangle: {e}")
             triangle = None
 
-        # Draw batting team flag (bigger)
         if batting_team:
             flag_url = get_team_flag_url(batting_team)
             if flag_url:
@@ -827,16 +854,12 @@ async def create_match_image(match_data, guild):
                                 flag_img = flag_img.resize((flag_size, flag_size), Image.Resampling.LANCZOS)
                                 flag_y = (batsman1_y + batsman2_y) // 2 - 20
                                 img.paste(flag_img, (left_x - 130, flag_y - 100), flag_img)
-                                print(f"   ✅ Drew batting team flag for {batting_team}")
                 except Exception as e:
                     print(f"   ⚠️ Error loading batting flag: {e}")
 
         max_name_width = 180
 
-        # Draw batsman 1
         if batsman1_name and batsman1_username:
-            print(f"🎨 Drawing Batsman 1: {batsman1_name} (@{batsman1_username})")
-
             if triangle and on_strike == 1:
                 img.paste(triangle, (left_x + 65, batsman1_y - 80), triangle)
 
@@ -850,10 +873,7 @@ async def create_match_image(match_data, guild):
             draw.text((left_x + 350, batsman1_y - 50), batsman1_score, fill=PURPLE, font=usersmol_font, anchor="lm")
             draw.text((left_x + 150, batsman1_y - 15), f"@{batsman1_username}", fill=BLACK, font=username_font, anchor="lm")
 
-        # Draw batsman 2
         if batsman2_name and batsman2_username:
-            print(f"🎨 Drawing Batsman 2: {batsman2_name} (@{batsman2_username})")
-
             if triangle and on_strike == 2:
                 img.paste(triangle, (left_x + 65, batsman2_y - 7), triangle)
 
@@ -867,15 +887,11 @@ async def create_match_image(match_data, guild):
             draw.text((left_x + 350, batsman2_y + 20), batsman2_score, fill=PURPLE, font=usersmol_font, anchor="lm")
             draw.text((left_x + 150, batsman2_y + 50), f"@{batsman2_username}", fill=BLACK, font=username_font, anchor="lm")
 
-        # RIGHT SIDE - Bowler
         right_x = width - 150
-        bowler_y = 155  # MOVED UP from 190
-        bowler_flag_size = 180  # BIGGER flag for bowler
+        bowler_y = 155
+        bowler_flag_size = 180
 
         if bowler_name and bowler_username:
-            print(f"🎨 Drawing Bowler: {bowler_name} (@{bowler_username})")
-
-            # Draw bigger flag positioned higher
             if bowler_team:
                 flag_url = get_team_flag_url(bowler_team)
                 if flag_url:
@@ -887,33 +903,30 @@ async def create_match_image(match_data, guild):
                                     flag_img = Image.open(io.BytesIO(flag_data)).convert('RGBA')
                                     flag_img = flag_img.resize((bowler_flag_size, bowler_flag_size), Image.Resampling.LANCZOS)
                                     img.paste(flag_img, (right_x - 50, bowler_y - 100), flag_img)
-                                    print(f"   ✅ Drew flag for {bowler_team}")
                     except Exception as e:
                         print(f"   ⚠️ Error loading flag: {e}")
 
             draw.text((right_x - 140, bowler_y - 90), f"@{bowler_username}", fill=BLACK, font=username_font, anchor="rm")
 
-            # Fixed font size for bowler name and stats (no dynamic sizing)
             try:
-                bowler_fixed_font = ImageFont.truetype("nor.otf", 90)  # Fixed size
+                bowler_fixed_font = ImageFont.truetype("nor.otf", 90)
             except:
                 bowler_fixed_font = ImageFont.load_default()
 
             draw.text((right_x - 100, bowler_y - 30), bowler_name.upper(), fill=PURPLE, font=bowlersmol_font, anchor="rm")
             draw.text((right_x - 130, bowler_y + 30), bowler_stats, fill=PURPLE, font=bowlersmol_font, anchor="rm")
 
-        # BOTTOM RIGHT - Timeline circles
         circle_start_x = width - 420
         circle_y = height - 38
         circle_spacing = 70
         circle_radius = 28
 
-        current_over_balls = get_current_over_balls(timeline)
+        timeline_reset = match_data.get('timeline_reset', False) if isinstance(match_data, dict) else False
+        current_over_balls = get_current_over_balls(timeline, force_current_only=timeline_reset)
 
         for i, ball in enumerate(current_over_balls):
             x = circle_start_x + (i * circle_spacing)
 
-            # Determine fill color based on ball type
             if ball == 'W':
                 fill_color = (217, 17, 17)
             elif ball == '0':
@@ -922,23 +935,24 @@ async def create_match_image(match_data, guild):
                 fill_color = (191, 7, 232)
             elif ball == '4':
                 fill_color = (41, 232, 7)
-            elif 'LB' in ball:  # Leg byes
-                fill_color = (255, 165, 0)  # Orange color for leg byes
+            elif 'LB' in ball:
+                fill_color = (255, 165, 0)
             else:
                 fill_color = (27, 22, 107)
 
-            draw.ellipse([(x - circle_radius, circle_y - circle_radius), 
-                         (x + circle_radius, circle_y + circle_radius)], 
+            draw.ellipse([(x - circle_radius, circle_y - circle_radius),
+                         (x + circle_radius, circle_y + circle_radius)],
                         fill=fill_color, outline=(255, 255, 255), width=4)
 
-            # Use smaller font for LB text to fit in circle
             if 'LB' in ball:
-                lb_font = ImageFont.truetype("nor.otf", 24)  # Smaller font for LB
+                try:
+                    lb_font = ImageFont.truetype("nor.otf", 24)
+                except:
+                    lb_font = ImageFont.load_default()
                 draw.text((x, circle_y), ball, fill=(255, 255, 255), font=lb_font, anchor="mm")
             else:
                 draw.text((x, circle_y), ball, fill=(255, 255, 255), font=ball_font, anchor="mm")
 
-        # Convert to bytes
         output = io.BytesIO()
         img.save(output, format='PNG')
         output.seek(0)
@@ -958,9 +972,6 @@ async def create_wicket_image(wicket_data, guild):
         draw = ImageDraw.Draw(img)
         width, height = img.size
 
-        print(f"🖼️ OUT Image size: {width}x{height}")
-
-        # Load fonts
         try:
             player_name_font = ImageFont.truetype("nor.otf", 90)
             username_font = ImageFont.truetype("nor.otf", 40)
@@ -975,9 +986,8 @@ async def create_wicket_image(wicket_data, guild):
             dismissal_font = ImageFont.load_default()
 
         WHITE = (255, 255, 255)
-        YELLOW = (255, 207, 0)  # #ffcf00
+        YELLOW = (255, 207, 0)
 
-        # Get data
         out_player_name = wicket_data.get('out_player_name', 'UNKNOWN')
         out_username = wicket_data.get('out_username', 'unknown')
         runs = wicket_data.get('runs', '0')
@@ -986,17 +996,14 @@ async def create_wicket_image(wicket_data, guild):
         dismissal_usernames = wicket_data.get('dismissal_usernames', '')
         team_name = wicket_data.get('team', '')
 
-        # Check if it's a caught dismissal (has both caught and bowled)
         is_caught = 'c ' in dismissal_text and ' b ' in dismissal_text
 
-        # CENTER-LEFT: Player name and username
         center_x = width // 2
         player_y = height // 2 - 80
 
-        # Draw player name (WHITE, centered)
         name_size = 90
         if len(out_player_name) > 15:
-            name_size = 65  # Shrink if more than 15 characters
+            name_size = 65
 
         try:
             player_name_font = ImageFont.truetype("nor.otf", name_size)
@@ -1004,55 +1011,34 @@ async def create_wicket_image(wicket_data, guild):
             player_name_font = ImageFont.load_default()
 
         draw.text((center_x - 90, player_y - 20), out_player_name, fill=WHITE, font=player_name_font, anchor="mm")
-
-        # Draw username below (WHITE, centered)
         draw.text((center_x - 90, player_y + 40), f"@{out_username}", fill=WHITE, font=username_font, anchor="mm")
 
-        # RIGHT SIDE: Score
         score_x = center_x + 300
         score_y = player_y
 
-        # Draw runs (YELLOW)
         draw.text((score_x, score_y), runs, fill=YELLOW, font=score_font, anchor="lm")
 
-        # Draw balls (WHITE, smaller, right next to runs)
         bbox = draw.textbbox((score_x, score_y), runs, font=score_font)
         runs_width = bbox[2] - bbox[0]
         draw.text((score_x + runs_width + 20, score_y + 20), balls, fill=WHITE, font=balls_font, anchor="lm")
 
-        # BOTTOM CENTER: Dismissal info
         dismissal_y = height - 110
 
-        # Draw dismissal text (YELLOW)
         if is_caught:
-            # Split dismissal text for caught dismissal: "c CATCHER b BOWLER"
-            parts = dismissal_text.split(' b ')  # ['c CATCHER', 'BOWLER']
-
-            # Draw "c CATCHER" on the left
+            parts = dismissal_text.split(' b ')
             draw.text((center_x - 200, dismissal_y), parts[0], fill=YELLOW, font=dismissal_font, anchor="mm")
-
-            # Draw "b BOWLER" WAY MORE to the right
             draw.text((center_x + 350, dismissal_y), f"b {parts[1]}", fill=YELLOW, font=dismissal_font, anchor="mm")
         else:
-            # Single dismissal text (bowled only) - centered
             draw.text((center_x, dismissal_y), dismissal_text, fill=YELLOW, font=dismissal_font, anchor="mm")
 
-        # Draw usernames below dismissal text (WHITE)
         if dismissal_usernames:
             if is_caught:
-                # Split usernames for caught dismissal
-                usernames = dismissal_usernames.split()  # ['@catcher', '@bowler']
-
-                # Draw catcher username on the left (below "c CATCHER")
+                usernames = dismissal_usernames.split()
                 draw.text((center_x - 200, dismissal_y + 60), usernames[0], fill=WHITE, font=username_font, anchor="mm")
-
-                # Draw bowler username WAY MORE to the right (below "b BOWLER")
                 draw.text((center_x + 350, dismissal_y + 60), usernames[1], fill=WHITE, font=username_font, anchor="mm")
             else:
-                # Single username (bowled only) - centered
                 draw.text((center_x, dismissal_y + 60), dismissal_usernames, fill=WHITE, font=username_font, anchor="mm")
 
-        # MIDDLE RIGHT: Team flag
         if team_name:
             flag_url = get_team_flag_url(team_name)
             flag_size = 180
@@ -1061,14 +1047,11 @@ async def create_wicket_image(wicket_data, guild):
                 try:
                     flag_img = Image.open("westindies.jpg").convert('RGBA')
                     flag_img = flag_img.resize((flag_size, flag_size), Image.Resampling.LANCZOS)
-
                     mask = Image.new('L', (flag_size, flag_size), 0)
                     mask_draw = ImageDraw.Draw(mask)
                     mask_draw.ellipse((0, 0, flag_size, flag_size), fill=255)
-
                     circular_flag = Image.new('RGBA', (flag_size, flag_size), (0, 0, 0, 0))
                     circular_flag.paste(flag_img, (0, 0), mask)
-
                     flag_x = width - flag_size - 50
                     flag_y = (height // 2) - (flag_size // 2)
                     img.paste(circular_flag, (flag_x, flag_y), circular_flag)
@@ -1082,21 +1065,17 @@ async def create_wicket_image(wicket_data, guild):
                                 flag_data = await resp.read()
                                 flag_img = Image.open(io.BytesIO(flag_data)).convert('RGBA')
                                 flag_img = flag_img.resize((flag_size, flag_size), Image.Resampling.LANCZOS)
-
                                 mask = Image.new('L', (flag_size, flag_size), 0)
                                 mask_draw = ImageDraw.Draw(mask)
                                 mask_draw.ellipse((0, 0, flag_size, flag_size), fill=255)
-
                                 circular_flag = Image.new('RGBA', (flag_size, flag_size), (0, 0, 0, 0))
                                 circular_flag.paste(flag_img, (0, 0), mask)
-
                                 flag_x = width - flag_size - 50
                                 flag_y = (height // 2) - (flag_size // 2)
                                 img.paste(circular_flag, (flag_x, flag_y), circular_flag)
                 except Exception as e:
                     print(f"❌ Error loading flag: {e}")
 
-        # Convert to bytes
         output = io.BytesIO()
         img.save(output, format='PNG')
         output.seek(0)
@@ -1114,29 +1093,17 @@ def parse_wicket_from_embed(embed):
     try:
         print("\n🔍 SEARCHING EMBED FOR WICKET DATA...")
 
-        # Combine ALL embed content
         full_text = ""
 
-        # Add embed description if exists
         if embed.description:
             full_text += f"{embed.description}\n"
-            print(f"   Description: {embed.description[:100]}...")
 
-        # Add ALL field names and values
         for field in embed.fields:
             full_text += f"{field.name}: {field.value}\n"
 
         print(f"\n📄 FULL EMBED CONTENT:\n{full_text}\n")
 
-        # Look for wicket indicators
-        wicket_indicators = [
-            "is out!",
-            "is DUCK out!",
-            "OUT!",
-            "WICKET",
-            "dismissed"
-        ]
-
+        wicket_indicators = ["is out!", "is DUCK out!", "OUT!", "WICKET", "dismissed"]
         is_wicket = any(indicator.lower() in full_text.lower() for indicator in wicket_indicators)
 
         if not is_wicket:
@@ -1145,7 +1112,6 @@ def parse_wicket_from_embed(embed):
 
         print("   ✅ WICKET DETECTED IN EMBED!")
 
-        # Extract username from patterns like "**username is out!**" or "username is DUCK out!"
         username_match = re.search(r'\*\*(.+?)\s+is(?:\s+DUCK)?\s+out', full_text)
         if not username_match:
             username_match = re.search(r'(.+?)\s+is(?:\s+DUCK)?\s+out', full_text)
@@ -1155,16 +1121,10 @@ def parse_wicket_from_embed(embed):
             return None
 
         out_username = username_match.group(1).strip()
-        print(f"   📍 Out player: {out_username}")
-
-        # Check if it's a duck
         is_duck = "DUCK out" in full_text
-        print(f"   🦆 Duck: {is_duck}")
 
-        # Extract runs and balls - look for pattern like "53 (23)" or "`53 (23)`"
         stats_match = re.search(rf'{re.escape(out_username)}[^\d]*?(\d+)\s*\((\d+)\)', full_text)
         if not stats_match:
-            # Try with backticks
             stats_match = re.search(r'`(\d+)\s*\((\d+)\)`', full_text)
 
         if not stats_match:
@@ -1173,18 +1133,13 @@ def parse_wicket_from_embed(embed):
 
         runs = stats_match.group(1)
         balls = stats_match.group(2)
-        print(f"   📊 Score: {runs}({balls})")
 
-        # Extract caught by user ID (if exists)
         caught_by_user_id = None
         caught_match = re.search(r'Caught by.*?<@(\d+)>', full_text)
         if caught_match:
             caught_by_user_id = int(caught_match.group(1))
-            print(f"   🤚 Caught by user ID: {caught_by_user_id}")
 
-        # Find bowler - look for a DIFFERENT username with stats pattern
         bowler_username = None
-        # Pattern: username: stats with dash and overs
         for line in full_text.split('\n'):
             if '╰' in line and '-' in line and '(' in line:
                 bowler_match = re.search(r'(.+?):\s*╰', line)
@@ -1192,7 +1147,6 @@ def parse_wicket_from_embed(embed):
                     potential_bowler = bowler_match.group(1).strip()
                     if potential_bowler != out_username:
                         bowler_username = potential_bowler
-                        print(f"   🎳 Bowler: {bowler_username}")
                         break
 
         return {
@@ -1214,21 +1168,15 @@ def parse_wicket_message(message_content):
     """Parse wicket message to extract data"""
     try:
         lines = message_content.strip().split('\n')
-
-        # Extract username from first line (e.g., "**s4nsk4r_50hartz is out!**")
         first_line = lines[0]
-
-        # Check for duck
         is_duck = "DUCK out" in first_line
 
-        # Extract username
         username_match = re.search(r'\*\*(.+?)\s+is', first_line)
         if not username_match:
             return None
 
         out_username = username_match.group(1)
 
-        # Find the line with player stats (e.g., "s4nsk4r_50hartz: ╰ *`53 (23)`**")
         player_line = None
         bowler_line = None
         caught_by_user_id = None
@@ -1237,18 +1185,15 @@ def parse_wicket_message(message_content):
             if out_username in line and '╰' in line:
                 player_line = line
             elif 'Caught by' in line:
-                # Extract user ID from mention
                 caught_match = re.search(r'<@(\d+)>', line)
                 if caught_match:
                     caught_by_user_id = int(caught_match.group(1))
-            # Look for bowler line (has different username)
             elif '╰' in line and '`' in line and '-' in line and out_username not in line:
                 bowler_line = line
 
         if not player_line:
             return None
 
-        # Extract runs and balls from player line
         stats_match = re.search(r'`(\d+)\s+\((\d+)\)', player_line)
         if not stats_match:
             return None
@@ -1256,7 +1201,6 @@ def parse_wicket_message(message_content):
         runs = stats_match.group(1)
         balls = stats_match.group(2)
 
-        # Extract bowler username
         bowler_username = None
         if bowler_line:
             bowler_match = re.search(r'(.+?):', bowler_line)
@@ -1290,33 +1234,39 @@ class MatchUpdates(commands.Cog):
         print(f"{'='*60}")
 
         # ===== NOWSTAT CHECK =====
-        if message.content:
-            players_to_show = parse_nowstat_message(message.content)
-            if players_to_show:
-                print(f"🆕 NOWSTAT: Found {len(players_to_show)} player(s)")
-                for user_id, role in players_to_show:
-                    conn = sqlite3.connect('players.db')
-                    c = conn.cursor()
-                    c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (user_id,))
-                    pname_result = c.fetchone()
-                    conn.close()
+        # Scan ALL message content: plain text + every embed field/description/title
+        full_message_text = get_full_message_text(message)
+        print(f"📋 Full message text for nowstat scan:\n{full_message_text[:500]}")
 
-                    if not pname_result:
-                        print(f"   ⚠️ No player found for user_id {user_id}, skipping")
-                        continue
+        players_to_show = parse_nowstat_message(full_message_text)
+        if players_to_show:
+            print(f"🆕 NOWSTAT: Found {len(players_to_show)} player(s)")
+            for user_id, role in players_to_show:
+                conn = sqlite3.connect('players.db')
+                c = conn.cursor()
+                c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (user_id,))
+                pname_result = c.fetchone()
+                conn.close()
 
-                    player_name = pname_result[0]
-                    print(f"   🎨 Creating nowstat for {player_name} (role={role})")
+                if not pname_result:
+                    print(f"   ⚠️ No player found for user_id {user_id}, skipping")
+                    continue
 
-                    result = await create_nowstat_image(user_id, role, message.guild, self.bot)
+                player_name = pname_result[0]
+                print(f"   🎨 Creating nowstat for {player_name} (role={role})")
 
-                    if result and result[0]:
-                        image_bytes, plain_text = result
-                        file = discord.File(fp=image_bytes, filename="nowstat.png")
-                        await message.channel.send(content=plain_text, file=file)
-                        print(f"   ✅ Sent nowstat for {player_name}")
-                    else:
-                        print(f"   ❌ Failed to create nowstat for {player_name}")
+                result = await create_nowstat_image(user_id, role, message.guild, self.bot)
+
+                if result and result[0]:
+                    image_bytes, plain_text = result
+                    file = discord.File(fp=image_bytes, filename="nowstat.png")
+                    await message.channel.send(content=plain_text, file=file)
+                    print(f"   ✅ Sent nowstat for {player_name}")
+                else:
+                    print(f"   ❌ Failed to create nowstat for {player_name}")
+
+            # If nowstat was triggered, don't process further as a match update
+            return
         # ===== END NOWSTAT CHECK =====
 
         # FIRST: Check if there's an embed with wicket info OR match data
@@ -1330,38 +1280,31 @@ class MatchUpdates(commands.Cog):
                 print("🎯 WICKET MESSAGE DETECTED IN PLAIN TEXT!")
                 wicket_info = parse_wicket_message(message.content)
 
-        # Process wicket if found (from either embed or plain text)
+        # Process wicket if found
         if wicket_info:
             print("🎯 PROCESSING WICKET!")
 
-            # Check if we already processed this exact wicket recently (prevent duplicates)
             channel_id = message.channel.id
             wicket_key = f"{channel_id}_{wicket_info['out_username']}_{wicket_info['runs']}_{wicket_info['balls']}"
 
-            import time
             current_time = time.time()
 
-            # If we processed this exact wicket in the last 10 seconds, skip it
             if wicket_key in last_wickets:
                 time_diff = current_time - last_wickets[wicket_key]
                 if time_diff < 10:
                     print(f"⏭️ SKIPPING DUPLICATE WICKET (processed {time_diff:.1f}s ago)")
                     return
 
-            # Mark this wicket as processed
             last_wickets[wicket_key] = current_time
 
-            # Clean up old wicket entries (older than 1 minute)
             old_keys = [k for k, v in last_wickets.items() if current_time - v > 60]
             for k in old_keys:
                 del last_wickets[k]
 
-            # Get real player names from database
             conn = sqlite3.connect('players.db')
             c = conn.cursor()
 
-            # Get out player's real name
-            c.execute("SELECT player_name FROM player_representatives WHERE username = ?", 
+            c.execute("SELECT player_name FROM player_representatives WHERE username = ?",
                       (wicket_info['out_username'],))
             out_result = c.fetchone()
 
@@ -1371,34 +1314,29 @@ class MatchUpdates(commands.Cog):
                 return
 
             out_player_full_name = out_result[0]
-            out_player_display_name = out_player_full_name.upper()  # FULL NAME for out player
-
-            # Get out player's team
+            out_player_display_name = out_player_full_name.upper()
             out_player_team = find_player_team(out_player_full_name)
 
-            # Get bowler's real name (FULL NAME)
             bowler_real_name = None
             if wicket_info['bowler_username']:
-                c.execute("SELECT player_name FROM player_representatives WHERE username = ?", 
+                c.execute("SELECT player_name FROM player_representatives WHERE username = ?",
                           (wicket_info['bowler_username'],))
                 bowler_result = c.fetchone()
                 if bowler_result:
                     bowler_full_name = bowler_result[0]
-                    bowler_real_name = bowler_full_name.upper()  # FULL NAME for bowler
+                    bowler_real_name = bowler_full_name.upper()
 
-            # Get caught by player's real name (FIRST NAME ONLY)
             caught_by_real_name = None
             if wicket_info['caught_by_user_id']:
-                c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", 
+                c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?",
                           (wicket_info['caught_by_user_id'],))
                 caught_result = c.fetchone()
                 if caught_result:
                     caught_full_name = caught_result[0]
-                    caught_by_real_name = caught_full_name.split()[0].upper()  # FIRST NAME ONLY for caught
+                    caught_by_real_name = caught_full_name.split()[0].upper()
 
             conn.close()
 
-            # Build dismissal text
             if caught_by_real_name and bowler_real_name:
                 dismissal_text = f"c {caught_by_real_name} b {bowler_real_name}"
                 caught_by_member = message.guild.get_member(wicket_info['caught_by_user_id'])
@@ -1411,9 +1349,8 @@ class MatchUpdates(commands.Cog):
                 dismissal_text = "OUT"
                 dismissal_usernames = ""
 
-            # Create wicket data
             wicket_data = {
-                'out_player_name': out_player_display_name,  # FULL NAME
+                'out_player_name': out_player_display_name,
                 'out_username': wicket_info['out_username'],
                 'runs': wicket_info['runs'],
                 'balls': wicket_info['balls'],
@@ -1424,14 +1361,12 @@ class MatchUpdates(commands.Cog):
 
             print(f"🎨 CREATING WICKET IMAGE...")
 
-            # Create wicket image
             wicket_image = await create_wicket_image(wicket_data, message.guild)
 
             if not wicket_image:
                 print("❌ Failed to create wicket image")
                 return
 
-            # Send as plain file
             file = discord.File(fp=wicket_image, filename="wicket.png")
             await message.channel.send(file=file)
             print(f"✅ SENT WICKET IMAGE\n")
@@ -1450,7 +1385,6 @@ class MatchUpdates(commands.Cog):
 
         print(f"✅ Embed has {len(embed.fields)} fields\n")
 
-        # Parse the embed fields
         match_data = parse_embed_fields(embed)
 
         if not match_data:
@@ -1461,27 +1395,49 @@ class MatchUpdates(commands.Cog):
             print("❌ No timeline found")
             return
 
-        # Check if this is a new timeline
         channel_id = message.channel.id
         current_timeline = '|'.join(match_data['timeline'])
+        current_bowler = match_data.get('bowler_username', '')
+        current_score = match_data.get('team_a_score', '')
+        current_overs = match_data.get('overs', '')
 
-        if channel_id in last_timelines and last_timelines[channel_id] == current_timeline:
-            print("ℹ️ Same timeline, skipping")
+        # Full fingerprint = timeline + score + overs (catches repeats even if bowler same)
+        current_fingerprint = f"{current_timeline}|{current_score}|{current_overs}"
+
+        import time as _time
+        now = _time.time()
+
+        prev = last_timelines.get(channel_id, {})
+        prev_fingerprint = prev.get('fingerprint', '')
+        prev_bowler = prev.get('bowler', '')
+        prev_sent_at = prev.get('sent_at', 0)
+
+        # Skip if exact same fingerprint AND sent within last 5 minutes
+        if current_fingerprint == prev_fingerprint and (now - prev_sent_at) < 300:
+            print("ℹ️ Same match state fingerprint (sent recently), skipping")
             return
 
-        # Update last timeline
-        last_timelines[channel_id] = current_timeline
+        # If bowler changed, reset timeline display so only current over balls show
+        bowler_changed = bool(prev_bowler) and prev_bowler != current_bowler
+        if bowler_changed:
+            print(f"🔄 Bowler changed from {prev_bowler} → {current_bowler}, resetting timeline display")
+            # Only show balls from new bowler's over (current over only)
+            match_data['timeline_reset'] = True
+
+        last_timelines[channel_id] = {
+            'fingerprint': current_fingerprint,
+            'bowler': current_bowler,
+            'sent_at': now,
+        }
 
         print(f"\n🎨 CREATING MATCH IMAGE...")
 
-        # Create match image
         match_image = await create_match_image(match_data, message.guild)
 
         if not match_image:
             print("❌ Failed to create match image")
             return
 
-        # Send as plain file (NO EMBED)
         file = discord.File(fp=match_image, filename="match_status.png")
         await message.channel.send(file=file)
         print(f"✅ SENT MATCH UPDATE IMAGE\n")
@@ -1502,56 +1458,37 @@ class MatchUpdates(commands.Cog):
             await ctx.send("❌ Usage: `-test @batsman1 @batsman2 @bowler`")
             return
 
-        print(f"\n🧪 TEST COMMAND TRIGGERED")
-        print(f"   Batsman 1: {batsman1.name}")
-        print(f"   Batsman 2: {batsman2.name}")
-        print(f"   Bowler: {bowler.name}")
-
-        # Generate random scores
         batsman1_runs = random.randint(0, 50)
         batsman1_balls = random.randint(batsman1_runs, batsman1_runs + 20)
-
         batsman2_runs = random.randint(0, 50)
         batsman2_balls = random.randint(batsman2_runs, batsman2_runs + 20)
-
-        total_runs = batsman1_runs + batsman2_runs 
+        total_runs = batsman1_runs + batsman2_runs
         wickets = 1
         overs_bowled = round(random.uniform(0.1, 5.0), 1)
-
         bowler_wickets = random.randint(0, 2)
         bowler_runs = random.randint(0, 30)
         bowler_overs = round(random.uniform(0.1, overs_bowled), 1)
-
-        # Random on-strike
         on_strike = random.randint(1, 2)
-
-        # Random timeline (last 6 balls)
         possible_balls = ['0', '1', '2', '3', '4', '6', 'W']
         timeline = [random.choice(possible_balls) for _ in range(6)]
-
-        # ALWAYS innings 2 with target
         target_score = random.randint(total_runs + 10, total_runs + 80)
         target = f"Target {target_score}"
 
-        # Try to get player names from database
         conn = sqlite3.connect('players.db')
         c = conn.cursor()
 
-        # Get batsman 1 details
         c.execute("SELECT player_name FROM player_representatives WHERE username = ?", (batsman1.name,))
         result = c.fetchone()
         batsman1_full_name = result[0] if result else batsman1.name
         batsman1_last_name = batsman1_full_name.split()[-1] if result else batsman1.name
         batsman1_team = find_player_team(batsman1_full_name) if result else ""
 
-        # Get batsman 2 details
         c.execute("SELECT player_name FROM player_representatives WHERE username = ?", (batsman2.name,))
         result = c.fetchone()
         batsman2_full_name = result[0] if result else batsman2.name
         batsman2_last_name = batsman2_full_name.split()[-1] if result else batsman2.name
         batsman2_team = find_player_team(batsman2_full_name) if result else ""
 
-        # Get bowler details
         c.execute("SELECT player_name FROM player_representatives WHERE username = ?", (bowler.name,))
         result = c.fetchone()
         bowler_full_name = result[0] if result else bowler.name
@@ -1560,11 +1497,10 @@ class MatchUpdates(commands.Cog):
 
         conn.close()
 
-        # Create match data
         match_data = {
             'team_a_name': TEAM_ABBREVIATIONS.get(batsman1_team, batsman1_team[:3].upper()) if batsman1_team else 'BAT',
-            'team_b_name': bowler_team if bowler_team else 'BOW',  # Full team name for VS
-            'batting_team': batsman1_team,  # Add batting team for flag
+            'team_b_name': bowler_team if bowler_team else 'BOW',
+            'batting_team': batsman1_team,
             'team_a_score': f'{total_runs}/{wickets}',
             'overs': str(overs_bowled),
             'batsman1_name': batsman1_last_name,
@@ -1584,28 +1520,14 @@ class MatchUpdates(commands.Cog):
             'target': target
         }
 
-        print(f"📊 Generated Test Data:")
-        print(f"   Innings: TWO (Chasing)")
-        print(f"   Batting Team: {batsman1_team}")
-        print(f"   Bowling Team: {bowler_team}")
-        print(f"   Score: {match_data['team_a_score']} ({match_data['overs']} overs)")
-        print(f"   Target: {target}")
-        print(f"   Batsman 1: {match_data['batsman1_score']} {'*' if on_strike == 1 else ''}")
-        print(f"   Batsman 2: {match_data['batsman2_score']} {'*' if on_strike == 2 else ''}")
-        print(f"   Bowler: {match_data['bowler_stats']}")
-        print(f"   Timeline: {timeline}")
-
-        # Create match image
         match_image = await create_match_image(match_data, ctx.guild)
 
         if not match_image:
             await ctx.send("❌ Failed to create test image")
             return
 
-        # Send image
         file = discord.File(fp=match_image, filename="test_match.png")
         await ctx.send(f"🧪 **Test Match Image Generated** - 🎯 Innings 2 (Chasing)", file=file)
-        print(f"✅ Test image sent!\n")
 
     @commands.command(name='testwicket', aliases=['tw'])
     async def test_wicket_image(self, ctx, out_player: discord.Member = None, bowler: discord.Member = None, caught_by: discord.Member = None):
@@ -1615,44 +1537,33 @@ class MatchUpdates(commands.Cog):
             await ctx.send("❌ Usage: `-testwicket @out_player @bowler [@caught_by]`")
             return
 
-        print(f"\n🧪 TEST WICKET COMMAND TRIGGERED")
-        print(f"   Out Player: {out_player.name}")
-        print(f"   Bowler: {bowler.name}")
-        print(f"   Caught By: {caught_by.name if caught_by else 'None'}")
-
-        # Get player details from database
         conn = sqlite3.connect('players.db')
         c = conn.cursor()
 
-        # Get out player details (FULL NAME)
         c.execute("SELECT player_name FROM player_representatives WHERE username = ?", (out_player.name,))
         result = c.fetchone()
         out_player_full_name = result[0] if result else out_player.name
-        out_player_display_name = out_player_full_name.upper()  # FULL NAME
+        out_player_display_name = out_player_full_name.upper()
         out_player_team = find_player_team(out_player_full_name) if result else ""
 
-        # Get bowler details (FULL NAME)
         c.execute("SELECT player_name FROM player_representatives WHERE username = ?", (bowler.name,))
         result = c.fetchone()
         bowler_full_name = result[0] if result else bowler.name
-        bowler_real_name = bowler_full_name.upper()  # FULL NAME
+        bowler_real_name = bowler_full_name.upper()
 
-        # Get caught by details (FIRST NAME ONLY)
         caught_by_real_name = None
         if caught_by:
             c.execute("SELECT player_name FROM player_representatives WHERE username = ?", (caught_by.name,))
             result = c.fetchone()
             if result:
                 caught_by_full_name = result[0]
-                caught_by_real_name = caught_by_full_name.split()[0].upper()  # FIRST NAME ONLY
+                caught_by_real_name = caught_by_full_name.split()[0].upper()
 
         conn.close()
 
-        # Generate random score
         runs = str(random.randint(0, 100))
         balls = str(random.randint(int(runs), int(runs) + 50))
 
-        # Build dismissal text
         if caught_by_real_name and bowler_real_name:
             dismissal_text = f"c {caught_by_real_name} b {bowler_real_name}"
             dismissal_usernames = f"@{caught_by.name} @{bowler.name}"
@@ -1663,9 +1574,8 @@ class MatchUpdates(commands.Cog):
             dismissal_text = "OUT"
             dismissal_usernames = ""
 
-        # Create wicket data
         wicket_data = {
-            'out_player_name': out_player_display_name,  # FULL NAME
+            'out_player_name': out_player_display_name,
             'out_username': out_player.name,
             'runs': runs,
             'balls': balls,
@@ -1674,23 +1584,14 @@ class MatchUpdates(commands.Cog):
             'team': out_player_team
         }
 
-        print(f"📊 Generated Test Wicket Data:")
-        print(f"   Out Player: {out_player_display_name} ({out_player.name})")
-        print(f"   Score: {runs}({balls})")
-        print(f"   Dismissal: {dismissal_text}")
-        print(f"   Team: {out_player_team}")
-
-        # Create wicket image
         wicket_image = await create_wicket_image(wicket_data, ctx.guild)
 
         if not wicket_image:
             await ctx.send("❌ Failed to create test wicket image")
             return
 
-        # Send image
         file = discord.File(fp=wicket_image, filename="test_wicket.png")
         await ctx.send(f"🧪 **Test Wicket Image Generated**", file=file)
-        print(f"✅ Test wicket image sent!\n")
 
     @commands.command(name='testnowstat', aliases=['tns'])
     async def test_nowstat_image(self, ctx, member: discord.Member = None, role: str = 'bat'):
@@ -1705,10 +1606,6 @@ class MatchUpdates(commands.Cog):
             await ctx.send("❌ Role must be `bat` or `bowl`!")
             return
 
-        print(f"\n🧪 TEST NOWSTAT COMMAND TRIGGERED")
-        print(f"   Member: {member.name}")
-        print(f"   Role: {role}")
-
         result = await create_nowstat_image(member.id, role, ctx.guild, self.bot)
 
         if not result or not result[0]:
@@ -1717,8 +1614,8 @@ class MatchUpdates(commands.Cog):
 
         image_bytes, plain_text = result
         file = discord.File(fp=image_bytes, filename="nowstat.png")
-        await ctx.send(content=f"🧪 **Test Nowstat** | {plain_text}", file=file)
-        print(f"✅ Test nowstat image sent!\n")
+        await ctx.send(content=f"{plain_text}", file=file)
+
 
 async def setup(bot):
     await bot.add_cog(MatchUpdates(bot))
