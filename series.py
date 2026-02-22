@@ -938,8 +938,8 @@ class Series(commands.Cog):
         view.add_item(SeriesSelect(active_series, self.bot))  # Pass self.bot here
         await ctx.send("📋 Select a series to view its leaderboard:", view=view)
 
-    @commands.command(name="remind", help="Remind teams about their latest series match")
-    async def remind(self, ctx, team1: str, team2: str):
+    @commands.command(name="sremind", aliases=["sr"], help="Remind teams about their latest series match")
+    async def sremind(self, ctx, team1: str, team2: str):
         """Remind teams about their latest series match"""
         series = get_active_series()
         if not series:
