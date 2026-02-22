@@ -938,5 +938,48 @@ class Series(commands.Cog):
         view.add_item(SeriesSelect(active_series, self.bot))  # Pass self.bot here
         await ctx.send("📋 Select a series to view its leaderboard:", view=view)
 
+    @commands.command(name="remind", help="Remind teams about their latest series match")
+    async def remind(self, ctx, team1: str, team2: str):
+        """Remind teams about their latest series match"""
+        series = get_active_series()
+        if not series:
+            await ctx.send("❌ No active series found!")
+            return
+
+        series_id, series_name, _ = series
+
+        conn = sqlite3.connect('players.db')
+        c = conn.cursor()
+        c.execute("""SELECT match_number, channel_id FROM series_fixtures 
+                    WHERE series_id = ? 
+                    AND ((team1 = ? AND team2 = ?) OR (team1 = ? AND team2 = ?))
+                    AND is_played = 0
+                    ORDER BY match_number ASC LIMIT 1""", 
+                 (series_id, team1, team2, team2, team1))
+        fixture = c.fetchone()
+        conn.close()
+
+        if not fixture:
+            await ctx.send(f"❌ No upcoming match found between **{team1}** and **{team2}** in the current series!")
+            return
+
+        match_num, channel_id = fixture
+        role1_id = get_team_role_id(team1)
+        role2_id = get_team_role_id(team2)
+
+        ping_text = ""
+        if role1_id: ping_text += f"<@&{role1_id}> "
+        if role2_id: ping_text += f"<@&{role2_id}> "
+
+        embed = discord.Embed(
+            title=f"🔔 Match Reminder: {series_name}",
+            description=f"**Match #{match_num}**: {get_team_flag(team1)} **{team1}** vs {get_team_flag(team2)} **{team2}**\n"
+                        f"Stadium: <#{channel_id}>\n\n"
+                        f"Please get ready for your match!",
+            color=0xFFA500
+        )
+        
+        await ctx.send(content=ping_text.strip(), embed=embed)
+
 async def setup(bot):
     await bot.add_cog(Series(bot))
