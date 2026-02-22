@@ -344,21 +344,23 @@ async def create_nowstat_image(user_id, role, guild, bot):
 
         # Load fonts
         try:
-            name_font = ImageFont.truetype("nor.otf", 70)  # Increased from 55
-            username_font = ImageFont.truetype("nor.otf", 40)  # Increased from 32
-            stat_label_font = ImageFont.truetype("nor.otf", 35)  # Increased from 30
-            stat_value_font = ImageFont.truetype("nor.otf", 45)  # Increased from 38
+            name_font = ImageFont.truetype("nor.otf", 75)  # Very big
+            username_font = ImageFont.truetype("nor.otf", 45)
+            big_stat_font = ImageFont.truetype("nor.otf", 60) # For stats next to name
+            stat_label_font = ImageFont.truetype("nor.otf", 40)
+            stat_value_font = ImageFont.truetype("nor.otf", 55)
         except:
             name_font = ImageFont.load_default()
             username_font = name_font
+            big_stat_font = name_font
             stat_label_font = name_font
             stat_value_font = name_font
 
         WHITE = (255, 255, 255)
 
-        # === LEFT: Player image (stays in original position) ===
-        player_img_size = min(width // 4, height - 20)  # Slightly bigger, reduced margin
-        player_img_x = 10  # Reduced from 20
+        # === LEFT: Player image ===
+        player_img_size = min(width // 4, height - 20)
+        player_img_x = 10
         player_img_y = (height - player_img_size) // 2
 
         if player_image_url:
@@ -374,9 +376,9 @@ async def create_nowstat_image(user_id, role, guild, bot):
                 print(f"Error loading player image: {e}")
 
         # === RIGHT: Team flag ===
-        flag_size = 140  # Increased from 120
-        flag_x = width - flag_size - 10  # Reduced margin
-        flag_y = (height - flag_size) // 2
+        flag_size = 140
+        flag_x = width - flag_size - 10
+        flag_y = 20 # Moved up
 
         if team:
             if team.lower() == "west indies":
@@ -400,83 +402,70 @@ async def create_nowstat_image(user_id, role, guild, bot):
                     except Exception as e:
                         print(f"Error loading flag: {e}")
 
-        # === CENTER: Name + username + stats (shifted UP) ===
-        content_x = player_img_x + player_img_size + 20  # Adjusted spacing
-        content_width = flag_x - content_x - 10
-        current_y = 5  # Shifted up more
+        # === CENTER CONTENT ===
+        content_x = player_img_x + player_img_size + 25
+        current_y = 10
 
-        # Player name
-        draw.text((content_x, current_y), player_name.upper(), fill=WHITE, font=name_font)
-        current_y += 75  # Increased spacing for bigger font
+        # 1. Player Name + Big Stats (Matches, Runs/Wkts, Rank)
+        name_text = player_name.upper()
+        draw.text((content_x, current_y), name_text, fill=WHITE, font=name_font)
+        
+        # Calculate offset for stats next to name
+        name_bbox = draw.textbbox((content_x, current_y), name_text, font=name_font)
+        stats_x = name_bbox[2] + 40 # 40px space after name
+        
+        if stats:
+            main_stat_val = str(stats['runs']) if role == 'bat' else str(stats['wickets'])
+            main_stat_label = "RUNS" if role == 'bat' else "WKTS"
+            rank_text = f"#{icc_rank}" if icc_rank else "N/A"
+            
+            top_stats_text = f"{stats['matches']} MAT | {main_stat_val} {main_stat_label} | RANK {rank_text}"
+            draw.text((stats_x, current_y + 10), top_stats_text, fill=(255, 215, 0), font=big_stat_font) # Gold color for main stats
 
-        # Discord avatar + username
-        avatar_img = await fetch_discord_avatar(user_id, bot, size=50)  # Increased size from 40
+        current_y += 85
+
+        # 2. Discord User
+        avatar_img = await fetch_discord_avatar(user_id, bot, size=55)
         if avatar_img:
             img.paste(avatar_img, (content_x, current_y), avatar_img)
-            draw.text((content_x + 60, current_y + 2), f"@{discord_username}", fill=WHITE, font=username_font)
+            draw.text((content_x + 65, current_y + 5), f"@{discord_username}", fill=WHITE, font=username_font)
         else:
-            draw.text((content_x, current_y + 2), f"@{discord_username}", fill=WHITE, font=username_font)
-        current_y += 65  # Increased spacing
+            draw.text((content_x, current_y + 5), f"@{discord_username}", fill=WHITE, font=username_font)
+        
+        current_y += 75
 
-        # Divider line
-        draw.line(
-            [(content_x, current_y), (content_x + content_width, current_y)],
-            fill=(150, 150, 150), width=3  # Slightly thicker line
-        )
-        current_y += 15
+        # 3. Divider
+        draw.line([(content_x, current_y), (width - 20, current_y)], fill=(200, 200, 200), width=4)
+        current_y += 25
 
+        # 4. Detailed Stats (All in one row/cluster to avoid the very bottom)
         if stats:
             if role == 'bat':
-                row1 = [
-                    ("MAT", str(stats['matches'])),
-                    ("RUNS", str(stats['runs'])),
+                display_stats = [
                     ("AVG", f"{stats['bat_avg']:.1f}"),
                     ("SR", f"{stats['bat_sr']:.1f}"),
                     ("HS", str(stats['highest_score'])),
-                ]
-                col_w = content_width // len(row1)
-                for i, (label, value) in enumerate(row1):
-                    cx = content_x + i * col_w
-                    draw.text((cx, current_y), label, fill=WHITE, font=stat_label_font)
-                    draw.text((cx, current_y + 35), value, fill=WHITE, font=stat_value_font)
-                current_y += 95
-
-                row2 = [
                     ("50s", str(stats['fifties'])),
                     ("100s", str(stats['hundreds'])),
-                    ("RANK", f"#{icc_rank}" if icc_rank else "N/A"),
                 ]
-                col_w2 = content_width // len(row2)
-                for i, (label, value) in enumerate(row2):
-                    cx = content_x + i * col_w2
-                    draw.text((cx, current_y), label, fill=WHITE, font=stat_label_font)
-                    draw.text((cx, current_y + 35), value, fill=WHITE, font=stat_value_font)
-
-            else:  # bowl
-                row1 = [
-                    ("MAT", str(stats['matches'])),
-                    ("WKT", str(stats['wickets'])),
+            else:
+                display_stats = [
                     ("AVG", f"{stats['bowl_avg']:.1f}"),
                     ("ECO", f"{stats['economy']:.1f}"),
                     ("BEST", stats['best_bowling']),
-                ]
-                col_w = content_width // len(row1)
-                for i, (label, value) in enumerate(row1):
-                    cx = content_x + i * col_w
-                    draw.text((cx, current_y), label, fill=WHITE, font=stat_label_font)
-                    draw.text((cx, current_y + 35), value, fill=WHITE, font=stat_value_font)
-                current_y += 95
-
-                row2 = [
                     ("3w", str(stats['three_fers'])),
                     ("5w", str(stats['five_fers'])),
-                    ("RANK", f"#{icc_rank}" if icc_rank else "N/A"),
                 ]
-                col_w2 = content_width // len(row2)
-                for i, (label, value) in enumerate(row2):
-                    cx = content_x + i * col_w2
-                    draw.text((cx, current_y), label, fill=WHITE, font=stat_label_font)
-                    draw.text((cx, current_y + 35), value, fill=WHITE, font=stat_value_font)
+            
+            # Draw all stats in one wide row
+            available_width = width - content_x - 30
+            col_width = available_width // len(display_stats)
+            for i, (label, value) in enumerate(display_stats):
+                sx = content_x + (i * col_width)
+                draw.text((sx, current_y), label, fill=WHITE, font=stat_label_font)
+                draw.text((sx, current_y + 45), value, fill=WHITE, font=stat_value_font)
+        else:
+            draw.text((content_x, current_y), "No international stats available", fill=WHITE, font=stat_label_font)
         else:
             draw.text((content_x, current_y), "No stats yet", fill=WHITE, font=stat_label_font)
 
