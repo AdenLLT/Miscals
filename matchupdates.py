@@ -118,8 +118,7 @@ EMOJI_MAPPING = {
     'PP4_emoji_33': '8LB'
 }
 
-# Store last processed timeline state per channel
-# Each entry: { 'fingerprint': str, 'bowler': str, 'sent_at': float }
+# Store last processed timeline per channel
 last_timelines = {}
 
 # Store last processed wickets to prevent duplicates (username + timestamp)
@@ -128,15 +127,22 @@ last_wickets = {}
 
 def parse_nowstat_message(content):
     """
-    Parse cricket bot messages for:
-    - Opening batters (role='bat')
-    - Opening bowler (role='bowl')
-    - Next batsman (role='bat')
-    - Next bowler (role='bowl')
+    Parse cricket bot messages for nowstat triggers.
+    Handles:
+    - Opening batters are: - <@ID>
+    - Opening bowler is: - <@ID>
+    - Next batsman: <@ID>   (anywhere in text, including standalone line)
+    - Next bowler to bowl is: <@ID>  (anywhere in text)
 
-    Returns list of (user_id, role) or None
+    Returns list of (user_id, role) tuples, deduplicated. Empty list = no trigger.
     """
     results = []
+    seen_ids = set()
+
+    def add(uid, role):
+        if uid not in seen_ids:
+            seen_ids.add(uid)
+            results.append((uid, role))
 
     # Opening batters block
     opening_bat_match = re.search(
@@ -146,7 +152,7 @@ def parse_nowstat_message(content):
     if opening_bat_match:
         ids = re.findall(r'<@!?(\d+)>', opening_bat_match.group(1))
         for uid in ids:
-            results.append((int(uid), 'bat'))
+            add(int(uid), 'bat')
 
     # Opening bowler block
     opening_bowl_match = re.search(
@@ -156,21 +162,21 @@ def parse_nowstat_message(content):
     if opening_bowl_match:
         ids = re.findall(r'<@!?(\d+)>', opening_bowl_match.group(1))
         for uid in ids:
-            results.append((int(uid), 'bowl'))
+            add(int(uid), 'bowl')
 
     if results:
         return results
 
-    # "Next batsman: <@ID>"
-    next_bat = re.search(r'Next batsman[^:]*:\s*<@!?(\d+)>', content, re.IGNORECASE)
+    # "Next batsman: <@ID>" — can appear anywhere in message/embed text
+    next_bat = re.search(r'Next batsman[^:\n]*:?\s*\n?\s*<@!?(\d+)>', content, re.IGNORECASE)
     if next_bat:
-        results.append((int(next_bat.group(1)), 'bat'))
+        add(int(next_bat.group(1)), 'bat')
         return results
 
-    # "Next bowler to bowl is: <@ID>"
-    next_bowl = re.search(r'Next bowler[^:]*:\s*<@!?(\d+)>', content, re.IGNORECASE)
+    # "Next bowler to bowl is: <@ID>" — can appear anywhere
+    next_bowl = re.search(r'Next bowler[^:\n]*:?\s*\n?\s*<@!?(\d+)>', content, re.IGNORECASE)
     if next_bowl:
-        results.append((int(next_bowl.group(1)), 'bowl'))
+        add(int(next_bowl.group(1)), 'bowl')
         return results
 
     return None
@@ -477,8 +483,8 @@ async def create_nowstat_image(user_id, role, guild, bot):
                     ("AVG", f"{stats['bowl_avg']:.1f}"),
                     ("ECO", f"{stats['economy']:.1f}"),
                     ("BEST", stats['best_bowling']),
-                    ("3F", str(stats['three_fers'])),
-                    ("5F", str(stats['five_fers'])),
+                    ("3w", str(stats['three_fers'])),
+                    ("5w", str(stats['five_fers'])),
                 ]
 
             available_width = width - content_x - 30
@@ -496,10 +502,10 @@ async def create_nowstat_image(user_id, role, guild, bot):
         output.seek(0)
 
         if role == 'bat':
-            plain_text = (f"__{batting_style}__ **Batsman** Walks Onto The Crease! 🏏"
+            plain_text = (f"__{batting_style}__ **Batsman** comes out to Play 🏏"
                           if batting_style else "Batsman comes out to Play 🏏")
         else:
-            plain_text = (f"__{bowling_style}__ **Bowler** Comes Into The Attack 💥"
+            plain_text = (f"__{bowling_style}__ **Bowler** comes into the Attack 💥"
                           if bowling_style else "Bowler comes into the Attack 💥")
 
         return output, plain_text
@@ -720,22 +726,13 @@ def parse_embed_fields(embed):
         traceback.print_exc()
         return {}
 
-def get_current_over_balls(timeline, force_current_only=False):
-    """Extract only the balls from the current over (reset after every 6 balls).
-    If force_current_only=True, only show balls since the last full-over boundary
-    (used when bowler changes to avoid showing previous bowler's balls).
-    """
+def get_current_over_balls(timeline):
+    """Extract only the balls from the current over (reset after every 6 balls)"""
     if not timeline:
         return []
 
     total_balls = len(timeline)
     current_over_position = total_balls % 6
-
-    if force_current_only:
-        # Only show balls in the current (incomplete) over
-        if current_over_position == 0:
-            return []  # We're at an over boundary — no balls yet this over
-        return timeline[-current_over_position:]
 
     if current_over_position == 0:
         return timeline[-6:] if len(timeline) >= 6 else timeline
@@ -921,8 +918,7 @@ async def create_match_image(match_data, guild):
         circle_spacing = 70
         circle_radius = 28
 
-        timeline_reset = match_data.get('timeline_reset', False) if isinstance(match_data, dict) else False
-        current_over_balls = get_current_over_balls(timeline, force_current_only=timeline_reset)
+        current_over_balls = get_current_over_balls(timeline)
 
         for i, ball in enumerate(current_over_balls):
             x = circle_start_x + (i * circle_spacing)
@@ -1239,9 +1235,17 @@ class MatchUpdates(commands.Cog):
         print(f"📋 Full message text for nowstat scan:\n{full_message_text[:500]}")
 
         players_to_show = parse_nowstat_message(full_message_text)
+        nowstat_sent = False
         if players_to_show:
             print(f"🆕 NOWSTAT: Found {len(players_to_show)} player(s)")
+            # Dedup by user_id within this single message to prevent double-sends
+            already_sent_ids = set()
             for user_id, role in players_to_show:
+                if user_id in already_sent_ids:
+                    print(f"   ⏭️ Already sent nowstat for user_id {user_id} this message, skipping")
+                    continue
+                already_sent_ids.add(user_id)
+
                 conn = sqlite3.connect('players.db')
                 c = conn.cursor()
                 c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (user_id,))
@@ -1262,11 +1266,12 @@ class MatchUpdates(commands.Cog):
                     file = discord.File(fp=image_bytes, filename="nowstat.png")
                     await message.channel.send(content=plain_text, file=file)
                     print(f"   ✅ Sent nowstat for {player_name}")
+                    nowstat_sent = True
                 else:
                     print(f"   ❌ Failed to create nowstat for {player_name}")
 
-            # If nowstat was triggered, don't process further as a match update
-            return
+        # After nowstat, still check for wicket in the same message
+        # (messages like "Next batsman: <@X>" appear AFTER wicket info in same message)
         # ===== END NOWSTAT CHECK =====
 
         # FIRST: Check if there's an embed with wicket info OR match data
@@ -1370,6 +1375,29 @@ class MatchUpdates(commands.Cog):
             file = discord.File(fp=wicket_image, filename="wicket.png")
             await message.channel.send(file=file)
             print(f"✅ SENT WICKET IMAGE\n")
+
+            # After wicket image, send nowstat for next batsman/bowler
+            # if this same message also contains "Next batsman/bowler" info
+            if players_to_show and not nowstat_sent:
+                already_sent_ids = set()
+                for uid, role in players_to_show:
+                    if uid in already_sent_ids:
+                        continue
+                    already_sent_ids.add(uid)
+                    conn2 = sqlite3.connect('players.db')
+                    c2 = conn2.cursor()
+                    c2.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (uid,))
+                    pr = c2.fetchone()
+                    conn2.close()
+                    if not pr:
+                        continue
+                    print(f"   🎨 Post-wicket nowstat for {pr[0]} (role={role})")
+                    ns_result = await create_nowstat_image(uid, role, message.guild, self.bot)
+                    if ns_result and ns_result[0]:
+                        ns_bytes, ns_text = ns_result
+                        ns_file = discord.File(fp=ns_bytes, filename="nowstat.png")
+                        await message.channel.send(content=ns_text, file=ns_file)
+                        print(f"   ✅ Sent post-wicket nowstat for {pr[0]}")
             return
 
         # THIRD: Check for match status updates in embeds (not wickets)
@@ -1397,38 +1425,12 @@ class MatchUpdates(commands.Cog):
 
         channel_id = message.channel.id
         current_timeline = '|'.join(match_data['timeline'])
-        current_bowler = match_data.get('bowler_username', '')
-        current_score = match_data.get('team_a_score', '')
-        current_overs = match_data.get('overs', '')
 
-        # Full fingerprint = timeline + score + overs (catches repeats even if bowler same)
-        current_fingerprint = f"{current_timeline}|{current_score}|{current_overs}"
-
-        import time as _time
-        now = _time.time()
-
-        prev = last_timelines.get(channel_id, {})
-        prev_fingerprint = prev.get('fingerprint', '')
-        prev_bowler = prev.get('bowler', '')
-        prev_sent_at = prev.get('sent_at', 0)
-
-        # Skip if exact same fingerprint AND sent within last 5 minutes
-        if current_fingerprint == prev_fingerprint and (now - prev_sent_at) < 300:
-            print("ℹ️ Same match state fingerprint (sent recently), skipping")
+        if channel_id in last_timelines and last_timelines[channel_id] == current_timeline:
+            print("ℹ️ Same timeline, skipping")
             return
 
-        # If bowler changed, reset timeline display so only current over balls show
-        bowler_changed = bool(prev_bowler) and prev_bowler != current_bowler
-        if bowler_changed:
-            print(f"🔄 Bowler changed from {prev_bowler} → {current_bowler}, resetting timeline display")
-            # Only show balls from new bowler's over (current over only)
-            match_data['timeline_reset'] = True
-
-        last_timelines[channel_id] = {
-            'fingerprint': current_fingerprint,
-            'bowler': current_bowler,
-            'sent_at': now,
-        }
+        last_timelines[channel_id] = current_timeline
 
         print(f"\n🎨 CREATING MATCH IMAGE...")
 
@@ -1614,7 +1616,7 @@ class MatchUpdates(commands.Cog):
 
         image_bytes, plain_text = result
         file = discord.File(fp=image_bytes, filename="nowstat.png")
-        await ctx.send(content=f"{plain_text}", file=file)
+        await ctx.send(content=f"🧪 **Test Nowstat** | {plain_text}", file=file)
 
 
 async def setup(bot):

@@ -56,6 +56,7 @@ async def on_ready():
     await bot.load_extension('matchupdates')
     await bot.load_extension('tournament')
     await bot.load_extension('series')
+    await bot.load_extension('playerlife')
     await bot.tree.sync()
     print(f'{bot.user} has connected to Discord!')
     print(f'Bot is ready! Prefix: .')

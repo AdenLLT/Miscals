@@ -938,9 +938,9 @@ class Series(commands.Cog):
         view.add_item(SeriesSelect(active_series, self.bot))  # Pass self.bot here
         await ctx.send("📋 Select a series to view its leaderboard:", view=view)
 
-    @commands.command(name="sremind", aliases=["sr"], help="Remind teams about their latest series match and send DMs to players")
+    @commands.command(name="sremindd", aliases=["srrrd"], help="Remind teams about their latest series match")
     async def sremind(self, ctx, team1: str, team2: str):
-        """Remind teams about their latest series match and send DMs to players"""
+        """Remind teams about their latest series match"""
         series = get_active_series()
         if not series:
             await ctx.send("❌ No active series found!")
@@ -950,17 +950,6 @@ class Series(commands.Cog):
 
         conn = sqlite3.connect('players.db')
         c = conn.cursor()
-        
-        # Verify both teams are in the series_teams
-        c.execute("SELECT team_name FROM series_teams WHERE series_id = ? AND team_name IN (?, ?)", 
-                 (series_id, team1, team2))
-        found_teams = [row[0] for row in c.fetchall()]
-        if len(found_teams) != 2:
-            missing = [t for t in [team1, team2] if t not in found_teams]
-            await ctx.send(f"❌ Team(s) not found in series: {', '.join(missing)}")
-            conn.close()
-            return
-
         c.execute("""SELECT match_number, channel_id FROM series_fixtures 
                     WHERE series_id = ? 
                     AND ((team1 = ? AND team2 = ?) OR (team1 = ? AND team2 = ?))
@@ -968,38 +957,13 @@ class Series(commands.Cog):
                     ORDER BY match_number ASC LIMIT 1""", 
                  (series_id, team1, team2, team2, team1))
         fixture = c.fetchone()
+        conn.close()
 
         if not fixture:
             await ctx.send(f"❌ No upcoming match found between **{team1}** and **{team2}** in the current series!")
-            conn.close()
             return
 
         match_num, channel_id = fixture
-        
-        # Get all players from both teams from players.json
-        try:
-            with open('players.json', 'r', encoding='utf-8') as f:
-                teams_data = json.load(f)
-        except Exception as e:
-            await ctx.send(f"❌ Error loading players.json: {e}")
-            conn.close()
-            return
-
-        team_players = []
-        for team_data in teams_data:
-            if team_data['team'] in [team1, team2]:
-                team_players.extend(team_data['players'])
-
-        # Get claimed players' user IDs
-        player_user_ids = []
-        for player in team_players:
-            c.execute("SELECT user_id FROM player_representatives WHERE player_name = ?", (player['name'],))
-            result = c.fetchone()
-            if result:
-                player_user_ids.append(result[0])
-        
-        conn.close()
-
         role1_id = get_team_role_id(team1)
         role2_id = get_team_role_id(team2)
 
@@ -1015,30 +979,7 @@ class Series(commands.Cog):
             color=0xFFA500
         )
         
-        # Send message in channel
         await ctx.send(content=ping_text.strip(), embed=embed)
-
-        # Send DMs to all claimed players
-        success_count = 0
-        for user_id in set(player_user_ids):
-            try:
-                user = await self.bot.fetch_user(user_id)
-                if user:
-                    dm_embed = discord.Embed(
-                        title="🏏 Match Reminder!",
-                        description=f"You have an upcoming match in **{series_name}**\n\n"
-                                    f"**Match #{match_num}**: {get_team_flag(team1)} **{team1}** vs {get_team_flag(team2)} **{team2}**\n"
-                                    f"Stadium: <#{channel_id}>\n\n"
-                                    f"Please report to the stadium immediately!",
-                        color=0x1E90FF
-                    )
-                    await user.send(embed=dm_embed)
-                    success_count += 1
-            except:
-                continue
-        
-        if success_count > 0:
-            await ctx.send(f"✅ Sent DM reminders to {success_count} players.")
 
 async def setup(bot):
     await bot.add_cog(Series(bot))
