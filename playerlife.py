@@ -1679,14 +1679,24 @@ class PlayerLife(commands.Cog):
     async def daily_command(self, ctx):
         ensure_life(ctx.author.id)
         life = get_life(ctx.author.id)
-        can, mins = cooldown_check(life["last_rest"], 20)  # Using rest as daily tracker
+        
+        # Check cooldown (24 hours = 1440 minutes)
+        can_claim, minutes_left = cooldown_check(life.get("last_social"), 24)
+        if not can_claim:
+            hours = minutes_left // 60
+            mins = minutes_left % 60
+            await ctx.send(f"🎁 You've already claimed your daily reward! Come back in **{hours}h {mins}m**.")
+            return
 
         cash_reward = random.randint(2000, 10000)
         fan_reward = random.randint(100, 1000)
         new_cash = life["cash"] + cash_reward
         new_fans = life["fans"] + fan_reward
         new_energy = min(100, life["energy"] + 20)
-        update_life(ctx.author.id, cash=new_cash, fans=new_fans, energy=new_energy)
+        
+        # Use last_social as a proxy for last_daily
+        update_life(ctx.author.id, cash=new_cash, fans=new_fans, energy=new_energy, 
+                    last_social=datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'))
 
         embed = discord.Embed(title="🎁 Daily Reward Claimed!", color=0x00FF00,
                               description=f"Another day in the cricket life!")
