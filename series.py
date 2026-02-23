@@ -894,6 +894,123 @@ class Series(commands.Cog):
         embed.set_footer(text=f"Series ID: {series_id} • Use -seriesstats for full standings")
         await ctx.send(embed=embed)
 
+    @commands.command(name="serieswinner", help="[ADMIN] Record a winner for a series match manually")
+    @commands.has_permissions(administrator=True)
+    async def serieswinner(self, ctx, winner_team: str, opponent_team: str):
+        """Record a match result manually. Usage: -serieswinner India Pakistan"""
+        series = get_active_series()
+        if not series:
+            await ctx.send("❌ No active series found!")
+            return
+
+        series_id, series_name, teams_json = series
+        series_teams = json.loads(teams_json)
+
+        if winner_team not in series_teams or opponent_team not in series_teams:
+            await ctx.send(f"❌ Both teams must be in the series! Teams: {', '.join(series_teams)}")
+            return
+
+        def check(m):
+            return m.author.id == ctx.author.id and m.channel.id == ctx.channel.id
+
+        try:
+            # 1. Runs/Wickets for Winner
+            await ctx.send(f"🏏 How many runs and wickets did **{winner_team}** make? (Format: `runs/wickets`, e.g., `180/4`)")
+            msg = await self.bot.wait_for('message', timeout=60.0, check=check)
+            w_runs, w_wickets = map(int, msg.content.split('/'))
+
+            # 2. Overs for Winner
+            await ctx.send(f"⏳ How many overs did **{winner_team}** play? (e.g., `20.0`)")
+            msg = await self.bot.wait_for('message', timeout=60.0, check=check)
+            w_overs = float(msg.content)
+
+            # 3. Runs/Wickets for Opponent
+            await ctx.send(f"🏏 How many runs and wickets did **{opponent_team}** make? (Format: `runs/wickets`, e.g., `150/10`)")
+            msg = await self.bot.wait_for('message', timeout=60.0, check=check)
+            o_runs, o_wickets = map(int, msg.content.split('/'))
+
+            # 4. Overs for Opponent
+            await ctx.send(f"⏳ How many overs did **{opponent_team}** play? (e.g., `18.2`)")
+            msg = await self.bot.wait_for('message', timeout=60.0, check=check)
+            o_overs = float(msg.content)
+
+            # 5. Who batted first?
+            await ctx.send(f"❓ Which team batted first?\n1. {winner_team}\n2. {opponent_team}")
+            msg = await self.bot.wait_for('message', timeout=60.0, check=check)
+            bat_first = winner_team if "1" in msg.content else opponent_team
+
+        except Exception as e:
+            await ctx.send(f"❌ Error or Timeout: {e}")
+            return
+
+        # NRR Calculation helper
+        def to_balls(overs):
+            o = int(overs)
+            b = int(round((overs - o) * 10))
+            return o * 6 + b
+
+        w_balls = to_balls(w_overs)
+        o_balls = to_balls(o_overs)
+
+        # Basic NRR: (Runs Scored / Overs Faced) - (Runs Conceded / Overs Bowled)
+        # For simplicity in this manual command, we'll calculate the gap
+        w_rr = (w_runs / w_balls) * 6 if w_balls > 0 else 0
+        o_rr = (o_runs / o_balls) * 6 if o_balls > 0 else 0
+        nrr_change = abs(w_rr - o_rr)
+
+        conn = sqlite3.connect('players.db')
+        c = conn.cursor()
+
+        # Update standings
+        c.execute("""UPDATE series_teams 
+                    SET wins = wins + 1, matches_played = matches_played + 1, nrr = nrr + ?
+                    WHERE series_id = ? AND team_name = ?""", (nrr_change, series_id, winner_team))
+        
+        c.execute("""UPDATE series_teams 
+                    SET losses = losses + 1, matches_played = matches_played + 1, nrr = nrr - ?
+                    WHERE series_id = ? AND team_name = ?""", (nrr_change, series_id, opponent_team))
+
+        # Mark fixture as played if exists
+        c.execute("""UPDATE series_fixtures SET is_played = 1, winner = ? 
+                    WHERE series_id = ? AND is_played = 0 
+                    AND ((team1 = ? AND team2 = ?) OR (team1 = ? AND team2 = ?))
+                    LIMIT 1""", (winner_team, series_id, winner_team, opponent_team, opponent_team, winner_team))
+
+        conn.commit()
+        conn.close()
+
+        await ctx.send(f"✅ Result recorded! **{winner_team}** beat **{opponent_team}**.\nNRR Impact: {nrr_change:+.3f}")
+
+    @commands.command(name="sptsi", help="View the international points table for Series matches only")
+    async def sptsi(self, ctx):
+        """Points table for Series matches only"""
+        conn = sqlite3.connect('players.db')
+        c = conn.cursor()
+
+        # Aggregate stats from series_teams
+        c.execute("""
+            SELECT team_name, SUM(wins) as w, SUM(losses) as l, SUM(matches_played) as mp, SUM(nrr) as n
+            FROM series_teams
+            GROUP BY team_name
+            HAVING mp > 0
+            ORDER BY w DESC, n DESC
+        """)
+        data = c.fetchall()
+        conn.close()
+
+        if not data:
+            await ctx.send("❌ No series match data found!")
+            return
+
+        embed = discord.Embed(title="🌍 Series International Points Table", color=0x1E90FF)
+        description = "```yaml\nPOS TEAM          W   L   M    NRR\n"
+        for i, (team, w, l, mp, nrr) in enumerate(data, 1):
+            flag = get_team_flag(team)
+            description += f"{i:<3} {team:<13} {w:<3} {l:<3} {mp:<3} {nrr:>+6.3f}\n"
+        description += "```"
+        embed.description = description
+        await ctx.send(embed=embed)
+
     @commands.command(name="serieslb", aliases=["slb"], help="View leaderboard for a specific series")
     async def serieslb(self, ctx):
         """View leaderboard for a specific series"""
