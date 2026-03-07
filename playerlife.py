@@ -4,10 +4,19 @@ import json
 import random
 import asyncio
 import math
+import urllib.request
+import urllib.error
 from discord.ext import commands
 from discord import app_commands
 from discord.ui import View, Button, Select
 from datetime import datetime, timedelta
+
+# ============================================================
+# GEMINI AI CONFIG
+# ============================================================
+GEMINI_API_KEY = "AIzaSyCqTGO6jFDIkzp1ofUqRYXc9sVKpVCJ0es"
+GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+POSTS_PER_PAGE = 4
 
 # ============================================================
 # DATABASE INIT
@@ -103,6 +112,14 @@ def init_playerlife_db():
                   user_id INTEGER,
                   trophy_name TEXT,
                   awarded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+
+    c.execute('''CREATE TABLE IF NOT EXISTS ai_feed_cache
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  cache_date TEXT,
+                  language_filter TEXT DEFAULT 'all',
+                  page_number INTEGER DEFAULT 0,
+                  posts_json TEXT,
+                  generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
 
     conn.commit()
     conn.close()
@@ -426,6 +443,496 @@ RELATIONSHIP_EVENTS = [
     "Anniversary dinner at a 5-star restaurant. -$2000 💸",
 ]
 
+
+# ============================================================
+# AI FEED HELPERS
+# ============================================================
+
+def get_cricket_players():
+    """Load player names from players.json (simple list for fallback usage)."""
+    players = []
+    try:
+        with open('players.json', 'r') as f:
+            data = json.load(f)
+            if isinstance(data, list):
+                for team_entry in data:
+                    if isinstance(team_entry, dict) and 'players' in team_entry:
+                        for p in team_entry['players']:
+                            name = p.get('name', '')
+                            if name:
+                                players.append(name)
+                    elif isinstance(team_entry, dict):
+                        name = team_entry.get('name') or team_entry.get('player_name') or team_entry.get('fullName', '')
+                        if name:
+                            players.append(name)
+                    elif isinstance(team_entry, str):
+                        players.append(team_entry)
+    except Exception:
+        pass
+
+    if not players:
+        players = [
+            "Virat Kohli", "Rohit Sharma", "MS Dhoni", "Jasprit Bumrah",
+            "Babar Azam", "Shaheen Afridi", "Mohammad Rizwan",
+            "Pat Cummins", "Steve Smith", "David Warner",
+            "Ben Stokes", "Joe Root", "Jos Buttler",
+            "Kane Williamson", "Trent Boult",
+            "Kagiso Rabada", "Quinton de Kock",
+            "Shakib Al Hasan", "Rashid Khan"
+        ]
+    return players[:40]
+
+
+def get_feed_player_data(bot=None):
+    """
+    Returns a rich dict of claimed players with their stats and discord username.
+    Used to inject real bot data into the AI feed prompt.
+    Format: {player_name: {discord: "@username", team: "India", runs: 340, wickets: 12,
+                           economy: 6.4, strike_rate: 142.0, matches: 8, highest: 67,
+                           best_bowling: "3/24", centuries: 0, fifties: 2, impact: 424}}
+    """
+    result = {}
+    try:
+        conn = sqlite3.connect('players.db')
+        c = conn.cursor()
+
+        # Get all claimed players with user_id
+        c.execute("""
+            SELECT pr.player_name, pr.user_id
+            FROM player_representatives pr
+            WHERE pr.player_name IS NOT NULL
+        """)
+        claimed = c.fetchall()
+
+        for player_name, user_id in claimed:
+            # Career batting + bowling stats
+            c.execute("""
+                SELECT
+                    SUM(runs) as total_runs,
+                    SUM(balls_faced) as total_balls,
+                    SUM(wickets) as total_wkts,
+                    SUM(balls_bowled) as balls_bowled,
+                    SUM(runs_conceded) as runs_conceded,
+                    SUM(not_out) as not_outs,
+                    COUNT(*) as matches,
+                    MAX(runs) as highest,
+                    MAX(wickets) as best_wkts
+                FROM match_stats WHERE user_id = ?
+            """, (user_id,))
+            row = c.fetchone()
+
+            # Tournament points table - find team
+            team = None
+            try:
+                with open('players.json', 'r') as f:
+                    teams_data = json.load(f)
+                for td in teams_data:
+                    if isinstance(td, dict) and 'players' in td:
+                        for p in td['players']:
+                            if p.get('name') == player_name:
+                                team = td.get('team')
+                                break
+            except Exception:
+                pass
+
+            # Discord username lookup via bot
+            discord_handle = f"@{player_name.lower().replace(' ', '_')}"
+            if bot:
+                try:
+                    # Try to find the member across guilds the bot is in
+                    for guild in bot.guilds:
+                        member = guild.get_member(user_id)
+                        if member:
+                            discord_handle = f"@{member.name}"
+                            break
+                except Exception:
+                    pass
+            else:
+                # Fallback: store user_id so we can look up later
+                discord_handle = f"uid:{user_id}"
+
+            if row and row[0] is not None:
+                total_runs = int(row[0] or 0)
+                total_balls_faced = int(row[1] or 0)
+                total_wkts = int(row[2] or 0)
+                balls_bowled = int(row[3] or 0)
+                runs_conceded = int(row[4] or 0)
+                not_outs = int(row[5] or 0)
+                matches = int(row[6] or 0)
+                highest = int(row[7] or 0)
+                best_wkts = int(row[8] or 0)
+
+                sr = round((total_runs / total_balls_faced * 100), 1) if total_balls_faced > 0 else 0.0
+                eco = round((runs_conceded / (balls_bowled / 6)), 2) if balls_bowled > 0 else 0.0
+                dismissals = matches - not_outs
+                avg = round(total_runs / dismissals, 1) if dismissals > 0 else total_runs
+
+                # Centuries and fifties
+                c.execute("SELECT COUNT(*) FROM match_stats WHERE user_id = ? AND runs >= 100", (user_id,))
+                centuries = c.fetchone()[0]
+                c.execute("SELECT COUNT(*) FROM match_stats WHERE user_id = ? AND runs >= 50 AND runs < 100", (user_id,))
+                fifties = c.fetchone()[0]
+
+                # Best bowling figures: max wickets in one match, least runs that match
+                c.execute("""
+                    SELECT wickets, runs_conceded FROM match_stats
+                    WHERE user_id = ? AND wickets > 0
+                    ORDER BY wickets DESC, runs_conceded ASC LIMIT 1
+                """, (user_id,))
+                bb_row = c.fetchone()
+                best_bowling = f"{bb_row[0]}/{bb_row[1]}" if bb_row else "0/0"
+
+                # Impact points formula from cricket_stats.py
+                c.execute("""
+                    SELECT SUM(
+                        runs + (wickets * 7) +
+                        CASE WHEN wickets >= 5 THEN 70 WHEN wickets >= 3 THEN 40 ELSE 0 END +
+                        CASE WHEN runs >= 100 THEN 100 WHEN runs >= 50 THEN 65 ELSE 0 END
+                    ) FROM match_stats WHERE user_id = ?
+                """, (user_id,))
+                impact_row = c.fetchone()
+                impact = int(impact_row[0] or 0)
+
+                result[player_name] = {
+                    'discord': discord_handle,
+                    'team': team or 'Unknown',
+                    'matches': matches,
+                    'runs': total_runs,
+                    'balls_faced': total_balls_faced,
+                    'strike_rate': sr,
+                    'average': avg,
+                    'highest': highest,
+                    'centuries': centuries,
+                    'fifties': fifties,
+                    'wickets': total_wkts,
+                    'economy': eco,
+                    'best_bowling': best_bowling,
+                    'impact': impact,
+                }
+            else:
+                # Claimed but no stats yet
+                result[player_name] = {
+                    'discord': discord_handle,
+                    'team': team or 'Unknown',
+                    'matches': 0,
+                    'runs': 0, 'balls_faced': 0, 'strike_rate': 0.0,
+                    'average': 0.0, 'highest': 0, 'centuries': 0, 'fifties': 0,
+                    'wickets': 0, 'economy': 0.0, 'best_bowling': '0/0', 'impact': 0,
+                }
+
+        conn.close()
+    except Exception as e:
+        pass
+
+    return result
+
+
+def get_tournament_context():
+    """Get active tournament standings for feed context."""
+    try:
+        conn = sqlite3.connect('players.db')
+        c = conn.cursor()
+        c.execute("""
+            SELECT t.name, tt.team_name, tt.points, tt.wins, tt.losses, tt.nrr, tt.matches_played
+            FROM tournaments t
+            JOIN tournament_teams tt ON t.id = tt.tournament_id
+            WHERE t.is_active = 1 AND t.is_archived = 0
+            ORDER BY tt.points DESC, tt.nrr DESC
+        """)
+        rows = c.fetchall()
+        conn.close()
+        if not rows:
+            return None, []
+        tourney_name = rows[0][0]
+        standings = [
+            {'team': r[1], 'pts': r[2], 'wins': r[3], 'losses': r[4], 'nrr': r[5], 'played': r[6]}
+            for r in rows
+        ]
+        return tourney_name, standings
+    except Exception:
+        return None, []
+
+
+import time as _time
+
+# Fallback posts used when Gemini is rate-limited
+FALLBACK_POSTS = {
+    'english': [
+        {"handle": "@cricket_soul99", "bio": "🏏 Cricket is religion", "content": "That last over was absolutely INSANE! The bowler was on fire, gave nothing away under pressure. This is what cricket is all about 🔥 #Cricket #T20", "likes": 847, "comments": 34, "time": "2h ago", "language": "english"},
+        {"handle": "@stump_mic_fan", "bio": "Watching cricket since 1992 📺", "content": "People sleeping on how good Bumrah has been this series. 4 wickets and economy of 4.2? Absolute weapon. No one else comes close right now 💪 #Bumrah", "likes": 2341, "comments": 89, "time": "5h ago", "language": "english"},
+        {"handle": "@sixhitter_vibes", "bio": "T20 addict | IPL every season", "content": "Unpopular opinion: Test cricket is still the ultimate format. Nothing tests a player's character like 5 days of pressure. Change my mind. 🏏 #TestCricket", "likes": 512, "comments": 156, "time": "1d ago", "language": "english"},
+        {"handle": "@yorker_king_fan", "bio": "Fast bowling enthusiast ⚡", "content": "That cover drive in the last match was poetry. Textbook technique, perfect timing. The batting coach must be proud 😍 #Cricket", "likes": 1203, "comments": 41, "time": "3h ago", "language": "english"},
+    ],
+    'hinglish': [
+        {"handle": "@desi_cricket_bhai", "bio": "Dil se cricket fan 🇮🇳", "content": "Yaar aaj ki innings toh kamaal thi! Bilkul mast batting ki usne, bhai logo ko samajh nahi aata iski value 🔥 #Cricket #India", "likes": 1847, "comments": 67, "time": "1h ago", "language": "hinglish"},
+        {"handle": "@rohit_gang_official", "bio": "Hitman ka fan forever 💙", "content": "Bhai yeh log kya bolte rehte hain drop karo drop karo — ek match mein hi saara hisaab chukta kar diya usne 😤 Iski class dekho phir baat karo 🙌", "likes": 3421, "comments": 203, "time": "4h ago", "language": "hinglish"},
+        {"handle": "@cricket_masala_daily", "bio": "Cricket gossip & updates 🏏", "content": "Kya scene hai yaar! Jab se naya captain aaya hai team ka mood hi alag hai. Ekdum positive vibes, sab ek saath khel rahe hain. Love to see it 🥹 #TeamIndia", "likes": 892, "comments": 55, "time": "6h ago", "language": "hinglish"},
+        {"handle": "@ipl_fanatic_007", "bio": "IPL har season dekhta hoon 👀", "content": "Bhai honestly bol raha hoon iski tara koi bowl nahi kar sakta abhi. Woh angle, woh pace — matlab yaar dil khush ho gaya aaj 🎯 #Cricket", "likes": 2109, "comments": 78, "time": "2h ago", "language": "hinglish"},
+    ],
+}
+
+def _get_fallback_posts(language_filter: str) -> list:
+    """Return shuffled fallback posts when API is unavailable."""
+    if language_filter == 'english':
+        posts = list(FALLBACK_POSTS['english'])
+    elif language_filter == 'hinglish':
+        posts = list(FALLBACK_POSTS['hinglish'])
+    else:
+        posts = list(FALLBACK_POSTS['english'][:2]) + list(FALLBACK_POSTS['hinglish'][:2])
+    random.shuffle(posts)
+    # Randomise likes/comments slightly so it feels fresh
+    for p in posts:
+        p = dict(p)
+        p['likes'] = max(10, p['likes'] + random.randint(-200, 400))
+        p['comments'] = max(1, p['comments'] + random.randint(-10, 30))
+    return posts
+
+
+def call_gemini_sync(prompt: str) -> str:
+    """
+    Call Gemini REST API once. On 429 raises RuntimeError("RATE_LIMITED")
+    immediately so the async caller can handle the wait without blocking.
+    """
+    payload = json.dumps({
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 1.0, "maxOutputTokens": 3000}
+    }).encode('utf-8')
+    req = urllib.request.Request(
+        GEMINI_URL,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+            text = data['candidates'][0]['content']['parts'][0]['text']
+            print(f"[GEMINI] HTTP 200 OK — response length: {len(text)} chars")
+            return text
+    except urllib.error.HTTPError as e:
+        if e.code == 429:
+            print(f"[GEMINI] HTTP 429 Too Many Requests — raising RATE_LIMITED")
+            raise RuntimeError("RATE_LIMITED")
+        print(f"[GEMINI] HTTP {e.code} error")
+        raise RuntimeError(f"Gemini API error: HTTP {e.code}")
+    except Exception as e:
+        print(f"[GEMINI] Exception: {type(e).__name__}: {e}")
+        raise RuntimeError(f"Gemini API error: {e}")
+
+
+async def call_gemini(prompt: str) -> str:
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, call_gemini_sync, prompt)
+
+
+def build_feed_prompt(player_data: dict, language_filter: str, page: int,
+                      tourney_name: str = None, standings: list = None) -> str:
+    """
+    Build a Gemini prompt that injects real bot stats, discord usernames,
+    tournament standings, and varies content by page type.
+    """
+    lang_instruction = {
+        'all':      'Mix of English and Hinglish (Roman script). Roughly 50/50.',
+        'english':  'All posts in English only.',
+        'hinglish': 'All posts in Hinglish (Hindi in Roman script, e.g. "yaar", "bhai", "ekdum mast", "kya scene hai bhai"). NO Devanagari script.'
+    }.get(language_filter, 'Mix of English and Hinglish.')
+
+    # Page themes — each page has a DIFFERENT personality/content angle
+    PAGE_THEMES = [
+        "general fan reactions, player praise, match excitement",
+        "TOXIC DRAMA PAGE — every single post must be salty, savage, brutal trash-talk about specific players and their bad stats. Include specific numbers (e.g. 'scored 4 off 18 balls lmao', '0 wickets in 3 matches', 'economy 14.2 bruh'). Roast players, call them overrated, mock their performances. Pure drama and toxicity. Fans fighting in comments. Be brutal and funny.",
+        "leaderboard/stats obsession — posts referencing who tops the runs/wickets/economy/impact leaderboard (-lb), who's underperforming vs their stats, heated debates about rankings",
+        "predictions, hot takes, controversial opinions about who will win the tournament, who should be dropped",
+        "funny/meme-style posts, wholesome moments, player banter, fan celebrations mixed with light roasting",
+        "tactical analysis mixed with drama — posts about team strategies, why certain teams are winning or losing in the tournament table (-pts)",
+        "TOXIC DRAMA PAGE 2 — even MORE savage than page 2. Flame wars between rival fans, personal attacks on players' consistency, drag their economy rates and ducks through the mud. 'bhai yeh century nahi maar sakta kabhi', 'highest score 7 runs 💀💀', 'bench player energy fr'. Maximum toxicity.",
+        "heartfelt appreciation posts mixed with subtle shade at rivals, trophy talk, NRR anxiety posts",
+    ]
+    theme = PAGE_THEMES[page % len(PAGE_THEMES)]
+
+    # Pick a random sample of players WITH their stats for the prompt
+    all_players = list(player_data.items())
+    sample_players = random.sample(all_players, min(8, len(all_players))) if all_players else []
+
+    # Build the player context block
+    player_block_lines = []
+    for pname, pstats in sample_players:
+        discord_tag = pstats.get('discord', '@unknown')
+        # Resolve uid: format entries as generic tags when no bot available
+        if discord_tag.startswith('uid:'):
+            discord_tag = f"@{pname.lower().split()[0]}_player"
+        team = pstats.get('team', '?')
+        runs = pstats.get('runs', 0)
+        wkts = pstats.get('wickets', 0)
+        sr = pstats.get('strike_rate', 0)
+        eco = pstats.get('economy', 0)
+        highest = pstats.get('highest', 0)
+        best_bowl = pstats.get('best_bowling', '0/0')
+        avg = pstats.get('average', 0)
+        matches = pstats.get('matches', 0)
+        impact = pstats.get('impact', 0)
+        centuries = pstats.get('centuries', 0)
+        fifties = pstats.get('fifties', 0)
+        player_block_lines.append(
+            f"  - {pname} ({discord_tag}) [{team}]: "
+            f"{matches}M, {runs}R, SR={sr}, Avg={avg}, HS={highest}, {centuries}×100, {fifties}×50, "
+            f"{wkts}wkts, Eco={eco}, BB={best_bowl}, Impact={impact}"
+        )
+    player_block = "\n".join(player_block_lines) if player_block_lines else "  (No player data available)"
+
+    # Tournament context block
+    tourney_block = ""
+    if tourney_name and standings:
+        top5 = standings[:5]
+        rows = [f"  {i+1}. {s['team']} — {s['pts']}pts, W{s['wins']}L{s['losses']}, NRR {s['nrr']:+.3f}"
+                for i, s in enumerate(top5)]
+        tourney_block = f"\nActive Tournament: {tourney_name}\nTop standings:\n" + "\n".join(rows)
+
+    seed = f"P{page}_D{datetime.utcnow().strftime('%Y%m%d')}_T{theme[:12].replace(' ','')}"
+
+    prompt = f"""You are writing fake fan social media posts for "CricketGram" — a social feed inside a Discord cricket bot.
+
+Page seed: {seed}
+Page theme: {theme}
+Language rule: {lang_instruction}
+
+=== REAL PLAYER DATA FROM THE BOT ===
+(These are real players claimed by Discord users in this cricket bot. Use their ACTUAL stats in your posts.)
+{player_block}
+{tourney_block}
+
+=== STRICT RULES ===
+1. Generate EXACTLY 4 posts, each completely different from the others on this page.
+2. EVERY post MUST mention at least one real player from the list above BY NAME, including their Discord handle in parentheses — e.g. "Virat Kohli (@virat99)".
+3. Use the REAL stats when talking about players — mention actual run counts, strike rates, economy, wickets, impact points, highest scores, ducks, etc. Make it feel like fans genuinely follow the leaderboard (-lb) and points table (-pts).
+4. Follow the page theme closely. If it says TOXIC, be genuinely savage and roast players with their real bad stats.
+5. Every page must feel DIFFERENT. Do not repeat styles or topics across pages.
+6. Posts can reference: match results, leaderboard standings (-lb), impact points, economy rates, batting averages, tournament points table (-pts), NRR, player consistency or lack thereof, who topped the -lb this week, etc.
+7. Language must match the rule — if Hinglish, use Roman script Hindi words naturally.
+8. Handles should be creative cricket fan usernames, not the players' own names.
+
+=== JSON SCHEMA ===
+Return ONLY a valid JSON array (no markdown, no explanation):
+[
+  {{
+    "handle": "@fan_username",
+    "bio": "short fan bio 1 line",
+    "content": "post content (1-3 sentences, emojis, hashtags, player name with (@discordhandle))",
+    "likes": 123,
+    "comments": 45,
+    "time": "2h ago",
+    "language": "english"
+  }}
+]"""
+
+    return prompt
+
+
+def get_feed_from_cache(cache_date: str, language_filter: str, page: int):
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    try:
+        c.execute(
+            "SELECT posts_json FROM ai_feed_cache WHERE cache_date=? AND language_filter=? AND page_number=?",
+            (cache_date, language_filter, page)
+        )
+        row = c.fetchone()
+        conn.close()
+        if row:
+            return json.loads(row[0])
+    except Exception:
+        conn.close()
+    return None
+
+
+def save_feed_to_cache(cache_date: str, language_filter: str, page: int, posts: list):
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    try:
+        c.execute(
+            "INSERT OR REPLACE INTO ai_feed_cache (cache_date, language_filter, page_number, posts_json) VALUES (?,?,?,?)",
+            (cache_date, language_filter, page, json.dumps(posts))
+        )
+        conn.commit()
+    except Exception:
+        pass
+    conn.close()
+
+
+async def get_feed_page(language_filter: str, page: int, bot=None) -> tuple:
+    """Returns (posts, is_fallback). Caches AI results, uses fallback on rate limit."""
+    today = datetime.utcnow().strftime('%Y-%m-%d')
+    cached = get_feed_from_cache(today, language_filter, page)
+    if cached:
+        return cached, False
+
+    # Get rich player data with real stats and discord handles
+    player_data = get_feed_player_data(bot=bot)
+    tourney_name, standings = get_tournament_context()
+
+    # Fall back to simple player list if no claimed players exist yet
+    if not player_data:
+        simple_players = get_cricket_players()
+        player_data = {p: {'discord': f'@{p.lower().split()[0]}fan', 'team': 'Unknown',
+                           'matches': 0, 'runs': 0, 'wickets': 0, 'strike_rate': 0.0,
+                           'economy': 0.0, 'average': 0.0, 'highest': 0, 'best_bowling': '0/0',
+                           'centuries': 0, 'fifties': 0, 'impact': 0}
+                       for p in simple_players}
+
+    prompt = build_feed_prompt(player_data, language_filter, page, tourney_name, standings)
+
+    try:
+        raw = await call_gemini(prompt)
+        raw = raw.strip()
+        if raw.startswith('```'):
+            parts = raw.split('```')
+            raw = parts[1] if len(parts) > 1 else raw
+            if raw.startswith('json'):
+                raw = raw[4:]
+        raw = raw.strip()
+        posts = json.loads(raw)
+        save_feed_to_cache(today, language_filter, page, posts)
+        return posts, False
+    except RuntimeError as e:
+        if 'RATE_LIMITED' in str(e):
+            return _get_fallback_posts(language_filter), True
+        raise
+
+
+def build_feed_embed(posts: list, page: int, language_filter: str, is_loading: bool = False, is_fallback: bool = False) -> discord.Embed:
+    lang_emoji = {'all': '🌐', 'english': '🇬🇧', 'hinglish': '🇮🇳'}.get(language_filter, '🌐')
+    lang_name = {'all': 'All Languages', 'english': 'English Only', 'hinglish': 'Hinglish Only'}.get(language_filter, 'All')
+    embed = discord.Embed(
+        title=f"📱 CricketGram Fan Feed  {lang_emoji} {lang_name}",
+        description=f"*What fans are saying today... Page {page + 1}*",
+        color=0xE1306C
+    )
+    if is_loading:
+        embed.description = "⏳ *Generating AI fan posts... please wait a moment...*"
+        embed.set_footer(text="Powered by Gemini AI | Refreshes daily")
+        return embed
+    if not posts:
+        embed.description = "Could not load feed. Try again!"
+        return embed
+    for post in posts:
+        handle = post.get('handle', '@unknown')
+        bio = post.get('bio', '')
+        content = post.get('content', '')
+        likes = post.get('likes', 0)
+        comments = post.get('comments', 0)
+        time_ago = post.get('time', 'recently')
+        lang_tag = "🇮🇳" if post.get('language') == 'hinglish' else "🇬🇧"
+        field_name = f"{lang_tag} {handle}  •  {time_ago}"
+        field_value = f"*{bio}*\n{content}\n❤️ **{likes:,}**  💬 **{comments}**"
+        embed.add_field(name=field_name, value=field_value, inline=False)
+    today_str = datetime.utcnow().strftime('%B %d, %Y')
+    if is_fallback:
+        embed.set_footer(text=f"⚠️ AI rate-limited — showing sample posts | Retry with 🔄 | {today_str}")
+        embed.color = 0xFF8C00  # Orange tint to signal fallback
+    else:
+        embed.set_footer(text=f"📅 {today_str} | Refreshes daily at midnight UTC | Gemini AI")
+    return embed
+
 # ============================================================
 # VIEWS
 # ============================================================
@@ -524,6 +1031,114 @@ class BuyCarView(View):
                           value=f"Price: **{format_money(car['price'])}**\nPrestige: {'⭐'*min(5, car['prestige']//20)}", inline=True)
         embed.set_footer(text="Use -buycar <car name> to purchase")
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+class FeedView(View):
+    """Interactive paginated AI fan feed with language filters and navigation."""
+
+    def __init__(self, ctx, initial_page: int = 0, language_filter: str = 'all', bot=None):
+        super().__init__(timeout=300)
+        self.ctx = ctx
+        self.page = initial_page
+        self.language_filter = language_filter
+        self.is_loading = False
+        self.bot = bot
+        self._update_buttons()
+
+    def _update_buttons(self):
+        self.clear_items()
+
+        # Language filter buttons
+        langs = [('🌐 All', 'all'), ('🇬🇧 English', 'english'), ('🇮🇳 Hinglish', 'hinglish')]
+        for label, lang in langs:
+            btn = Button(
+                label=label,
+                style=discord.ButtonStyle.success if self.language_filter == lang else discord.ButtonStyle.secondary,
+                row=0
+            )
+            btn.callback = self._make_lang_cb(lang)
+            self.add_item(btn)
+
+        # Refresh button
+        refresh_btn = Button(label="🔄 Refresh Page", style=discord.ButtonStyle.secondary, row=0)
+        refresh_btn.callback = self.refresh_page
+        self.add_item(refresh_btn)
+
+        # Navigation
+        prev_btn = Button(label="⬅️ Prev", style=discord.ButtonStyle.primary, disabled=(self.page == 0), row=1)
+        prev_btn.callback = self.prev_page
+        self.add_item(prev_btn)
+
+        page_btn = Button(label=f"Page {self.page + 1}", style=discord.ButtonStyle.secondary, disabled=True, row=1)
+        self.add_item(page_btn)
+
+        next_btn = Button(label="➡️ Next", style=discord.ButtonStyle.primary, row=1)
+        next_btn.callback = self.next_page
+        self.add_item(next_btn)
+
+    def _make_lang_cb(self, lang: str):
+        async def callback(interaction: discord.Interaction):
+            if interaction.user.id != self.ctx.author.id:
+                await interaction.response.send_message("This feed belongs to someone else!", ephemeral=True)
+                return
+            self.language_filter = lang
+            self.page = 0
+            await self._load_and_update(interaction)
+        return callback
+
+    async def prev_page(self, interaction: discord.Interaction):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("Not your feed!", ephemeral=True)
+            return
+        if self.page > 0:
+            self.page -= 1
+        await self._load_and_update(interaction)
+
+    async def next_page(self, interaction: discord.Interaction):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("Not your feed!", ephemeral=True)
+            return
+        self.page += 1
+        await self._load_and_update(interaction)
+
+    async def refresh_page(self, interaction: discord.Interaction):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("Not your feed!", ephemeral=True)
+            return
+        # Force re-generate by deleting cache for this page
+        today = datetime.utcnow().strftime('%Y-%m-%d')
+        conn = sqlite3.connect('players.db')
+        c = conn.cursor()
+        try:
+            c.execute(
+                "DELETE FROM ai_feed_cache WHERE cache_date=? AND language_filter=? AND page_number=?",
+                (today, self.language_filter, self.page)
+            )
+            conn.commit()
+        except Exception:
+            pass
+        conn.close()
+        await self._load_and_update(interaction)
+
+    async def _load_and_update(self, interaction: discord.Interaction):
+        # Show loading state
+        self._update_buttons()
+        loading_embed = build_feed_embed([], self.page, self.language_filter, is_loading=True)
+        await interaction.response.edit_message(embed=loading_embed, view=self)
+
+        # Generate posts
+        try:
+            posts, is_fallback = await get_feed_page(self.language_filter, self.page, bot=self.bot)
+            embed = build_feed_embed(posts, self.page, self.language_filter, is_fallback=is_fallback)
+        except Exception as e:
+            embed = discord.Embed(
+                title="📱 CricketGram Fan Feed",
+                description=f"❌ Failed to generate feed: {str(e)[:200]}\n\nTry again in a moment!",
+                color=0xFF0000
+            )
+
+        self._update_buttons()
+        await interaction.edit_original_response(embed=embed, view=self)
+
 
 # ============================================================
 # MAIN COG
@@ -887,7 +1502,267 @@ class PlayerLife(commands.Cog):
     # SOCIAL MEDIA
     # ==================================================
 
-    @commands.command(name="socialmedia", aliases=["social"], help="Access your social media account")
+    @commands.command(name="feed", aliases=["cricketfeed", "cf"], help="Open the AI-powered CricketGram fan feed")
+    async def feed_command(self, ctx, language: str = "all"):
+        """Open the live AI-generated cricket fan feed.
+        Usage: -feed | -feed english | -feed hinglish
+        """
+        lang = language.lower().strip()
+        if lang not in ('all', 'english', 'hinglish', 'hindi'):
+            lang = 'all'
+        if lang == 'hindi':
+            lang = 'hinglish'
+
+        ensure_life(ctx.author.id)
+        view = FeedView(ctx, initial_page=0, language_filter=lang, bot=self.bot)
+
+        loading_embed = build_feed_embed([], 0, lang, is_loading=True)
+        msg = await ctx.send(embed=loading_embed, view=view)
+
+        try:
+            posts, is_fallback = await get_feed_page(lang, 0, bot=self.bot)
+            embed = build_feed_embed(posts, 0, lang, is_fallback=is_fallback)
+        except Exception as e:
+            embed = discord.Embed(
+                title="📱 CricketGram Fan Feed",
+                description=f"❌ Could not connect to AI: `{str(e)[:200]}`\n\nCheck your API key or try again!",
+                color=0xFF0000
+            )
+
+        view._update_buttons()
+        await msg.edit(embed=embed, view=view)
+
+    @commands.command(name="genposttoday", aliases=["gpt", "generatefeed"], help="[ADMIN] Pre-generate CricketGram feed pages — 1 call every 10 mins")
+    @commands.has_permissions(administrator=True)
+    async def genposttoday(self, ctx, pages: int = 8):
+        """
+        Pre-generate all feed pages for today, one API call every 10 minutes.
+        This completely avoids Gemini rate limits by spacing calls far apart.
+        On 429, waits another 10 minutes then retries.
+
+        Usage: -genposttoday       → 8 pages × 3 langs = 24 calls (~4 hours)
+               -genposttoday 3    → 3 pages × 3 langs =  9 calls (~1.5 hours)
+        """
+        CALL_INTERVAL = 600       # 10 minutes between each call
+        RATE_LIMIT_WAIT = 600     # 10 minutes extra wait on 429
+        MAX_RETRIES = 3           # retries per page before giving up
+
+        pages = max(1, min(pages, 15))
+        langs = ['all', 'english', 'hinglish']
+        today = datetime.utcnow().strftime('%Y-%m-%d')
+        LANG_EMOJI = {'all': '🌐', 'english': '🇬🇧', 'hinglish': '🇮🇳'}
+
+        # Build todo list — skip already cached
+        todo = []
+        for lang in langs:
+            for page in range(pages):
+                if not get_feed_from_cache(today, lang, page):
+                    todo.append((lang, page))
+
+        skipped_already = pages * len(langs) - len(todo)
+        total = len(todo)
+
+        print(f"[FEED GEN] Starting: date={today} | todo={total} | cached={skipped_already}")
+        print(f"[FEED GEN] Queue: {todo}")
+        print(f"[FEED GEN] Interval: {CALL_INTERVAL}s | Est total time: {total * CALL_INTERVAL // 60}min")
+
+        if not todo:
+            embed = discord.Embed(
+                title="✅ Feed Already Generated",
+                description=(
+                    f"All **{pages} pages × {len(langs)} langs** are already cached for today!\n\n📅 Date: `{today}`\nUsers can open `-feed` instantly."
+                ),
+                color=0x00FF00
+            )
+            await ctx.send(embed=embed)
+            return
+
+        est_mins = total * CALL_INTERVAL // 60
+        status_embed = discord.Embed(
+            title="🤖 CricketGram Feed Generator",
+            description=(
+                f"Generating **{total}** page(s) — **1 call every 10 minutes**\n"
+                f"*(Skipping {skipped_already} already cached)*\n\n"
+                f"⏱️ Est. total time: **~{est_mins} minutes**\n"
+                f"🛡️ Auto-waits **10 min** on rate limit\n\n"
+                f"Progress: `0 / {total}`  `{'░' * 20}`"
+            ),
+            color=0xE1306C
+        )
+        status_embed.set_footer(text=f"📅 {today} | 10 min between calls | Keep bot running!")
+        status_msg = await ctx.send(embed=status_embed)
+
+        # Fetch player data and tournament context once
+        player_data = get_feed_player_data(bot=self.bot)
+        tourney_name, standings = get_tournament_context()
+        if not player_data:
+            simple_players = get_cricket_players()
+            player_data = {p: {
+                'discord': f'@{p.lower().split()[0]}fan', 'team': 'Unknown',
+                'matches': 0, 'runs': 0, 'wickets': 0, 'strike_rate': 0.0,
+                'economy': 0.0, 'average': 0.0, 'highest': 0,
+                'best_bowling': '0/0', 'centuries': 0, 'fifties': 0, 'impact': 0
+            } for p in simple_players}
+
+        print(f"[FEED GEN] Players loaded: {len(player_data)} | Tournament: {tourney_name or 'None'}")
+
+        done = 0
+        failed = []
+
+        async def _update_status(lang, page, msg_override=None):
+            pct = done / total
+            filled = int(pct * 20)
+            bar = '█' * filled + '░' * (20 - filled)
+            lang_e = LANG_EMOJI.get(lang, '🌐')
+            action = f"⏳ **{msg_override}**" if msg_override else f"**Generating:** {lang_e} `{lang}` — Page {page + 1}"
+            desc = (
+                f"{action}\n\n"
+                f"Progress: `{done} / {total}`\n"
+                f"`{bar}` {int(pct * 100)}%\n\n"
+                f"✅ Done: **{done}**  |  ⏭️ Cached: **{skipped_already}**  |  ❌ Failed: **{len(failed)}**"
+            )
+            emb = discord.Embed(title="🤖 CricketGram Feed Generator", description=desc, color=0xE1306C)
+            emb.set_footer(text=f"📅 {today} | 1 call per 10 min | Est. {((total - done) * CALL_INTERVAL) // 60}min remaining")
+            try:
+                await status_msg.edit(embed=emb)
+            except Exception:
+                pass
+
+        for i, (lang, page) in enumerate(todo):
+            lang_e = LANG_EMOJI.get(lang, '🌐')
+            print(f"[FEED GEN] --- [{i+1}/{total}] lang={lang} page={page+1} ---")
+            await _update_status(lang, page)
+
+            prompt = build_feed_prompt(player_data, lang, page, tourney_name, standings)
+            success = False
+
+            for attempt in range(1, MAX_RETRIES + 1):
+                try:
+                    print(f"[FEED GEN] → Calling Gemini (attempt {attempt}/{MAX_RETRIES})...")
+                    raw = await call_gemini(prompt)
+                    raw = raw.strip()
+                    if raw.startswith('```'):
+                        parts = raw.split('```')
+                        raw = parts[1] if len(parts) > 1 else raw
+                        if raw.startswith('json'):
+                            raw = raw[4:]
+                    raw = raw.strip()
+                    posts = json.loads(raw)
+                    save_feed_to_cache(today, lang, page, posts)
+                    done += 1
+                    success = True
+                    print(f"[FEED GEN] ✅ Success: lang={lang} page={page+1} | {len(posts)} posts saved | done={done}/{total}")
+                    break
+
+                except RuntimeError as e:
+                    if 'RATE_LIMITED' in str(e):
+                        print(f"[FEED GEN] ❌ 429 on lang={lang} page={page+1} attempt={attempt} — waiting {RATE_LIMIT_WAIT}s")
+                        # Countdown in 60s chunks
+                        remaining = RATE_LIMIT_WAIT
+                        while remaining > 0:
+                            wait_chunk = min(60, remaining)
+                            mins_left = remaining // 60
+                            secs_left = remaining % 60
+                            await _update_status(lang, page,
+                                f"Rate limited! Waiting {mins_left}m {secs_left:02d}s before retry {attempt}/{MAX_RETRIES}")
+                            print(f"[FEED GEN]    ⏳ {remaining}s remaining...")
+                            await asyncio.sleep(wait_chunk)
+                            remaining -= wait_chunk
+                        print(f"[FEED GEN]    🔄 Retrying after 429 wait...")
+                    else:
+                        print(f"[FEED GEN] ❌ API error: {str(e)[:100]}")
+                        failed.append(f"{lang_e} `{lang}` p{page+1}: {str(e)[:60]}")
+                        break
+
+                except Exception as e:
+                    print(f"[FEED GEN] ❌ Unexpected error: {str(e)[:100]}")
+                    failed.append(f"{lang_e} `{lang}` p{page+1}: {str(e)[:60]}")
+                    break
+
+            if not success and not any(f"`{lang}` p{page+1}" in f for f in failed):
+                print(f"[FEED GEN] 💀 Gave up on lang={lang} page={page+1} after {MAX_RETRIES} attempts")
+                failed.append(f"{lang_e} `{lang}` p{page+1}: failed after {MAX_RETRIES} attempts")
+
+            # Wait 10 minutes before next call (skip after last item)
+            if i < total - 1:
+                print(f"[FEED GEN] Sleeping {CALL_INTERVAL}s (10 min) before next call...")
+                remaining = CALL_INTERVAL
+                while remaining > 0:
+                    wait_chunk = min(60, remaining)
+                    mins_left = remaining // 60
+                    secs_left = remaining % 60
+                    await _update_status(lang, page,
+                        f"✅ Done! Next call in {mins_left}m {secs_left:02d}s ({i+2}/{total})")
+                    await asyncio.sleep(wait_chunk)
+                    remaining -= wait_chunk
+
+        # Final summary
+        total_cached = done + skipped_already
+        total_possible = pages * len(langs)
+        print(f"[FEED GEN] === COMPLETE === generated={done} | cached={skipped_already} | failed={len(failed)} | coverage={total_cached}/{total_possible}")
+        if failed:
+            print(f"[FEED GEN] Failed: {failed}")
+
+        if failed:
+            fail_list = "\n".join(f"• {f}" for f in failed[:10])
+            final_color = 0xFF8C00 if done > 0 else 0xFF0000
+            final_desc = (
+                f"**{done}/{total}** generated  |  **{skipped_already}** cached  |  **{len(failed)}** failed\n\n"
+                f"**Cache coverage:** `{total_cached}/{total_possible}` pages ready\n\n"
+                f"**Failed:**\n{fail_list}\n\n"
+                f"{'✅ `-feed` works for cached pages.' if total_cached > 0 else '❌ No pages available.'}"
+            )
+        else:
+            final_color = 0x00FF00
+            final_desc = (
+                f"**{done}** new page(s) generated  +  **{skipped_already}** already cached\n\n"
+                f"**Total ready:** `{total_cached}/{total_possible}` pages across all languages\n\n"
+                f"✅ Users can open `-feed` instantly — no rate limit errors!"
+            )
+
+        final_embed = discord.Embed(
+            title="✅ Feed Generation Complete" if not failed else "⚠️ Feed Generation Done (with errors)",
+            description=final_desc,
+            color=final_color
+        )
+        final_embed.add_field(
+            name="📋 Coverage",
+            value=f"🌐 All · 🇬🇧 English · 🇮🇳 Hinglish\nPages 1–{pages} each",
+            inline=True
+        )
+        final_embed.add_field(
+            name="📅 Cache",
+            value=f"`{today}` UTC\nExpires midnight UTC",
+            inline=True
+        )
+        final_embed.set_footer(text="Run -genposttoday again tomorrow for fresh posts")
+        await status_msg.edit(embed=final_embed)
+    @commands.command(name="cleartodayfeed", aliases=["ctf"], help="[ADMIN] Clear today's cached feed so it regenerates fresh")
+    @commands.has_permissions(administrator=True)
+    async def cleartodayfeed(self, ctx):
+        """Wipe today's feed cache so -genposttoday can start fresh."""
+        today = datetime.utcnow().strftime('%Y-%m-%d')
+        conn = sqlite3.connect('players.db')
+        c = conn.cursor()
+        try:
+            c.execute("DELETE FROM ai_feed_cache WHERE cache_date = ?", (today,))
+            deleted = c.rowcount
+            conn.commit()
+        except Exception as e:
+            conn.close()
+            await ctx.send(f"❌ Failed to clear cache: {e}")
+            return
+        conn.close()
+
+        embed = discord.Embed(
+            title="🗑️ Today's Feed Cache Cleared",
+            description=f"Deleted **{deleted}** cached page(s) for `{today}`.\n\n"
+                        f"Run `-genposttoday` to pre-generate a fresh batch.",
+            color=0xFF6B6B
+        )
+        await ctx.send(embed=embed)
+
+    @commands.command(name="socialmedia", aliases=["sm"], help="Access your social media account")
     async def socialmedia_command(self, ctx):
         ensure_life(ctx.author.id)
         social = get_social(ctx.author.id)
@@ -1356,19 +2231,10 @@ class PlayerLife(commands.Cog):
             await ctx.send("❌ You don't have a sponsor yet! Use `-getsponsor` to get one.")
             return
 
-        # Check cooldown (24 hours = 1 day)
-        can_collect, minutes_left = cooldown_check(life.get("last_rehab"), 24)
-        if not can_collect:
-            hours = minutes_left // 60
-            mins = minutes_left % 60
-            await ctx.send(f"⏳ Your sponsor only pays once a day! Try again in **{hours}h {mins}m**.")
-            return
-
         earnings = life["contract_value"]
         new_cash = life["cash"] + earnings
-        # Use last_rehab as a proxy for last_collect since we don't have a dedicated column
-        # last_rehab is unlikely to conflict frequently with once-a-day collection
-        update_life(ctx.author.id, cash=new_cash, last_rehab=datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'))
+        # Use last_press timestamp as collect tracker (using existing column)
+        update_life(ctx.author.id, cash=new_cash)
 
         embed = discord.Embed(title="💵 Sponsor Payment Received!", color=0x00FF00,
                               description=f"**{life['sponsor_name']}** deposited your monthly payment!")
@@ -1642,7 +2508,7 @@ class PlayerLife(commands.Cog):
     # MISC / FUN
     # ==================================================
 
-    @commands.command(name="richlist", aliases=["rich"], help="View richest players")
+    @commands.command(name="richlist", aliases=["rl"], help="View richest players")
     async def richlist_command(self, ctx):
         conn = sqlite3.connect('players.db')
         c = conn.cursor()
@@ -1679,24 +2545,14 @@ class PlayerLife(commands.Cog):
     async def daily_command(self, ctx):
         ensure_life(ctx.author.id)
         life = get_life(ctx.author.id)
-        
-        # Check cooldown (24 hours = 1440 minutes)
-        can_claim, minutes_left = cooldown_check(life.get("last_social"), 24)
-        if not can_claim:
-            hours = minutes_left // 60
-            mins = minutes_left % 60
-            await ctx.send(f"🎁 You've already claimed your daily reward! Come back in **{hours}h {mins}m**.")
-            return
+        can, mins = cooldown_check(life["last_rest"], 20)  # Using rest as daily tracker
 
         cash_reward = random.randint(2000, 10000)
         fan_reward = random.randint(100, 1000)
         new_cash = life["cash"] + cash_reward
         new_fans = life["fans"] + fan_reward
         new_energy = min(100, life["energy"] + 20)
-        
-        # Use last_social as a proxy for last_daily
-        update_life(ctx.author.id, cash=new_cash, fans=new_fans, energy=new_energy, 
-                    last_social=datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'))
+        update_life(ctx.author.id, cash=new_cash, fans=new_fans, energy=new_energy)
 
         embed = discord.Embed(title="🎁 Daily Reward Claimed!", color=0x00FF00,
                               description=f"Another day in the cricket life!")
@@ -1710,7 +2566,7 @@ class PlayerLife(commands.Cog):
                               description="Build your cricket career on AND off the field!")
         embed.add_field(name="📊 Profile", value="`-profile` `-networth` `-balance` `-mycars` `-myhouse`", inline=False)
         embed.add_field(name="💪 Fitness", value="`-train` `-rest` `-rehab`", inline=False)
-        embed.add_field(name="📱 Social Media", value="`-socialmedia` `-post` `-setbio` `-verify`", inline=False)
+        embed.add_field(name="📱 Social Media", value="`-feed` `-feed english` `-feed hinglish` `-socialmedia` `-post` `-setbio` `-verify`", inline=False)
         embed.add_field(name="⚔️ Rivals", value="`-rival @user` `-trashtalk @user` `-rivals`", inline=False)
         embed.add_field(name="🎤 Events", value="`-press` `-scandal` `-lockerroom`", inline=False)
         embed.add_field(name="👥 Fans", value="`-fans` `-fanlist`", inline=False)

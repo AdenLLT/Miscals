@@ -37,20 +37,20 @@ args = "Discord Bot (Updated)"
 
 [[workflows.workflow]]
 name = "Discord Bot"
-author = "agent"
 mode = "parallel"
-
-[workflows.workflow.metadata]
-outputType = "console"
+author = "agent"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "python main.py"
 
+[workflows.workflow.metadata]
+outputType = "console"
+
 [[workflows.workflow]]
 name = "Discord Bot (Updated)"
-author = "agent"
 mode = "parallel"
+author = "agent"
 
 [[workflows.workflow.tasks]]
 task = "packager.installForLanguage"

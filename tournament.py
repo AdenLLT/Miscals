@@ -3008,7 +3008,7 @@ class Tournament(commands.Cog):
         await ctx.send(embed=embed, view=view)
 
     @commands.command(name="clearfixtures",
-                      aliases=["cf"],
+                      aliases=["clearf"],
                       help="[ADMIN] Clear all fixtures")
     @commands.has_permissions(administrator=True)
     async def clearfixtures(self, ctx):
@@ -3084,7 +3084,7 @@ class Tournament(commands.Cog):
         await ctx.send(embed=embed)
 
     @commands.command(name="resetleaderboard",
-                      aliases=["rl"],
+                      aliases=["resetlb"],
                       help="[ADMIN] Reset the tournament leaderboard")
     @commands.has_permissions(administrator=True)
     async def resetleaderboard(self, ctx):
@@ -4230,59 +4230,81 @@ class Tournament(commands.Cog):
         view = TournamentSelectView()
         await ctx.send(embed=embed, view=view)
 
-    @commands.command(name="ptsi", help="View international (all-time) points table for ALL teams")
-    async def ptsi_command(self, ctx):
-        """International points table - shows ALL teams' all-time stats"""
+    @commands.command(name="ptsi", help="View international points table for Series matches")
+    async def ptsi_command(self, ctx, *, series_name: str = None):
+        """International points table from series data - all-time or filtered by series name"""
         import json
-
-        try:
-            with open('players.json', 'r', encoding='utf-8') as f:
-                teams_data = json.load(f)
-            all_teams = [team['team'] for team in teams_data]
-        except:
-            await ctx.send("❌ Could not load teams data!")
-            return
 
         conn = sqlite3.connect('players.db')
         c = conn.cursor()
 
-        # Aggregate all-time stats across ALL tournaments for each team
-        teams_stats = []
-        for team_name in all_teams:
-            c.execute("""
-                SELECT 
-                    COALESCE(SUM(points), 0),
-                    COALESCE(SUM(matches_played), 0),
-                    COALESCE(SUM(wins), 0),
-                    COALESCE(SUM(losses), 0),
-                    COALESCE(SUM(nrr), 0.0)
-                FROM tournament_teams
-                WHERE team_name = ?
-            """, (team_name,))
-            row = c.fetchone()
-            if row and row[1] > 0:  # Only include teams that have played
-                pts, mp, w, l, nrr = row
-                teams_stats.append((team_name, pts, mp, w, l, nrr, 0))  # 0 for fpp placeholder
+        if series_name:
+            c.execute("SELECT id FROM series WHERE LOWER(name) LIKE ?",
+                      (f"%{series_name.lower()}%",))
+            matching_ids = [row[0] for row in c.fetchall()]
 
+            if not matching_ids:
+                await ctx.send(f"❌ No series found matching **{series_name}**!")
+                conn.close()
+                return
+
+            placeholders = ','.join('?' * len(matching_ids))
+            c.execute(f"""
+                SELECT team_name,
+                       SUM(wins) as w,
+                       SUM(losses) as l,
+                       SUM(matches_played) as mp,
+                       SUM(nrr) as n
+                FROM series_teams
+                WHERE series_id IN ({placeholders})
+                GROUP BY team_name
+                HAVING mp > 0
+                ORDER BY w DESC, n DESC
+            """, matching_ids)
+            title_text = f"Series: {series_name}"
+        else:
+            c.execute("""
+                SELECT team_name,
+                       SUM(wins) as w,
+                       SUM(losses) as l,
+                       SUM(matches_played) as mp,
+                       SUM(nrr) as n
+                FROM series_teams
+                GROUP BY team_name
+                HAVING mp > 0
+                ORDER BY w DESC, n DESC
+            """)
+            title_text = "All-Time Series"
+
+        data = c.fetchall()
         conn.close()
 
-        if not teams_stats:
-            await ctx.send("❌ No international match data found!")
+        if not data:
+            msg = f"❌ No series data found for **{series_name}**!" if series_name else "❌ No series match data found!"
+            await ctx.send(msg)
             return
 
-        # Sort by wins desc, then points desc, then NRR desc
-        teams_stats.sort(key=lambda x: (-x[3], -x[1], -x[5]))
+        # Convert to format expected by create_international_points_table
+        # (team_name, pts, mp, wins, losses, nrr, fpp_placeholder)
+        teams_stats = [
+            (team, w * 2, mp, w, l, nrr, 0)
+            for team, w, l, mp, nrr in data
+        ]
 
+        from tournament import create_international_points_table
         table_image = await create_international_points_table(teams_stats)
 
         if not table_image:
-            await ctx.send("❌ Failed to create international points table!")
+            await ctx.send("❌ Failed to create points table!")
             return
 
-        file = discord.File(table_image, filename="international_pts.png")
-        embed = discord.Embed(title="🌍 International Cricket — All-Time Table", color=0x1E90FF)
-        embed.set_image(url="attachment://international_pts.png")
-        embed.set_footer(text="All-time stats across all tournaments")
+        file = discord.File(table_image, filename="series_international_pts.png")
+        embed = discord.Embed(
+            title=f"🌍 International Cricket — {title_text}",
+            color=0x1E90FF
+        )
+        embed.set_image(url="attachment://series_international_pts.png")
+        embed.set_footer(text=f"{title_text} • International Matches")
         await ctx.send(embed=embed, file=file)
 
     

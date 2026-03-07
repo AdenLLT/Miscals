@@ -386,7 +386,7 @@ class Series(commands.Cog):
         self.bot = bot
         init_series_db()
 
-    @commands.command(name="seriesmake", aliases=["sm"], help="Create a new series (2-3 teams)")
+    @commands.command(name="seriesmake", aliases=["seriesm"], help="Create a new series (2-3 teams)")
     @commands.has_permissions(administrator=True)
     async def seriesmake(self, ctx, *teams):
         """Create a series with 2 or 3 teams. Usage: -seriesmake India Pakistan [Australia]"""
