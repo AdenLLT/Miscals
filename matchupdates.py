@@ -124,6 +124,9 @@ last_timelines = {}
 # Store last processed wickets to prevent duplicates (username + timestamp)
 last_wickets = {}
 
+# Store last processed nowstats to prevent duplicates (user_id + role + timestamp)
+last_nowstats = {}
+
 
 def parse_nowstat_message(content):
     """
@@ -1240,11 +1243,31 @@ class MatchUpdates(commands.Cog):
             print(f"🆕 NOWSTAT: Found {len(players_to_show)} player(s)")
             # Dedup by user_id within this single message to prevent double-sends
             already_sent_ids = set()
+            current_time = time.time()
+            
             for user_id, role in players_to_show:
                 if user_id in already_sent_ids:
                     print(f"   ⏭️ Already sent nowstat for user_id {user_id} this message, skipping")
                     continue
                 already_sent_ids.add(user_id)
+
+                # Check if this nowstat was already sent recently (within 10 seconds)
+                channel_id = message.channel.id
+                nowstat_key = f"{channel_id}_{user_id}_{role}"
+                
+                if nowstat_key in last_nowstats:
+                    time_diff = current_time - last_nowstats[nowstat_key]
+                    if time_diff < 10:
+                        print(f"⏭️ SKIPPING DUPLICATE NOWSTAT (processed {time_diff:.1f}s ago)")
+                        continue
+                
+                # Record this nowstat as processed
+                last_nowstats[nowstat_key] = current_time
+                
+                # Clean up old entries (older than 60 seconds)
+                old_keys = [k for k, v in last_nowstats.items() if current_time - v > 60]
+                for k in old_keys:
+                    del last_nowstats[k]
 
                 conn = sqlite3.connect('players.db')
                 c = conn.cursor()
@@ -1380,10 +1403,25 @@ class MatchUpdates(commands.Cog):
             # if this same message also contains "Next batsman/bowler" info
             if players_to_show and not nowstat_sent:
                 already_sent_ids = set()
+                current_time_pw = time.time()
                 for uid, role in players_to_show:
                     if uid in already_sent_ids:
                         continue
                     already_sent_ids.add(uid)
+                    
+                    # Check if this nowstat was already sent recently (within 10 seconds)
+                    channel_id = message.channel.id
+                    nowstat_key = f"{channel_id}_{uid}_{role}"
+                    
+                    if nowstat_key in last_nowstats:
+                        time_diff = current_time_pw - last_nowstats[nowstat_key]
+                        if time_diff < 10:
+                            print(f"⏭️ SKIPPING DUPLICATE POST-WICKET NOWSTAT (processed {time_diff:.1f}s ago)")
+                            continue
+                    
+                    # Record this nowstat as processed
+                    last_nowstats[nowstat_key] = current_time_pw
+                    
                     conn2 = sqlite3.connect('players.db')
                     c2 = conn2.cursor()
                     c2.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (uid,))
