@@ -170,11 +170,15 @@ def parse_nowstat_message(content):
     if results:
         return results
 
-    # "Next batsman: <@ID>" — can appear anywhere in message/embed text
-    next_bat = re.search(r'Next batsman[^:\n]*:?\s*\n?\s*<@!?(\d+)>', content, re.IGNORECASE)
-    if next_bat:
-        add(int(next_bat.group(1)), 'bat')
-        return results
+    # "Next batsman: <@ID>" or "Next batsman: <@ID> OR <@ID>" — can appear anywhere in message/embed text
+    next_bat_section = re.search(r'Next batsman[^:\n]*:?\s*\n?\s*(.+?)(?:\n|$)', content, re.IGNORECASE)
+    if next_bat_section:
+        # Extract all user IDs from this section (handles "OR" separated IDs)
+        ids = re.findall(r'<@!?(\d+)>', next_bat_section.group(1))
+        for uid in ids:
+            add(int(uid), 'bat')
+        if results:
+            return results
 
     # "Next bowler to bowl is: <@ID>" — can appear anywhere
     next_bowl = re.search(r'Next bowler[^:\n]*:?\s*\n?\s*<@!?(\d+)>', content, re.IGNORECASE)
@@ -505,8 +509,8 @@ async def create_nowstat_image(user_id, role, guild, bot):
         output.seek(0)
 
         if role == 'bat':
-            plain_text = (f"__{batting_style}__ **Batsman** comes out to Play 🏏"
-                          if batting_style else "Batsman comes out to Play 🏏")
+            plain_text = (f"__{batting_style}__ **Batsman** Walks Onto The Crease! 🏏"
+                          if batting_style else "Batsman Walks Onto The Crease! 🏏")
         else:
             plain_text = (f"__{bowling_style}__ **Bowler** comes into the Attack 💥"
                           if bowling_style else "Bowler comes into the Attack 💥")
