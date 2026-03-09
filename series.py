@@ -1158,7 +1158,7 @@ class Series(commands.Cog):
         flag = get_team_flag(team_name)
         await ctx.send(f"✅ Added loss to {flag} **{team_name}**'s international leaderboard!")
     
-    @commands.command(name="lbi", aliases=["intlb"], help="View international series leaderboard")
+    @commands.command(name="intlb", aliases=["lbiseries"], help="View international series leaderboard")
     async def international_series_lb(self, ctx):
         """View the international series leaderboard"""
         conn = sqlite3.connect('players.db')
