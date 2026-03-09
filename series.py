@@ -55,6 +55,14 @@ def init_series_db():
                   nrr REAL DEFAULT 0.0,
                   FOREIGN KEY (series_id) REFERENCES series(id))''')
 
+    c.execute('''CREATE TABLE IF NOT EXISTS international_series_lb
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  team_name TEXT UNIQUE,
+                  wins INTEGER DEFAULT 0,
+                  losses INTEGER DEFAULT 0,
+                  series_won INTEGER DEFAULT 0,
+                  series_lost INTEGER DEFAULT 0)''')
+
     conn.commit()
     conn.close()
 
@@ -827,10 +835,22 @@ class Series(commands.Cog):
         standings = c.fetchall()
 
         c.execute("UPDATE series SET is_active = 0 WHERE id = ?", (series_id,))
+        
+        # Update international series leaderboard
+        winner_team = standings[0][0] if standings else "Unknown"
+        if winner_team != "Unknown":
+            # Ensure winner team exists in international lb
+            c.execute("INSERT OR IGNORE INTO international_series_lb (team_name) VALUES (?)", (winner_team,))
+            # Increment wins and series_won
+            c.execute("UPDATE international_series_lb SET wins = wins + 1, series_won = series_won + 1 WHERE team_name = ?", (winner_team,))
+            
+            # Update losers
+            for team_name, wins, losses, mp in standings[1:]:
+                c.execute("INSERT OR IGNORE INTO international_series_lb (team_name) VALUES (?)", (team_name,))
+                c.execute("UPDATE international_series_lb SET losses = losses + 1, series_lost = series_lost + 1 WHERE team_name = ?", (team_name,))
+        
         conn.commit()
         conn.close()
-
-        winner_team = standings[0][0] if standings else "Unknown"
         winner_flag = get_team_flag(winner_team)
 
         embed = discord.Embed(
@@ -1097,6 +1117,77 @@ class Series(commands.Cog):
         )
         
         await ctx.send(content=ping_text.strip(), embed=embed)
+
+    @commands.command(name="addwinlbi", help="Add a series win to a team's international leaderboard")
+    @commands.has_permissions(administrator=True)
+    async def addwinlbi(self, ctx, *, team_name):
+        """Manually add a win to a team's international leaderboard"""
+        team_name = team_name.strip()
+        
+        conn = sqlite3.connect('players.db')
+        c = conn.cursor()
+        
+        # Ensure team exists in international lb
+        c.execute("INSERT OR IGNORE INTO international_series_lb (team_name) VALUES (?)", (team_name,))
+        # Increment wins and series_won
+        c.execute("UPDATE international_series_lb SET wins = wins + 1, series_won = series_won + 1 WHERE team_name = ?", (team_name,))
+        
+        conn.commit()
+        conn.close()
+        
+        flag = get_team_flag(team_name)
+        await ctx.send(f"✅ Added win to {flag} **{team_name}**'s international leaderboard!")
+    
+    @commands.command(name="addloselbi", help="Add a series loss to a team's international leaderboard")
+    @commands.has_permissions(administrator=True)
+    async def addloselbi(self, ctx, *, team_name):
+        """Manually add a loss to a team's international leaderboard"""
+        team_name = team_name.strip()
+        
+        conn = sqlite3.connect('players.db')
+        c = conn.cursor()
+        
+        # Ensure team exists in international lb
+        c.execute("INSERT OR IGNORE INTO international_series_lb (team_name) VALUES (?)", (team_name,))
+        # Increment losses and series_lost
+        c.execute("UPDATE international_series_lb SET losses = losses + 1, series_lost = series_lost + 1 WHERE team_name = ?", (team_name,))
+        
+        conn.commit()
+        conn.close()
+        
+        flag = get_team_flag(team_name)
+        await ctx.send(f"✅ Added loss to {flag} **{team_name}**'s international leaderboard!")
+    
+    @commands.command(name="lbi", aliases=["intlb"], help="View international series leaderboard")
+    async def international_series_lb(self, ctx):
+        """View the international series leaderboard"""
+        conn = sqlite3.connect('players.db')
+        c = conn.cursor()
+        
+        c.execute("SELECT team_name, wins, losses, series_won, series_lost FROM international_series_lb ORDER BY series_won DESC, wins DESC")
+        standings = c.fetchall()
+        conn.close()
+        
+        if not standings:
+            await ctx.send("❌ No international series data yet!")
+            return
+        
+        embed = discord.Embed(
+            title="🌍 International Series Leaderboard",
+            description="All-Time Series Records",
+            color=0x1E90FF
+        )
+        
+        for i, (team_name, wins, losses, series_won, series_lost) in enumerate(standings, 1):
+            flag = get_team_flag(team_name)
+            total_series = series_won + series_lost
+            embed.add_field(
+                name=f"{i}. {flag} {team_name}",
+                value=f"Series: **{series_won}W-{series_lost}L** | Matches: **{wins}W-{losses}L**",
+                inline=False
+            )
+        
+        await ctx.send(embed=embed)
 
 async def setup(bot):
     await bot.add_cog(Series(bot))
