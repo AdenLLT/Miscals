@@ -1117,6 +1117,31 @@ class Series(commands.Cog):
         )
         
         await ctx.send(content=ping_text.strip(), embed=embed)
+        
+        guild = ctx.guild
+        players_notified = set()
+        
+        for role_id in [role1_id, role2_id]:
+            if not role_id:
+                continue
+            role = guild.get_role(role_id)
+            if not role:
+                continue
+            
+            for member in role.members:
+                if member.id not in players_notified and not member.bot:
+                    players_notified.add(member.id)
+                    try:
+                        dm_embed = discord.Embed(
+                            title=f"🔔 Match Reminder",
+                            description=f"**{series_name}** - Match #{match_num}\n\n"
+                                        f"{get_team_flag(team1)} **{team1}** vs {get_team_flag(team2)} **{team2}**\n\n"
+                                        f"Get ready for your match!",
+                            color=0xFFA500
+                        )
+                        await member.send(embed=dm_embed)
+                    except discord.Forbidden:
+                        pass
 
     @commands.command(name="addwinlbi", help="Add a series win to a team's international leaderboard")
     @commands.has_permissions(administrator=True)
