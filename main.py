@@ -478,6 +478,18 @@ async def sendmsg(interaction: discord.Interaction, message: str, image: Optiona
     else:
         await interaction.channel.send(content=message)
 
+@bot.command(name="dm", help="[ADMIN] Send a DM to a user from the bot")
+@commands.has_permissions(administrator=True)
+async def dm_user(ctx, member: discord.Member, *, message: str):
+    """Send a direct message to a user as the bot"""
+    try:
+        await member.send(message)
+        await ctx.send(f"✅ Message sent to **{member.display_name}**.", delete_after=5)
+    except discord.Forbidden:
+        await ctx.send(f"❌ Could not DM **{member.display_name}** — they may have DMs disabled.")
+    except Exception as e:
+        await ctx.send(f"❌ Failed to send DM: {e}")
+
 @bot.command(name="quarterfinals")
 async def quarterfinals(ctx):
     embed = discord.Embed(
