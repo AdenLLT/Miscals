@@ -519,6 +519,48 @@ async def on_command_error(ctx, error):
         return
     await ctx.send(f"❌ Error: {error}")
 
+@bot.listen('on_message')
+async def log_dm_messages(message):
+    if message.author.bot:
+        return
+    if isinstance(message.channel, discord.DMChannel):
+        conn = sqlite3.connect('players.db')
+        c = conn.cursor()
+        c.execute(
+            "INSERT INTO dm_logs (user_id, username, content) VALUES (?, ?, ?)",
+            (message.author.id, str(message.author), message.content or '[no text content]')
+        )
+        conn.commit()
+        conn.close()
+
+@bot.command(name="dmfetch", help="[ADMIN] Fetch last 5 DMs a user sent to the bot")
+@commands.has_permissions(administrator=True)
+async def dmfetch(ctx, member: discord.Member):
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute(
+        "SELECT content, sent_at FROM dm_logs WHERE user_id = ? ORDER BY sent_at DESC LIMIT 5",
+        (member.id,)
+    )
+    rows = c.fetchall()
+    conn.close()
+
+    if not rows:
+        await ctx.send(f"❌ No DM history found for **{member.display_name}**.")
+        return
+
+    embed = discord.Embed(
+        title=f"📬 Last DMs from {member.display_name}",
+        color=0x5865F2
+    )
+    for i, (content, sent_at) in enumerate(reversed(rows), 1):
+        embed.add_field(
+            name=f"Message {i} — {sent_at}",
+            value=content[:1024],
+            inline=False
+        )
+    await ctx.author.send(embed=embed)
+
 
 def init_db():
     conn = sqlite3.connect('players.db')
@@ -543,6 +585,12 @@ def init_db():
       user_id INTEGER,
       player_name TEXT,
       removed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS dm_logs
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  user_id INTEGER,
+                  username TEXT,
+                  content TEXT,
+                  sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     conn.commit()
     conn.close()
 
