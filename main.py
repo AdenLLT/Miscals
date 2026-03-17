@@ -2685,7 +2685,24 @@ async def unelite_command(ctx, *, players: str):
     """
     Remove elite status from players
     Usage: -unelite player1, player2, player3
+           -unelite all
     """
+    if players.strip().lower() == "all":
+        count = len(elite_players)
+        if count == 0:
+            await ctx.send("❌ There are no elite players to remove.")
+            return
+        elite_players.clear()
+        save_elite_players()
+        embed = discord.Embed(
+            title="Elite Status Removed",
+            description=f"✅ Removed elite status from all **{count}** player(s).",
+            color=0x808080
+        )
+        embed.set_footer(text=f"Done by {ctx.author}")
+        await ctx.send(embed=embed)
+        return
+
     player_names = [name.strip() for name in players.split(',')]
 
     if not player_names:
