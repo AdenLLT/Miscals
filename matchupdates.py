@@ -127,6 +127,9 @@ last_wickets = {}
 # Store last processed nowstats to prevent duplicates (user_id + role + timestamp)
 last_nowstats = {}
 
+# Track message IDs that have already triggered a nowstat (message-level dedup)
+sent_nowstat_message_ids = set()
+
 
 def parse_nowstat_message(content):
     """
@@ -1255,20 +1258,28 @@ class MatchUpdates(commands.Cog):
                     continue
                 already_sent_ids.add(user_id)
 
-                # Check if this nowstat was already sent recently (within 10 seconds)
+                # Check if this exact message has already triggered a nowstat for this player+role
+                msg_nowstat_key = (message.id, user_id, role)
+                if msg_nowstat_key in sent_nowstat_message_ids:
+                    print(f"⏭️ SKIPPING DUPLICATE NOWSTAT (message {message.id} already processed for user {user_id})")
+                    continue
+
+                # Also check time-based dedup as secondary guard
                 channel_id = message.channel.id
                 nowstat_key = f"{channel_id}_{user_id}_{role}"
-                
                 if nowstat_key in last_nowstats:
                     time_diff = current_time - last_nowstats[nowstat_key]
                     if time_diff < 10:
                         print(f"⏭️ SKIPPING DUPLICATE NOWSTAT (processed {time_diff:.1f}s ago)")
                         continue
-                
+
                 # Record this nowstat as processed
+                sent_nowstat_message_ids.add(msg_nowstat_key)
+                if len(sent_nowstat_message_ids) > 1000:
+                    sent_nowstat_message_ids.clear()
                 last_nowstats[nowstat_key] = current_time
-                
-                # Clean up old entries (older than 60 seconds)
+
+                # Clean up old time-based entries (older than 60 seconds)
                 old_keys = [k for k, v in last_nowstats.items() if current_time - v > 60]
                 for k in old_keys:
                     del last_nowstats[k]
@@ -1413,17 +1424,25 @@ class MatchUpdates(commands.Cog):
                         continue
                     already_sent_ids.add(uid)
                     
-                    # Check if this nowstat was already sent recently (within 10 seconds)
+                    # Check if this exact message has already triggered a nowstat for this player+role
+                    msg_nowstat_key = (message.id, uid, role)
+                    if msg_nowstat_key in sent_nowstat_message_ids:
+                        print(f"⏭️ SKIPPING DUPLICATE POST-WICKET NOWSTAT (message {message.id} already processed for user {uid})")
+                        continue
+
+                    # Also check time-based dedup as secondary guard
                     channel_id = message.channel.id
                     nowstat_key = f"{channel_id}_{uid}_{role}"
-                    
                     if nowstat_key in last_nowstats:
                         time_diff = current_time_pw - last_nowstats[nowstat_key]
                         if time_diff < 10:
                             print(f"⏭️ SKIPPING DUPLICATE POST-WICKET NOWSTAT (processed {time_diff:.1f}s ago)")
                             continue
-                    
+
                     # Record this nowstat as processed
+                    sent_nowstat_message_ids.add(msg_nowstat_key)
+                    if len(sent_nowstat_message_ids) > 1000:
+                        sent_nowstat_message_ids.clear()
                     last_nowstats[nowstat_key] = current_time_pw
                     
                     conn2 = sqlite3.connect('players.db')
