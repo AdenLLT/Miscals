@@ -490,6 +490,56 @@ async def dm_user(ctx, member: discord.Member, *, message: str):
     except Exception as e:
         await ctx.send(f"❌ Failed to send DM: {e}")
 
+TEAM_ROLE_IDS = {
+    "india": 1460376137594044567, "pakistan": 1460376138755866644,
+    "australia": 1460376139611640025, "england": 1460376141314654424,
+    "new zealand": 1460376142342000762, "south africa": 1460376143633846527,
+    "west indies": 1460376148751028408, "sri lanka": 1460376147715166282,
+    "bangladesh": 1460376144862908523, "afghanistan": 1460376146163273739,
+    "netherlands": 1460376154480312370, "scotland": 1460376151795961897,
+    "ireland": 1460376149908525191, "zimbabwe": 1460376157668245545,
+    "uae": 1460376158985130114, "canada": 1460376154958725152,
+    "usa": 1460376156250570824
+}
+
+@bot.command(name="dmteam", help="[ADMIN] DM everyone on a team")
+@commands.has_permissions(administrator=True)
+async def dmteam(ctx, team_name: str, *, message: str):
+    """Send a DM to every player on the given team"""
+    role_id = TEAM_ROLE_IDS.get(team_name.lower())
+    if not role_id:
+        teams_list = ", ".join(t.title() for t in TEAM_ROLE_IDS)
+        await ctx.send(f"❌ Team **{team_name}** not found.\nAvailable teams: {teams_list}")
+        return
+
+    role = ctx.guild.get_role(role_id)
+    if not role:
+        await ctx.send(f"❌ Could not find the role for **{team_name}** in this server.")
+        return
+
+    members = [m for m in role.members if not m.bot]
+    if not members:
+        await ctx.send(f"❌ No members found with the **{role.name}** role.")
+        return
+
+    status_msg = await ctx.send(f"📨 Sending DMs to {len(members)} player(s) on **{role.name}**...")
+
+    sent = 0
+    failed = 0
+    for member in members:
+        try:
+            await member.send(message)
+            sent += 1
+        except discord.Forbidden:
+            failed += 1
+        except Exception:
+            failed += 1
+
+    result = f"✅ Sent to **{sent}** player(s)"
+    if failed:
+        result += f", ❌ **{failed}** had DMs disabled"
+    await status_msg.edit(content=result)
+
 @bot.command(name="quarterfinals")
 async def quarterfinals(ctx):
     embed = discord.Embed(
