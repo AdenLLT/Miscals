@@ -78,7 +78,8 @@ MATCH_CHANNELS = {
     1471920655955136736: "Abu Dhabi Cricket Stadium",
     1474421673858961550: "Malahide Cricket Stadium",
     1474442540936728740: "Castle Avenue Cricket Stadium",
-    1483767491132915793: "Melbourne Cricket Ground"
+    1483767491132915793: "Melbourne Cricket Ground",
+    1483896802603172013: "Adelaide Oval"
 }
 
 FIXTURES_CHANNEL = 1474130877951906028

@@ -121,6 +121,10 @@ EMOJI_MAPPING = {
 # Store last processed timeline per channel
 last_timelines = {}
 
+# Track current bowler per channel for timeline resets
+last_bowlers = {}
+bowler_timeline_offsets = {}
+
 # Store last processed wickets to prevent duplicates (username + timestamp)
 last_wickets = {}
 
@@ -1485,6 +1489,28 @@ class MatchUpdates(commands.Cog):
             return
 
         channel_id = message.channel.id
+
+        # Detect bowler changes and reset the timeline offset accordingly
+        current_bowler = match_data.get('bowler_username', '')
+        if current_bowler:
+            if channel_id in last_bowlers and last_bowlers[channel_id] != current_bowler:
+                bowler_timeline_offsets[channel_id] = len(match_data.get('timeline', []))
+                print(f"🔄 Bowler changed: {last_bowlers[channel_id]} → {current_bowler}, resetting timeline display")
+            last_bowlers[channel_id] = current_bowler
+
+        # Slice the timeline to only show balls from the current bowler onwards
+        offset = bowler_timeline_offsets.get(channel_id, 0)
+        if offset > 0 and 'timeline' in match_data:
+            full_timeline = match_data['timeline']
+            if offset <= len(full_timeline):
+                match_data['timeline'] = full_timeline[offset:]
+                print(f"📊 Timeline sliced from offset {offset}: {match_data['timeline']}")
+            else:
+                # Timeline is shorter than offset — new match started, clear state
+                bowler_timeline_offsets.pop(channel_id, None)
+                last_bowlers.pop(channel_id, None)
+                print(f"🔁 Timeline shorter than offset, resetting bowler tracking for channel {channel_id}")
+
         current_timeline = '|'.join(match_data['timeline'])
 
         if channel_id in last_timelines and last_timelines[channel_id] == current_timeline:
