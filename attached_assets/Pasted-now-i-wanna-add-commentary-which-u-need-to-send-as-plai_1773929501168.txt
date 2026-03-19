@@ -1,0 +1,59 @@
+now i wanna add commentary which u need to send as plain text attached with that timeline image, I've have 3 json files which I've attached which are bowling_types.json, batting_shots.json and dismissals.json. you MUST ONLY ATTACH THIS COMMENTARY EVERY 3 TIMELINE MESSAGES, so first timeline message sent, just attached image, 2nd time, just attached image but 3rd one should have commentary on it.
+
+and lets say this happened:
+Jasprit Bumrah (@jake) bowled to Devon Conway (@aden) 
+and it's 2 runs on the timeline ball
+
+and in players.json, it says Jasprit Bumrah's "bowling_style": "Right-arm fast",
+so then it will check the bowling_types.json and refer to its deliviers and kph 
+
+and it's 2 runs so you can pick anything from "cricket_batting_shots": which makes most sense for 2 runs, so yes you will need to smartly choose for each ball and all
+
+it sends the match.png with text in the plain text message as: 
+-# 1️⃣
+-# **Jasprit Bumrah** (@jake) To **Devon Conway** (@aden): The batsman plays {one of the cricket shots listed in batting_shots.json} to {one of RIGHT ARM FAST's deliveries from bowling_types.json} • {a number from kph range} KPH
+
+but let's say an OUT / wicket happened (NON CATCH CASE), so it will be:
+
+it sends the match.png with text in the plain text message as: 
+"Jasprit Bumrah (@jake) To Devon Conway (@aden): 🇼  • It's an OUT! {One of LBW / Stumped / Bowled commentary from dismissals.json} • {a number from kph range} KPH
+
+-----
+
+If a player bowls and has their "bowling_style": null THEN assume their bowling style as Right-arm spin
+
+And make the shots align smartly with what ball type and all, it is random but still gotta be smart enough
+
+If timeline got updated with 1, 3 or 5.
+
+The fetched NON striker played this ball (the 1, 3 or 5) because he shifted strike
+
+-
+
+If timeline got updated with a wicket then that other bot must have sent another embed like this
+
+```<@1387393733724602500>
+**legend006256 is out!**
+legend006256: ╰ **`15 (7)`**
+fakevenom28.: ╰ **`1 - 15 (1.1)`**
+Partnership: ╰ **`3 (2)`**
+England 🏴󠁧󠁢󠁥󠁮󠁧󠁿's Score: ╰ **`163/9 - 10.1 overs`**
+Next batsman: <@1387393733724602500>```
+
+Or it can also send (caught by someone case but it's also wicket same thing) 
+
+```<@1090954345786380298>
+**.prakash_ is DUCK out! 😂 🦆**
+Caught by <@628285518093877280>!
+.prakash_: ╰ **`0 (1)`**
+frostman.is.cold: ╰ **`2 - 0 (0.2)`**
+Partnership: ╰ **`0 (1)`**
+England 🏴󠁧󠁢󠁥󠁮󠁧󠁿's Score: ╰ **`160/7 - 9.2 overs`**
+Next batsman: <@1090954345786380298>```
+
+So then for the commentary of wicket
+
+IF IT'S NOT A CATCH CASE WICKET:
+ then u can use one of the dismissals 
+
+IF IT'S A CATCH CASE WICKET (embed will have "caught by (username))
