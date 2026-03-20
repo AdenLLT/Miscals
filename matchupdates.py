@@ -10,25 +10,6 @@ import sqlite3
 import asyncio
 import aiohttp
 
-# ===== COMMENTARY DATA =====
-try:
-    with open('bowling_types.json', 'r') as _f:
-        BOWLING_TYPES = json.load(_f)
-except Exception:
-    BOWLING_TYPES = {}
-
-try:
-    with open('batting_shots.json', 'r') as _f:
-        BATTING_SHOTS_DATA = json.load(_f)
-except Exception:
-    BATTING_SHOTS_DATA = {}
-
-try:
-    with open('dismissals.json', 'r') as _f:
-        DISMISSALS = json.load(_f)
-except Exception:
-    DISMISSALS = {}
-
 # The bot user ID to monitor
 CRICKET_BOT_ID = 753191385296928808
 
@@ -143,11 +124,6 @@ last_timelines = {}
 # Track current bowler per channel for timeline resets
 last_bowlers = {}
 bowler_timeline_offsets = {}
-
-# Commentary tracking
-commentary_counters = {}       # channel_id -> count of timeline images sent
-last_wicket_per_channel = {}   # channel_id -> {'is_catch': bool, 'catcher_username': str|None}
-last_sliced_timelines = {}     # channel_id -> list of balls (previous sliced timeline)
 
 # Store last processed wickets to prevent duplicates (username + timestamp)
 last_wickets = {}
@@ -580,153 +556,6 @@ def get_full_message_text(message):
             parts.append(embed.author.name)
 
     return "\n".join(parts)
-
-
-def get_bowling_style_for_player(username):
-    """Look up a player's bowling style from players.json via their username → player_name mapping."""
-    try:
-        conn = sqlite3.connect('players.db')
-        c = conn.cursor()
-        c.execute("SELECT player_name FROM player_representatives WHERE username = ?", (username,))
-        result = c.fetchone()
-        conn.close()
-        if not result:
-            return None
-        player_name = result[0]
-        with open('players.json', 'r', encoding='utf-8') as f:
-            teams = json.load(f)
-        for team in teams:
-            for player in team.get('players', []):
-                if player.get('name') == player_name:
-                    return player.get('bowling_style') or None
-    except Exception:
-        pass
-    return None
-
-
-def get_bowling_delivery_and_kph(bowling_style):
-    """Return (delivery_text, kph_int) for the given bowling style."""
-    if not bowling_style:
-        bowling_style = 'Right-arm spin'
-    for category in ('fast_bowling', 'spin_bowling'):
-        bucket = BOWLING_TYPES.get(category, {})
-        if bowling_style in bucket:
-            data = bucket[bowling_style]
-            delivery = random.choice(data['deliveries'])
-            lo, hi = map(int, data['kph_range'].split('-'))
-            return delivery, random.randint(lo, hi)
-    # Fallback: Right-arm spin
-    fallback = BOWLING_TYPES.get('spin_bowling', {}).get('Right-arm spin')
-    if fallback:
-        delivery = random.choice(fallback['deliveries'])
-        lo, hi = map(int, fallback['kph_range'].split('-'))
-        return delivery, random.randint(lo, hi)
-    return 'stock delivery', 120
-
-
-def get_shots_for_runs(run_value):
-    """Return a list of contextually appropriate batting shots for the given run value."""
-    shots = BATTING_SHOTS_DATA.get('cricket_batting_shots', {})
-
-    def _flat(*paths):
-        out = []
-        for path in paths:
-            node = shots
-            for key in path:
-                node = node.get(key, {})
-            if isinstance(node, list):
-                out.extend(node)
-        return out
-
-    if run_value == 0:
-        return _flat(
-            ('straight_bat_shots', 'defensive_shots'),
-            ('improvisation_shots', 'adjustment_shots'),
-        ) or ['forward defensive', 'backward defensive']
-    elif run_value in (1, 2, 3):
-        return _flat(
-            ('running_shots', 'quick_singles'),
-            ('running_shots', 'placement_shots'),
-            ('straight_bat_shots', 'attacking_shots'),
-            ('horizontal_bat_shots', 'leg_side_shots'),
-        ) or ['push and run', 'nudge']
-    elif run_value == 4:
-        return _flat(
-            ('straight_bat_shots', 'attacking_shots'),
-            ('horizontal_bat_shots', 'off_side_shots'),
-            ('horizontal_bat_shots', 'on_side_shots'),
-            ('pace_specific_shots', 'against_pace'),
-            ('footwork_based_shots', 'back_foot'),
-        ) or ['cover drive', 'pull shot']
-    elif run_value == 6:
-        return _flat(
-            ('power_hitting_shots', 'clearing_boundary'),
-            ('power_hitting_shots', 'targeted_hitting'),
-            ('lofted_shots', 'straight_down_ground'),
-            ('lofted_shots', 'off_side_lofted'),
-            ('lofted_shots', 'on_side_lofted'),
-            ('lofted_shots', 'leg_side_lofted'),
-            ('unorthodox_shots', 'scoop_family'),
-        ) or ['slog', 'maximum shot']
-    else:
-        # 5, extras, etc — use generic attacking/placement
-        return _flat(
-            ('straight_bat_shots', 'attacking_shots'),
-            ('running_shots', 'placement_shots'),
-        ) or ['placement through gaps']
-
-
-BALL_EMOJIS = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣']
-
-
-def build_commentary(match_data, new_ball, ball_idx_in_over, is_catch, catcher_username):
-    """Build commentary string for the given ball.
-
-    ball_idx_in_over: 0-based index within the current over (0=first ball).
-    """
-    bowler_username = match_data.get('bowler_username', '')
-    bowler_name = match_data.get('bowler_name', bowler_username)
-    on_strike = match_data.get('on_strike', 1)  # 1 or 2
-
-    # Odd runs (1, 3, 5) → non-striker actually played (strike rotated)
-    try:
-        run_val = int(new_ball)
-        batsman_slot = (2 if on_strike == 1 else 1) if run_val % 2 == 1 else on_strike
-    except ValueError:
-        # W or non-numeric
-        batsman_slot = on_strike
-
-    batsman_username = match_data.get(f'batsman{batsman_slot}_username', '')
-    batsman_name = match_data.get(f'batsman{batsman_slot}_name', batsman_username)
-
-    bowling_style = get_bowling_style_for_player(bowler_username) or 'Right-arm spin'
-    delivery, kph = get_bowling_delivery_and_kph(bowling_style)
-
-    ball_emoji = BALL_EMOJIS[min(ball_idx_in_over, 5)]
-
-    bowler_str = f"**{bowler_name}** (@{bowler_username})" if bowler_username else f"**{bowler_name}**"
-    batsman_str = f"**{batsman_name}** (@{batsman_username})" if batsman_username else f"**{batsman_name}**"
-
-    if new_ball == 'W':
-        if is_catch and catcher_username:
-            line = f"🇼 • Caught by @{catcher_username}! • {kph} KPH"
-        else:
-            dismissal_type = random.choice(['Bowled', 'Stumped', 'LBW'])
-            dismissal_text = random.choice(DISMISSALS.get(dismissal_type, ['OUT!']))
-            line = f"🇼 • It's an OUT! {dismissal_text} • {kph} KPH"
-        return f"-# {ball_emoji}\n-# {bowler_str} To {batsman_str}: {line}"
-    else:
-        try:
-            run_val = int(new_ball)
-        except ValueError:
-            run_val = 0
-        shots = get_shots_for_runs(run_val)
-        shot = random.choice(shots)
-        return (
-            f"-# {ball_emoji}\n"
-            f"-# {bowler_str} To {batsman_str}: "
-            f"The batsman plays **{shot}** to a {delivery} • {kph} KPH"
-        )
 
 
 def parse_embed_fields(embed):
@@ -1560,15 +1389,12 @@ class MatchUpdates(commands.Cog):
                 caught_by_member = message.guild.get_member(wicket_info['caught_by_user_id'])
                 caught_by_username = caught_by_member.name if caught_by_member else 'unknown'
                 dismissal_usernames = f"@{caught_by_username} @{wicket_info['bowler_username']}"
-                last_wicket_per_channel[message.channel.id] = {'is_catch': True, 'catcher_username': caught_by_username}
             elif bowler_real_name:
                 dismissal_text = f"b {bowler_real_name}"
                 dismissal_usernames = f"@{wicket_info['bowler_username']}"
-                last_wicket_per_channel[message.channel.id] = {'is_catch': False, 'catcher_username': None}
             else:
                 dismissal_text = "OUT"
                 dismissal_usernames = ""
-                last_wicket_per_channel[message.channel.id] = {'is_catch': False, 'catcher_username': None}
 
             wicket_data = {
                 'out_player_name': out_player_display_name,
@@ -1693,19 +1519,6 @@ class MatchUpdates(commands.Cog):
 
         last_timelines[channel_id] = current_timeline
 
-        # --- Detect new ball for commentary ---
-        prev_balls = last_sliced_timelines.get(channel_id, [])
-        current_balls = match_data['timeline']
-        last_sliced_timelines[channel_id] = list(current_balls)
-
-        new_ball = None
-        if len(current_balls) > len(prev_balls):
-            new_ball = current_balls[-1]
-
-        # Increment timeline image counter
-        commentary_counters[channel_id] = commentary_counters.get(channel_id, 0) + 1
-        send_commentary = (commentary_counters[channel_id] % 3 == 0)
-
         print(f"\n🎨 CREATING MATCH IMAGE...")
 
         match_image = await create_match_image(match_data, message.guild)
@@ -1714,22 +1527,8 @@ class MatchUpdates(commands.Cog):
             print("❌ Failed to create match image")
             return
 
-        commentary_text = None
-        if send_commentary and new_ball is not None:
-            ball_idx = (len(current_balls) - 1) % 6
-            wicket_info_ch = last_wicket_per_channel.get(channel_id, {})
-            is_catch = wicket_info_ch.get('is_catch', False) if new_ball == 'W' else False
-            catcher_username = wicket_info_ch.get('catcher_username') if is_catch else None
-            try:
-                commentary_text = build_commentary(
-                    match_data, new_ball, ball_idx, is_catch, catcher_username
-                )
-                print(f"💬 Commentary: {commentary_text}")
-            except Exception as e:
-                print(f"❌ Commentary generation failed: {e}")
-
         file = discord.File(fp=match_image, filename="match_status.png")
-        await message.channel.send(content=commentary_text, file=file)
+        await message.channel.send(file=file)
         print(f"✅ SENT MATCH UPDATE IMAGE\n")
 
     @commands.Cog.listener()
