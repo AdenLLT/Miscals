@@ -121,9 +121,6 @@ EMOJI_MAPPING = {
 # Store last processed timeline per channel
 last_timelines = {}
 
-# Track current bowler per channel for timeline resets
-last_bowlers = {}
-bowler_timeline_offsets = {}
 
 # Store last processed wickets to prevent duplicates (username + timestamp)
 last_wickets = {}
@@ -581,47 +578,46 @@ def parse_embed_fields(embed):
         all_teams = re.findall(team_pattern, full_text)
 
         if len(all_teams) < 2:
-            print("   ⚠️ Less than 2 teams found!")
-            return {}
+            print("   ⚠️ Less than 2 teams found, will still try to extract timeline")
+        else:
+            team_info = {}
+            for team_name, score, overs in all_teams:
+                team_name_clean = team_name.strip()
+                team_info[team_name_clean] = {
+                    'score': score,
+                    'overs': float(overs),
+                    'runs': int(score.split('/')[0])
+                }
+                print(f"   📊 {team_name_clean}: {score} ({overs} overs)")
 
-        team_info = {}
-        for team_name, score, overs in all_teams:
-            team_name_clean = team_name.strip()
-            team_info[team_name_clean] = {
-                'score': score,
-                'overs': float(overs),
-                'runs': int(score.split('/')[0])
-            }
-            print(f"   📊 {team_name_clean}: {score} ({overs} overs)")
+            teams_sorted = sorted(team_info.items(), key=lambda x: x[1]['overs'], reverse=True)
 
-        teams_sorted = sorted(team_info.items(), key=lambda x: x[1]['overs'], reverse=True)
+            if innings == "ONE":
+                batting_team_name = teams_sorted[0][0]
+                batting_team_info = teams_sorted[0][1]
 
-        if innings == "ONE":
-            batting_team_name = teams_sorted[0][0]
-            batting_team_info = teams_sorted[0][1]
+                data['team_a_score'] = batting_team_info['score']
+                data['overs'] = str(batting_team_info['overs'])
+                print(f"   ✅ Innings 1: {batting_team_name} is batting: {batting_team_info['score']} ({batting_team_info['overs']})")
 
-            data['team_a_score'] = batting_team_info['score']
-            data['overs'] = str(batting_team_info['overs'])
-            print(f"   ✅ Innings 1: {batting_team_name} is batting: {batting_team_info['score']} ({batting_team_info['overs']})")
+            elif innings == "TWO":
+                innings1_team_name = teams_sorted[0][0]
+                innings1_team_info = teams_sorted[0][1]
 
-        elif innings == "TWO":
-            innings1_team_name = teams_sorted[0][0]
-            innings1_team_info = teams_sorted[0][1]
+                batting_team_name = teams_sorted[1][0]
+                batting_team_info = teams_sorted[1][1]
 
-            batting_team_name = teams_sorted[1][0]
-            batting_team_info = teams_sorted[1][1]
+                data['team_a_score'] = batting_team_info['score']
+                data['overs'] = str(batting_team_info['overs'])
 
-            data['team_a_score'] = batting_team_info['score']
-            data['overs'] = str(batting_team_info['overs'])
+                data['innings2_batting_team'] = batting_team_name
+                data['innings2_opposition_team'] = innings1_team_name
 
-            data['innings2_batting_team'] = batting_team_name
-            data['innings2_opposition_team'] = innings1_team_name
+                print(f"   ✅ Innings 2: {batting_team_name} is batting: {batting_team_info['score']} ({batting_team_info['overs']})")
 
-            print(f"   ✅ Innings 2: {batting_team_name} is batting: {batting_team_info['score']} ({batting_team_info['overs']})")
-
-            target = innings1_team_info['runs'] + 1
-            data['target'] = f"Target {target}"
-            print(f"   🎯 TARGET: {target} ({innings1_team_name} made {innings1_team_info['runs']} in innings 1)")
+                target = innings1_team_info['runs'] + 1
+                data['target'] = f"Target {target}"
+                print(f"   🎯 TARGET: {target} ({innings1_team_name} made {innings1_team_info['runs']} in innings 1)")
 
         # --- 2. EXTRACT BATTERS ---
         batters_section = re.search(r'Batters:\s*(.+?)(?:Bowler:|Partnership:|$)', full_text, re.DOTALL)
@@ -1489,27 +1485,6 @@ class MatchUpdates(commands.Cog):
             return
 
         channel_id = message.channel.id
-
-        # Detect bowler changes and reset the timeline offset accordingly
-        current_bowler = match_data.get('bowler_username', '')
-        if current_bowler:
-            if channel_id in last_bowlers and last_bowlers[channel_id] != current_bowler:
-                bowler_timeline_offsets[channel_id] = len(match_data.get('timeline', []))
-                print(f"🔄 Bowler changed: {last_bowlers[channel_id]} → {current_bowler}, resetting timeline display")
-            last_bowlers[channel_id] = current_bowler
-
-        # Slice the timeline to only show balls from the current bowler onwards
-        offset = bowler_timeline_offsets.get(channel_id, 0)
-        if offset > 0 and 'timeline' in match_data:
-            full_timeline = match_data['timeline']
-            if offset <= len(full_timeline):
-                match_data['timeline'] = full_timeline[offset:]
-                print(f"📊 Timeline sliced from offset {offset}: {match_data['timeline']}")
-            else:
-                # Timeline is shorter than offset — new match started, clear state
-                bowler_timeline_offsets.pop(channel_id, None)
-                last_bowlers.pop(channel_id, None)
-                print(f"🔁 Timeline shorter than offset, resetting bowler tracking for channel {channel_id}")
 
         current_timeline = '|'.join(match_data['timeline'])
 
