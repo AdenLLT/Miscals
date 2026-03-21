@@ -607,8 +607,10 @@ class Series(commands.Cog):
 
     @commands.command(name="seriesaddstats", aliases=["sas"], help="[ADMIN] Add stats for a series match (also updates overall stats)")
     @commands.has_any_role(1452028308735922339)
-    async def seriesaddstats(self, ctx):
-        """Add stats that count for BOTH series AND overall/international stats"""
+    async def seriesaddstats(self, ctx, *, flags=""):
+        """Add stats that count for BOTH series AND overall/international stats. Pass 'nolbi' to skip international records."""
+
+        skip_lbi = 'nolbi' in flags.lower()
 
         series = await pick_active_series(ctx, self.bot)
         if not series:
@@ -641,15 +643,38 @@ class Series(commands.Cog):
 
         # Detect teams
         teams_detected = set()
+        user_teams = {}
         for match in matches:
             user_id = int(match[0])
             team = get_user_team(user_id)
             if team:
                 teams_detected.add(team)
+                user_teams[user_id] = team
 
         teams_list = list(teams_detected)
-        if len(teams_list) != 2:
-            await ctx.send(f"❌ Expected 2 teams, detected {len(teams_list)}: {', '.join(teams_list)}")
+
+        if len(teams_list) == 3:
+            options_text = "\n".join([f"**{i+1}.** {t}" for i, t in enumerate(teams_list)])
+            await ctx.send(f"⚠️ 3 teams detected: {', '.join(teams_list)}\n\nWhich team should be **excluded** from this match?\n{options_text}\n\nReply with the number.")
+
+            def check_exclude(m):
+                return m.author.id == ctx.author.id and m.channel.id == ctx.channel.id and m.content.strip().isdigit()
+
+            try:
+                choice_msg = await self.bot.wait_for('message', timeout=30.0, check=check_exclude)
+                idx = int(choice_msg.content.strip()) - 1
+                if 0 <= idx < len(teams_list):
+                    excluded_team = teams_list.pop(idx)
+                    matches = [m for m in matches if user_teams.get(int(m[0])) != excluded_team]
+                    await ctx.send(f"✅ Excluded **{excluded_team}** — continuing with **{teams_list[0]}** vs **{teams_list[1]}**.")
+                else:
+                    await ctx.send("❌ Invalid choice.")
+                    return
+            except TimeoutError:
+                await ctx.send("❌ Timed out!")
+                return
+        elif len(teams_list) != 2:
+            await ctx.send(f"❌ Expected 2 teams, detected {len(teams_list)}: {', '.join(teams_list) if teams_list else 'none'}")
             return
 
         series_teams = json.loads(teams_json)
@@ -744,15 +769,15 @@ class Series(commands.Cog):
                          VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                       (series_id, user_id, runs, balls_faced, runs_conceded, balls_bowled, wickets, not_out))
 
-        # 2) Insert into match_stats (overall/international stats)
-        for match in matches:
-            user_id, runs, balls_faced, runs_conceded, balls_bowled, wickets, not_out = map(int, match)
-            user_team = get_user_team(user_id)
-            bat_order = 1 if user_team == bat_first else 2
-            
-            c.execute("""INSERT INTO match_stats (user_id, runs, balls_faced, runs_conceded, balls_bowled, wickets, not_out)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)""",
-              (user_id, runs, balls_faced, runs_conceded, balls_bowled, wickets, not_out))
+        # 2) Insert into match_stats (overall/international stats) — skipped if nolbi
+        if not skip_lbi:
+            for match in matches:
+                user_id, runs, balls_faced, runs_conceded, balls_bowled, wickets, not_out = map(int, match)
+                user_team = get_user_team(user_id)
+                bat_order = 1 if user_team == bat_first else 2
+                c.execute("""INSERT INTO match_stats (user_id, runs, balls_faced, runs_conceded, balls_bowled, wickets, not_out)
+                     VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                  (user_id, runs, balls_faced, runs_conceded, balls_bowled, wickets, not_out))
 
         # 3) Update series_teams standings
         c.execute("""UPDATE series_teams 
@@ -783,6 +808,7 @@ class Series(commands.Cog):
         flag2 = get_team_flag(team2)
         winner_flag = get_team_flag(winner)
 
+        lbi_line = "⏭️ **Overall/international** records skipped (nolbi)" if skip_lbi else "✅ Stats added to **overall/international** records"
         embed = discord.Embed(
             title="✅ Series Match Stats Added",
             description=f"**{series_name}**\n\n"
@@ -790,7 +816,7 @@ class Series(commands.Cog):
                         f"{flag2} **{team2}**: {t2['runs']}/{t2['wickets']} in {t2['balls']//6}.{t2['balls']%6} overs\n\n"
                         f"{winner_flag} **{winner} WON!**\n\n"
                         f"✅ Stats added to **series** standings\n"
-                        f"✅ Stats added to **overall/international** records",
+                        f"{lbi_line}",
             color=0x00FF00
         )
         embed.set_footer(text=f"{len(matches)} players • {series_name}")
