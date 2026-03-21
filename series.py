@@ -182,6 +182,37 @@ def get_active_series():
     conn.close()
     return result
 
+async def pick_active_series(ctx, bot):
+    """Returns (series_id, series_name, teams_json) or None. Shows a numbered picker if multiple series are active."""
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute("SELECT id, name, teams FROM series WHERE is_active = 1 ORDER BY id DESC")
+    all_series = c.fetchall()
+    conn.close()
+
+    if not all_series:
+        return None
+    if len(all_series) == 1:
+        return all_series[0]
+
+    series_list = "\n".join([f"**{i+1}.** {name}" for i, (sid, name, teams) in enumerate(all_series)])
+    await ctx.send(f"📋 Multiple active series — which one?\n{series_list}\n\nReply with the number.")
+
+    def check(m):
+        return m.author.id == ctx.author.id and m.channel.id == ctx.channel.id and m.content.strip().isdigit()
+
+    try:
+        msg = await bot.wait_for('message', timeout=30.0, check=check)
+        idx = int(msg.content.strip()) - 1
+        if 0 <= idx < len(all_series):
+            return all_series[idx]
+        else:
+            await ctx.send("❌ Invalid number.")
+            return None
+    except TimeoutError:
+        await ctx.send("❌ Timed out!")
+        return None
+
 # ========== IMAGE GENERATION ==========
 
 async def create_series_vs_image(team1, team2, stadium_name, series_name):
@@ -439,9 +470,6 @@ class Series(commands.Cog):
         conn = sqlite3.connect('players.db')
         c = conn.cursor()
 
-        # Deactivate any existing active series
-        c.execute("UPDATE series SET is_active = 0 WHERE is_active = 1")
-
         # Create series
         c.execute("INSERT INTO series (name, teams) VALUES (?, ?)",
                   (series_name, json.dumps(teams_list)))
@@ -471,7 +499,7 @@ class Series(commands.Cog):
     async def seriesfixture(self, ctx, team1: str, team2: str):
         """Add and post a fixture for the active series"""
 
-        series = get_active_series()
+        series = await pick_active_series(ctx, self.bot)
         if not series:
             await ctx.send("❌ No active series! Use `-seriesmake` first.")
             return
@@ -582,7 +610,7 @@ class Series(commands.Cog):
     async def seriesaddstats(self, ctx):
         """Add stats that count for BOTH series AND overall/international stats"""
 
-        series = get_active_series()
+        series = await pick_active_series(ctx, self.bot)
         if not series:
             await ctx.send("❌ No active series! Use `-seriesmake` first.")
             return
@@ -841,7 +869,7 @@ class Series(commands.Cog):
     @commands.has_permissions(administrator=True)
     async def seriesend(self, ctx):
         """End the active series"""
-        series = get_active_series()
+        series = await pick_active_series(ctx, self.bot)
         if not series:
             await ctx.send("❌ No active series!")
             return
@@ -897,7 +925,7 @@ class Series(commands.Cog):
     @commands.command(name="seriesinfo", help="View active series info")
     async def seriesinfo(self, ctx):
         """Quick info about the active series"""
-        series = get_active_series()
+        series = await pick_active_series(ctx, self.bot)
         if not series:
             await ctx.send("❌ No active series!")
             return
@@ -941,7 +969,7 @@ class Series(commands.Cog):
     @commands.has_permissions(administrator=True)
     async def serieswinner(self, ctx, winner_team: str, opponent_team: str):
         """Record a match result manually. Usage: -serieswinner India Pakistan"""
-        series = get_active_series()
+        series = await pick_active_series(ctx, self.bot)
         if not series:
             await ctx.send("❌ No active series found!")
             return
@@ -1101,7 +1129,7 @@ class Series(commands.Cog):
     @commands.command(name="sremindd", aliases=["srrrd"], help="Remind teams about their latest series match")
     async def sremind(self, ctx, team1: str, team2: str):
         """Remind teams about their latest series match"""
-        series = get_active_series()
+        series = await pick_active_series(ctx, self.bot)
         if not series:
             await ctx.send("❌ No active series found!")
             return
