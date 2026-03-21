@@ -75,7 +75,7 @@ MATCH_CHANNELS = {
     1464677685593768047: "Rawalpindi Cricket Stadium",
     1464648571898036469: "Multan Cricket Stadium",
     1464677944222810429: "Arbab Niaz Stadium",
-    1471920655955136736: "Abu Dhabi Cricket Stadium",
+    1484522446022508637: "Grange Cricket Club",
     1474421673858961550: "Malahide Cricket Stadium",
     1474442540936728740: "Castle Avenue Cricket Stadium",
     1483767491132915793: "Melbourne Cricket Ground",
@@ -771,50 +771,71 @@ class Series(commands.Cog):
     @commands.command(name="seriesstats", aliases=["ss2"], help="View current series standings")
     async def seriesstats(self, ctx):
         """View current series standings and fixtures"""
-        series = get_active_series()
-        if not series:
+        conn = sqlite3.connect('players.db')
+        c = conn.cursor()
+        c.execute("SELECT id, name FROM series WHERE is_active = 1 ORDER BY id DESC")
+        active_series = c.fetchall()
+        conn.close()
+
+        if not active_series:
             await ctx.send("❌ No active series!")
             return
 
-        series_id, series_name, teams_json = series
+        async def show_series_stats(series_id, series_name):
+            conn2 = sqlite3.connect('players.db')
+            c2 = conn2.cursor()
+            c2.execute("""SELECT team_name, matches_played, wins, losses, nrr
+                        FROM series_teams WHERE series_id = ?
+                        ORDER BY wins DESC, nrr DESC""", (series_id,))
+            teams_data = c2.fetchall()
+            c2.execute("""SELECT match_number, team1, team2, channel_id, is_played, winner
+                        FROM series_fixtures WHERE series_id = ?
+                        ORDER BY match_number ASC""", (series_id,))
+            fixtures = c2.fetchall()
+            conn2.close()
 
-        conn = sqlite3.connect('players.db')
-        c = conn.cursor()
+            image = await create_series_standings_image(series_name, teams_data, fixtures)
 
-        c.execute("""SELECT team_name, matches_played, wins, losses, nrr
-                    FROM series_teams WHERE series_id = ?
-                    ORDER BY wins DESC, nrr DESC""", (series_id,))
-        teams_data = c.fetchall()
+            if image:
+                file = discord.File(image, filename="series_standings.png")
+                embed = discord.Embed(title=f"📊 {series_name}", color=0x1E90FF)
+                embed.set_image(url="attachment://series_standings.png")
+                played = sum(1 for f in fixtures if f[4])
+                total = len(fixtures)
+                embed.set_footer(text=f"Matches: {played}/{total} played")
+                await ctx.send(embed=embed, file=file)
+            else:
+                embed = discord.Embed(title=f"📊 {series_name}", color=0x1E90FF)
+                for team_name, mp, w, l, nrr in teams_data:
+                    flag = get_team_flag(team_name)
+                    embed.add_field(
+                        name=f"{flag} {team_name}",
+                        value=f"W: {w} | L: {l} | M: {mp} | NRR: {nrr:+.3f}",
+                        inline=False
+                    )
+                await ctx.send(embed=embed)
 
-        c.execute("""SELECT match_number, team1, team2, channel_id, is_played, winner
-                    FROM series_fixtures WHERE series_id = ?
-                    ORDER BY match_number ASC""", (series_id,))
-        fixtures = c.fetchall()
-        conn.close()
+        if len(active_series) == 1:
+            await show_series_stats(active_series[0][0], active_series[0][1])
+            return
 
-        image = await create_series_standings_image(series_name, teams_data, fixtures)
+        class SeriesStatsSelect(Select):
+            def __init__(self, series_list):
+                options = [discord.SelectOption(label=name, value=str(sid)) for sid, name in series_list]
+                super().__init__(placeholder="Select a series to view standings...", options=options)
 
-        if image:
-            file = discord.File(image, filename="series_standings.png")
-            embed = discord.Embed(title=f"📊 {series_name}", color=0x1E90FF)
-            embed.set_image(url="attachment://series_standings.png")
+            async def callback(self, interaction: discord.Interaction):
+                if interaction.user.id != ctx.author.id:
+                    await interaction.response.send_message("❌ Not your menu!", ephemeral=True)
+                    return
+                series_id = int(self.values[0])
+                series_name = next(name for sid, name in active_series if sid == series_id)
+                await interaction.response.defer()
+                await show_series_stats(series_id, series_name)
 
-            # Quick text summary
-            played = sum(1 for f in fixtures if f[4])
-            total = len(fixtures)
-            embed.set_footer(text=f"Matches: {played}/{total} played")
-            await ctx.send(embed=embed, file=file)
-        else:
-            # Fallback text embed
-            embed = discord.Embed(title=f"📊 {series_name}", color=0x1E90FF)
-            for team_name, mp, w, l, nrr in teams_data:
-                flag = get_team_flag(team_name)
-                embed.add_field(
-                    name=f"{flag} {team_name}",
-                    value=f"W: {w} | L: {l} | M: {mp} | NRR: {nrr:+.3f}",
-                    inline=False
-                )
-            await ctx.send(embed=embed)
+        view = View()
+        view.add_item(SeriesStatsSelect(active_series))
+        await ctx.send("📋 Select a series to view standings:", view=view)
 
     @commands.command(name="seriesend", aliases=["se"], help="[ADMIN] End the current series")
     @commands.has_permissions(administrator=True)
