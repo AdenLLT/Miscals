@@ -555,7 +555,16 @@ def get_full_message_text(message):
     return "\n".join(parts)
 
 
-def parse_embed_fields(embed):
+def resolve_user_id_by_username(guild, username):
+    """Try to find a Discord member by their username and return their user ID, or None."""
+    if guild:
+        member = discord.utils.get(guild.members, name=username)
+        if member:
+            return member.id
+    return None
+
+
+def parse_embed_fields(embed, guild=None):
     """Parse the embed fields to extract match data - FIXED VERSION"""
 
     data = {}
@@ -651,7 +660,11 @@ def parse_embed_fields(embed):
                         user_id = int(user_id_str)
                         c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (user_id,))
                     else:
-                        c.execute("SELECT player_name FROM player_representatives WHERE username = ?", (username,))
+                        resolved_id = resolve_user_id_by_username(guild, username)
+                        if resolved_id:
+                            c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (resolved_id,))
+                        else:
+                            c.execute("SELECT player_name FROM player_representatives WHERE username = ?", (username,))
 
                     result = c.fetchone()
                     conn.close()
@@ -693,7 +706,11 @@ def parse_embed_fields(embed):
                     user_id = int(user_id_str)
                     c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (user_id,))
                 else:
-                    c.execute("SELECT player_name FROM player_representatives WHERE username = ?", (username,))
+                    resolved_id = resolve_user_id_by_username(guild, username)
+                    if resolved_id:
+                        c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (resolved_id,))
+                    else:
+                        c.execute("SELECT player_name FROM player_representatives WHERE username = ?", (username,))
 
                 result = c.fetchone()
                 conn.close()
@@ -1347,8 +1364,12 @@ class MatchUpdates(commands.Cog):
             conn = sqlite3.connect('players.db')
             c = conn.cursor()
 
-            c.execute("SELECT player_name FROM player_representatives WHERE username = ?",
-                      (wicket_info['out_username'],))
+            out_uid = resolve_user_id_by_username(message.guild, wicket_info['out_username'])
+            if out_uid:
+                c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (out_uid,))
+            else:
+                c.execute("SELECT player_name FROM player_representatives WHERE username = ?",
+                          (wicket_info['out_username'],))
             out_result = c.fetchone()
 
             if not out_result:
@@ -1362,8 +1383,12 @@ class MatchUpdates(commands.Cog):
 
             bowler_real_name = None
             if wicket_info['bowler_username']:
-                c.execute("SELECT player_name FROM player_representatives WHERE username = ?",
-                          (wicket_info['bowler_username'],))
+                bow_uid = resolve_user_id_by_username(message.guild, wicket_info['bowler_username'])
+                if bow_uid:
+                    c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (bow_uid,))
+                else:
+                    c.execute("SELECT player_name FROM player_representatives WHERE username = ?",
+                              (wicket_info['bowler_username'],))
                 bowler_result = c.fetchone()
                 if bowler_result:
                     bowler_full_name = bowler_result[0]
@@ -1474,7 +1499,7 @@ class MatchUpdates(commands.Cog):
 
         print(f"✅ Embed has {len(embed.fields)} fields\n")
 
-        match_data = parse_embed_fields(embed)
+        match_data = parse_embed_fields(embed, message.guild)
 
         if not match_data:
             print("❌ No match data found")
@@ -1541,19 +1566,19 @@ class MatchUpdates(commands.Cog):
         conn = sqlite3.connect('players.db')
         c = conn.cursor()
 
-        c.execute("SELECT player_name FROM player_representatives WHERE username = ?", (batsman1.name,))
+        c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (batsman1.id,))
         result = c.fetchone()
         batsman1_full_name = result[0] if result else batsman1.name
         batsman1_last_name = batsman1_full_name.split()[-1] if result else batsman1.name
         batsman1_team = find_player_team(batsman1_full_name) if result else ""
 
-        c.execute("SELECT player_name FROM player_representatives WHERE username = ?", (batsman2.name,))
+        c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (batsman2.id,))
         result = c.fetchone()
         batsman2_full_name = result[0] if result else batsman2.name
         batsman2_last_name = batsman2_full_name.split()[-1] if result else batsman2.name
         batsman2_team = find_player_team(batsman2_full_name) if result else ""
 
-        c.execute("SELECT player_name FROM player_representatives WHERE username = ?", (bowler.name,))
+        c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (bowler.id,))
         result = c.fetchone()
         bowler_full_name = result[0] if result else bowler.name
         bowler_last_name = bowler_full_name.split()[-1] if result else bowler.name
@@ -1604,20 +1629,20 @@ class MatchUpdates(commands.Cog):
         conn = sqlite3.connect('players.db')
         c = conn.cursor()
 
-        c.execute("SELECT player_name FROM player_representatives WHERE username = ?", (out_player.name,))
+        c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (out_player.id,))
         result = c.fetchone()
         out_player_full_name = result[0] if result else out_player.name
         out_player_display_name = out_player_full_name.upper()
         out_player_team = find_player_team(out_player_full_name) if result else ""
 
-        c.execute("SELECT player_name FROM player_representatives WHERE username = ?", (bowler.name,))
+        c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (bowler.id,))
         result = c.fetchone()
         bowler_full_name = result[0] if result else bowler.name
         bowler_real_name = bowler_full_name.upper()
 
         caught_by_real_name = None
         if caught_by:
-            c.execute("SELECT player_name FROM player_representatives WHERE username = ?", (caught_by.name,))
+            c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (caught_by.id,))
             result = c.fetchone()
             if result:
                 caught_by_full_name = result[0]
