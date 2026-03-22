@@ -494,10 +494,127 @@ class Series(commands.Cog):
         embed.set_footer(text=f"Series ID: {series_id}")
         await ctx.send(embed=embed)
 
-    @commands.command(name="seriesfixture", aliases=["sf2"], help="[ADMIN] Post a fixture for the active series")
+    @commands.command(name="seriesfixture", aliases=["sf2"], help="[ADMIN] Post a fixture for the active series. Use 'oneoff' for a standalone match.")
     @commands.has_permissions(administrator=True)
-    async def seriesfixture(self, ctx, team1: str, team2: str):
-        """Add and post a fixture for the active series"""
+    async def seriesfixture(self, ctx, *args):
+        """Add and post a fixture for the active series, or a one-off standalone match."""
+
+        # ── ONE-OFF MODE ──────────────────────────────────────────────────────
+        if args and args[0].lower() == "oneoff":
+            if len(args) < 3:
+                await ctx.send("❌ Usage: `-seriesfixture oneoff Team1 Team2`")
+                return
+
+            team1, team2 = args[1], args[2]
+
+            valid_teams = [
+                "India", "Pakistan", "Australia", "England", "New Zealand",
+                "South Africa", "West Indies", "Sri Lanka", "Bangladesh",
+                "Afghanistan", "Netherlands", "Scotland", "Ireland", "Zimbabwe",
+                "UAE", "Canada", "USA"
+            ]
+            if team1 not in valid_teams:
+                await ctx.send(f"❌ Invalid team: `{team1}`")
+                return
+            if team2 not in valid_teams:
+                await ctx.send(f"❌ Invalid team: `{team2}`")
+                return
+            if team1 == team2:
+                await ctx.send("❌ Teams must be different!")
+                return
+
+            await ctx.send("📝 What should this match be called? (e.g. `India vs Pakistan - One Off`)")
+
+            def check_name(m):
+                return m.author.id == ctx.author.id and m.channel.id == ctx.channel.id
+
+            try:
+                name_msg = await self.bot.wait_for('message', timeout=60.0, check=check_name)
+                match_label = name_msg.content.strip()
+            except TimeoutError:
+                await ctx.send("❌ Timed out!")
+                return
+
+            class StadiumViewOneOff(View):
+                def __init__(self):
+                    super().__init__(timeout=60)
+                    self.selected_channel_id = None
+                    options = [
+                        discord.SelectOption(label=name, value=str(cid), emoji="🏟️")
+                        for cid, name in MATCH_CHANNELS.items()
+                    ]
+                    select = Select(placeholder="🏟️ Select Stadium", options=options)
+                    select.callback = self.stadium_callback
+                    self.add_item(select)
+
+                async def stadium_callback(self, interaction: discord.Interaction):
+                    if interaction.user.id != ctx.author.id:
+                        await interaction.response.send_message("❌ Not your menu!", ephemeral=True)
+                        return
+                    self.selected_channel_id = int(interaction.data['values'][0])
+                    self.stop()
+                    await interaction.response.defer()
+
+            view = StadiumViewOneOff()
+            select_embed = discord.Embed(
+                title="🏟️ Select Stadium",
+                description=f"{get_team_flag(team1)} **{team1}** vs {get_team_flag(team2)} **{team2}**\n{match_label}",
+                color=0x0066CC
+            )
+            msg = await ctx.send(embed=select_embed, view=view)
+            await view.wait()
+
+            if not view.selected_channel_id:
+                await ctx.send("❌ Timed out! No stadium selected.")
+                return
+
+            stadium = MATCH_CHANNELS[view.selected_channel_id]
+            vs_image = await create_series_vs_image(team1, team2, stadium, match_label)
+
+            embed = discord.Embed(
+                title=f"🏏 {match_label}",
+                description="**One-Off Match**",
+                color=0x00FF00
+            )
+            embed.add_field(
+                name="Match",
+                value=f"{get_team_flag(team1)} **{team1}** vs {get_team_flag(team2)} **{team2}**",
+                inline=False
+            )
+            embed.add_field(name="Stadium", value=f"🏟️ <#{view.selected_channel_id}>", inline=False)
+            embed.set_footer(text="TourneyFanHub")
+
+            fixtures_channel = ctx.guild.get_channel(FIXTURES_CHANNEL)
+            if fixtures_channel:
+                role1_id = get_team_role_id(team1)
+                role2_id = get_team_role_id(team2)
+                ping_text = " ".join(filter(None, [
+                    f"<@&{role1_id}>" if role1_id else "",
+                    f"<@&{role2_id}>" if role2_id else ""
+                ]))
+
+                if vs_image:
+                    file = discord.File(vs_image, filename="oneoff_match.png")
+                    embed.set_image(url="attachment://oneoff_match.png")
+                    if ping_text:
+                        await fixtures_channel.send(content=ping_text, embed=embed, file=file)
+                    else:
+                        await fixtures_channel.send(embed=embed, file=file)
+                else:
+                    if ping_text:
+                        await fixtures_channel.send(content=ping_text, embed=embed)
+                    else:
+                        await fixtures_channel.send(embed=embed)
+
+            await msg.edit(content="✅ One-off match fixture posted!", embed=None, view=None)
+            return
+
+        # ── SERIES MODE ───────────────────────────────────────────────────────
+        if len(args) != 2:
+            await ctx.send("❌ Usage: `-seriesfixture Team1 Team2` or `-seriesfixture oneoff Team1 Team2`")
+            return
+
+        team1, team2 = args[0], args[1]
 
         series = await pick_active_series(ctx, self.bot)
         if not series:
