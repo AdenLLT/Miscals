@@ -432,7 +432,7 @@ class Series(commands.Cog):
     async def seriesmake(self, ctx, *teams):
         """Create a series with 2 or 3 teams. Usage: -seriesmake India Pakistan [Australia]"""
 
-        if len(teams) < 2 or len(teams) > 3:
+        if len(teams) < 2 or len(teams) > 30:
             await ctx.send("❌ You must specify 2 or 3 teams!\nUsage: `-seriesmake Team1 Team2 [Team3]`")
             return
 

@@ -20,6 +20,7 @@ from discord.ext import commands, tasks
 from discord.ext.commands.cooldowns import BucketType
 intents = discord.Intents.default()
 intents.members = True
+intents.presences = True 
 intents.message_content = True
 intents.voice_states = True  # Required for voice
 intents.guilds = True  # Required for voice
@@ -5290,7 +5291,66 @@ async def assign_commentator_error(ctx, error):
         embed.set_thumbnail(url=target.display_avatar.url)
         await ctx.send(embed=embed)
 
+@bot.command(name="fetchonline")
+async def fetchonline(ctx):
+    if ctx.guild is None:
+        await ctx.send("This command can only be used inside a server!")
+        return
 
+    online_members = []
+    offline_members = []
+
+    # Sort members into online and offline lists
+    for member in ctx.guild.members:
+        # We use display_name to get their server nickname, or their username if they don't have one
+        if member.status != discord.Status.offline:
+            online_members.append(member.display_name)
+        else:
+            offline_members.append(member.display_name)
+
+    # Helper function to prevent the bot from crashing if the list of names is too long
+    def format_names(name_list):
+        if not name_list:
+            return "None"
+
+        full_string = ", ".join(name_list)
+
+        # If the string is safely under Discord's 1024 character limit, return it
+        if len(full_string) <= 1000:
+            return full_string
+
+        # If it's too long, truncate it safely
+        truncated_string = ""
+        added_count = 0
+        for name in name_list:
+            # Leave room for the "... and X more" text
+            if len(truncated_string) + len(name) + 2 > 900: 
+                break
+            truncated_string += name + ", "
+            added_count += 1
+
+        remaining = len(name_list) - added_count
+        return truncated_string + f"**...and {remaining} more**"
+
+    # Create the embed
+    embed = discord.Embed(
+        title=f"👥 Member Status in {ctx.guild.name}",
+        color=discord.Color.blue()
+    )
+
+    # Add the online and offline fields
+    embed.add_field(
+        name=f"🟢 Online ({len(online_members)})", 
+        value=format_names(online_members), 
+        inline=False
+    )
+    embed.add_field(
+        name=f"⚪ Offline ({len(offline_members)})", 
+        value=format_names(offline_members), 
+        inline=False
+    )
+
+    await ctx.send(embed=embed)
 
 token = os.getenv('TOKEN')
 if token:

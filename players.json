@@ -122,11 +122,11 @@
                 "image": "https://img1.hscicdn.com/image/upload/f_auto,t_ds_square_w_320,q_50/lsci/db/PICTURES/CMS/340300/340309.1.png"
             },
             {
-                "name": "Smriti Mandhana",
-                "role": "Batsman",
-                "batting_style": "Left Handed",
-                "bowling_style": "Right-arm medium",
-                "image": "https://img1.hscicdn.com/image/upload/f_auto,t_ds_square_w_320,q_50/lsci/db/PICTURES/CMS/320600/320632.1.png"
+                "name": "Sanju Samson",
+                "role": "Wicketkeeper Batsman",
+                "batting_style": "Right Handed",
+                "bowling_style": null,
+                "image": "https://img1.hscicdn.com/image/upload/f_auto,t_ds_square_w_320,q_50/lsci/db/PICTURES/CMS/322700/322701.1.png"
             }
         ]
     },
