@@ -28,6 +28,37 @@ mydb = sqlite3.connect("players.db")
 crsr = mydb.cursor()
 mydb.commit()
 
+DB_BACKUP_CHANNEL_ID = 1511452654906114139
+
+async def restore_db_from_channel():
+    """Download the last players.db attachment from the backup channel and use it."""
+    channel = bot.get_channel(DB_BACKUP_CHANNEL_ID)
+    if not channel:
+        print("❌ DB backup channel not found.")
+        return
+    async for message in channel.history(limit=200):
+        for attachment in message.attachments:
+            if attachment.filename == 'players.db':
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(attachment.url) as resp:
+                        if resp.status == 200:
+                            data = await resp.read()
+                            with open('players.db', 'wb') as f:
+                                f.write(data)
+                            global mydb, crsr
+                            mydb.close()
+                            mydb = sqlite3.connect("players.db")
+                            crsr = mydb.cursor()
+                            print("✅ Restored players.db from backup channel.")
+                            return
+    print("ℹ️ No players.db backup found in backup channel — using local file.")
+
+async def backup_db_to_channel():
+    """Send the current players.db to the backup channel."""
+    channel = bot.get_channel(DB_BACKUP_CHANNEL_ID)
+    if channel:
+        await channel.send(file=discord.File('players.db'))
+
 class MyHelp(commands.MinimalHelpCommand):
     async def send_pages(self):
         destination = self.get_destination()
@@ -48,9 +79,10 @@ bot = commands.Bot(
 @bot.event
 async def on_ready():
     global elite_players
+    await restore_db_from_channel()
     init_db()
-    init_fantasy_db()  # ADD THIS LINE
-    init_nicknames_db()  # ADD THIS LINE
+    init_fantasy_db()
+    init_nicknames_db()
     elite_players = load_elite_players()
     # Load the stats cog
     await bot.load_extension('cricket_stats')
@@ -61,6 +93,11 @@ async def on_ready():
     await bot.tree.sync()
     print(f'{bot.user} has connected to Discord!')
     print(f'Bot is ready! Prefix: .')
+    await backup_db_to_channel()
+
+@bot.after_invoke
+async def after_command_backup(ctx):
+    await backup_db_to_channel()
 
 class PlayerSelectionView(discord.ui.View):
     def __init__(self, india_players, nz_players):
