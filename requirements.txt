@@ -1,3 +1,4 @@
+audioop-lts==0.2.1
 discord==2.3.2
 p-stone-labs==0.32
 jishaku==2.5.1
