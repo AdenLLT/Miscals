@@ -3,7 +3,7 @@ p-stone-labs==0.32
 jishaku==2.5.1
 discord-py-slash-command==4.2.1
 openai==0.28.1
-pandas==2.1.1
+pandas==2.2.3
 requests==2.31.0
 bs4==0.0.1
 mysql-connector-python==8.2.0
