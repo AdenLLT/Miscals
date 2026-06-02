@@ -1,3 +1,4 @@
+from keep_alive import keep_alive
 import discord
 import os
 import json
@@ -5391,4 +5392,5 @@ async def fetchonline(ctx):
 
 token = os.getenv('TOKEN')
 if token:
+    keep_alive()
     bot.run(token)
