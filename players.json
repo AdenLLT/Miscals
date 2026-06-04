@@ -515,18 +515,18 @@
                 "image": "https://img1.hscicdn.com/image/upload/f_auto,t_ds_square_w_320,q_50/lsci/db/PICTURES/CMS/383100/383153.1.png"
             },
             {
-                "name": "Tom Hartley",
-                "role": "Bowler",
-                "batting_style": "Left Handed",
-                "bowling_style": "Left-arm orthodox",
-                "image": "https://img1.hscicdn.com/image/upload/f_auto,t_ds_square_w_320,q_50/lsci/db/PICTURES/CMS/383100/383156.1.png"
-            },
-            {
-                "name": "Chris Jordan",
+                "name": "Jofra Archer",
                 "role": "Bowler",
                 "batting_style": "Right Handed",
-                "bowling_style": "Right-arm fast",
-                "image": "https://img1.hscicdn.com/image/upload/f_auto,t_ds_square_w_320,q_50/lsci/db/PICTURES/CMS/383100/383144.1.png"
+                "bowling_style": “Right-arm fast",
+                "image": "https://img1.hscicdn.com/image/upload/f_auto,t_ds_square_w_320,q_50/lsci/db/PICTURES/CMS/383100/383146.1.png"
+            },
+            {
+                "name": "Ben Stokes",
+                "role": "All-Rounder",
+                "batting_style": "Left Handed",
+                "bowling_style": "Right-arm fast-medium",
+                "image": "https://img1.hscicdn.com/image/upload/f_auto,t_ds_square_w_320,q_50/lsci/db/PICTURES/CMS/319700/319748.1.png"
             }
         ]
     },
@@ -2234,3 +2234,4 @@
         ]
     }
 ]
+
