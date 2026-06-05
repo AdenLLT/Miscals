@@ -79,28 +79,28 @@ MATCH_CHANNELS = {
     1474421673858961550: "Malahide Cricket Stadium",
     1474442540936728740: "Castle Avenue Cricket Stadium",
     1483767491132915793: "Melbourne Cricket Ground",
-    1483896802603172013: "Adelaide Oval"
-    1511816522061053953: "Wankhede Stadium"
-    1511816895941316789: "Chinnaswamy Stadium"
-    1511816934554075146: "Eden Gardens"
-    1511816987570077746: "Arun Jaitley Stadium"
-    1511817048362319922: "Narendra Modi Stadium"
-    1511817278713368627: "Sydney Cricket Ground"
-    1511817337999982815: "Bellerive Oval"
-    1511817392261431606: "Brisbane Cricket Ground"
-    1511817436792361080: "Perth Stadium"
-    1511817545273839686: "Lords Cricket Ground"
-    1511817588173312020: "Old Trafford"
-    1511817653000470821: "Sophia Gardens"
-    1511817705337127175: "Edgbaston"
-    1511817821246717992: "Headingley"
-    1511817873172070510: "Seddon Park"
-    1511817926985121943: "Bay Oval"
-    1511817976817389821: "Hagley Oval"
-    1511820174922350812: "Eden Park"
-    1511820228013592626: "Basin Reserve"
-    1511820266433544344: "Mclean Park"
-    1511820299845505144: "Sky Stadium"
+    1483896802603172013: "Adelaide Oval",
+    1511816522061053953: "Wankhede Stadium",
+    1511816895941316789: "Chinnaswamy Stadium",
+    1511816934554075146: "Eden Gardens",
+    1511816987570077746: "Arun Jaitley Stadium",
+    1511817048362319922: "Narendra Modi Stadium",
+    1511817278713368627: "Sydney Cricket Ground",
+    1511817337999982815: "Bellerive Oval",
+    1511817392261431606: "Brisbane Cricket Ground",
+    1511817436792361080: "Perth Stadium",
+    1511817545273839686: "Lords Cricket Ground",
+    1511817588173312020: "Old Trafford",
+    1511817653000470821: "Sophia Gardens",
+    1511817705337127175: "Edgbaston",
+    1511817821246717992: "Headingley",
+    1511817873172070510: "Seddon Park",
+    1511817926985121943: "Bay Oval",
+    1511817976817389821: "Hagley Oval",
+    1511820174922350812: "Eden Park",
+    1511820228013592626: "Basin Reserve",
+    1511820266433544344: "Mclean Park",
+    1511820299845505144: "Sky Stadium",
 }
 
 FIXTURES_CHANNEL = 1474130877951906028
