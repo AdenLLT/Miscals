@@ -1435,5 +1435,149 @@ class Series(commands.Cog):
         
         await ctx.send(embed=embed)
 
+    @commands.command(name="editteamstat", aliases=["ets"], help="[ADMIN] Edit a team's stat in tournament, series, or international leaderboard")
+    @commands.has_permissions(administrator=True)
+    async def editteamstat(self, ctx, team: str, lb_type: str, stat: str, value: str):
+        """
+        Edit a team stat in a leaderboard.
+        lb_type: tournament / series / international
+        stat: WINS / LOSSES / MATCHPLAYED / PTS / NRR
+        value: the new value to set
+        """
+        lb_type = lb_type.lower()
+        stat = stat.upper()
+
+        STAT_MAP = {
+            "WINS":        "wins",
+            "LOSSES":      "losses",
+            "MATCHPLAYED": "matches_played",
+            "PTS":         "points",
+            "NRR":         "nrr",
+        }
+
+        ALLOWED = {
+            "tournament":    {"WINS", "LOSSES", "MATCHPLAYED", "PTS", "NRR"},
+            "series":        {"WINS", "LOSSES", "MATCHPLAYED", "NRR"},
+            "international": {"WINS", "LOSSES"},
+        }
+
+        if lb_type not in ALLOWED:
+            await ctx.send("❌ `lb_type` must be `tournament`, `series`, or `international`.")
+            return
+
+        if stat not in ALLOWED[lb_type]:
+            allowed_str = " / ".join(sorted(ALLOWED[lb_type]))
+            await ctx.send(f"❌ `{stat}` is not valid for **{lb_type}**. Valid stats: `{allowed_str}`")
+            return
+
+        col = STAT_MAP[stat]
+        try:
+            parsed_value = float(value) if stat == "NRR" else int(value)
+        except ValueError:
+            await ctx.send(f"❌ Invalid value `{value}`. Must be a number.")
+            return
+
+        conn = sqlite3.connect('players.db')
+        c = conn.cursor()
+
+        try:
+            # ── TOURNAMENT ──────────────────────────────────────────────────
+            if lb_type == "tournament":
+                c.execute(
+                    "SELECT id, name FROM tournaments WHERE is_active = 1 AND is_archived = 0 LIMIT 1"
+                )
+                row = c.fetchone()
+                if not row:
+                    await ctx.send("❌ No active tournament found.")
+                    return
+                tournament_id, tournament_name = row
+
+                c.execute(
+                    "SELECT team_name FROM tournament_teams WHERE tournament_id = ? AND LOWER(team_name) = LOWER(?)",
+                    (tournament_id, team)
+                )
+                if not c.fetchone():
+                    await ctx.send(f"❌ **{team}** is not in the active tournament (**{tournament_name}**).")
+                    return
+
+                c.execute(
+                    f"UPDATE tournament_teams SET {col} = ? WHERE tournament_id = ? AND LOWER(team_name) = LOWER(?)",
+                    (parsed_value, tournament_id, team)
+                )
+                conn.commit()
+
+                embed = discord.Embed(
+                    title="✅ Tournament Stat Updated",
+                    color=0x00CC44
+                )
+                embed.add_field(name="Tournament", value=tournament_name, inline=False)
+                embed.add_field(name="Team", value=f"{get_team_flag(team)} {team}", inline=True)
+                embed.add_field(name="Stat", value=stat, inline=True)
+                embed.add_field(name="New Value", value=str(parsed_value), inline=True)
+                await ctx.send(embed=embed)
+
+            # ── SERIES ──────────────────────────────────────────────────────
+            elif lb_type == "series":
+                series = await pick_active_series(ctx, self.bot)
+                if not series:
+                    await ctx.send("❌ No active series found.")
+                    return
+                series_id, series_name, _ = series
+
+                c.execute(
+                    "SELECT team_name FROM series_standings WHERE series_id = ? AND LOWER(team_name) = LOWER(?)",
+                    (series_id, team)
+                )
+                if not c.fetchone():
+                    await ctx.send(f"❌ **{team}** has no standings entry in **{series_name}**.")
+                    return
+
+                c.execute(
+                    f"UPDATE series_standings SET {col} = ? WHERE series_id = ? AND LOWER(team_name) = LOWER(?)",
+                    (parsed_value, series_id, team)
+                )
+                conn.commit()
+
+                embed = discord.Embed(
+                    title="✅ Series Stat Updated",
+                    color=0x00CC44
+                )
+                embed.add_field(name="Series", value=series_name, inline=False)
+                embed.add_field(name="Team", value=f"{get_team_flag(team)} {team}", inline=True)
+                embed.add_field(name="Stat", value=stat, inline=True)
+                embed.add_field(name="New Value", value=str(parsed_value), inline=True)
+                await ctx.send(embed=embed)
+
+            # ── INTERNATIONAL ────────────────────────────────────────────────
+            elif lb_type == "international":
+                c.execute(
+                    "SELECT team_name FROM international_series_lb WHERE LOWER(team_name) = LOWER(?)",
+                    (team,)
+                )
+                if not c.fetchone():
+                    await ctx.send(f"❌ **{team}** has no entry in the international leaderboard.")
+                    return
+
+                c.execute(
+                    f"UPDATE international_series_lb SET {col} = ? WHERE LOWER(team_name) = LOWER(?)",
+                    (parsed_value, team)
+                )
+                conn.commit()
+
+                embed = discord.Embed(
+                    title="✅ International LB Stat Updated",
+                    color=0x00CC44
+                )
+                embed.add_field(name="Team", value=f"{get_team_flag(team)} {team}", inline=True)
+                embed.add_field(name="Stat", value=stat, inline=True)
+                embed.add_field(name="New Value", value=str(parsed_value), inline=True)
+                await ctx.send(embed=embed)
+
+        except Exception as e:
+            await ctx.send(f"❌ Error: {e}")
+        finally:
+            conn.close()
+
+
 async def setup(bot):
     await bot.add_cog(Series(bot))
