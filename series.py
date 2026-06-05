@@ -560,13 +560,16 @@ class Series(commands.Cog):
                 def __init__(self):
                     super().__init__(timeout=60)
                     self.selected_channel_id = None
-                    options = [
+                    all_options = [
                         discord.SelectOption(label=name, value=str(cid), emoji="🏟️")
                         for cid, name in MATCH_CHANNELS.items()
                     ]
-                    select = Select(placeholder="🏟️ Select Stadium", options=options)
-                    select.callback = self.stadium_callback
-                    self.add_item(select)
+                    chunks = [all_options[i:i+25] for i in range(0, len(all_options), 25)]
+                    for idx, chunk in enumerate(chunks):
+                        label = f"🏟️ Stadiums {idx*25+1}–{idx*25+len(chunk)}" if len(chunks) > 1 else "🏟️ Select Stadium"
+                        select = Select(placeholder=label, options=chunk)
+                        select.callback = self.stadium_callback
+                        self.add_item(select)
 
                 async def stadium_callback(self, interaction: discord.Interaction):
                     if interaction.user.id != ctx.author.id:
@@ -665,13 +668,16 @@ class Series(commands.Cog):
             def __init__(self):
                 super().__init__(timeout=60)
                 self.selected_channel_id = None
-                options = [
+                all_options = [
                     discord.SelectOption(label=name, value=str(cid), emoji="🏟️")
                     for cid, name in MATCH_CHANNELS.items()
                 ]
-                select = Select(placeholder="🏟️ Select Stadium", options=options)
-                select.callback = self.stadium_callback
-                self.add_item(select)
+                chunks = [all_options[i:i+25] for i in range(0, len(all_options), 25)]
+                for idx, chunk in enumerate(chunks):
+                    label = f"🏟️ Stadiums {idx*25+1}–{idx*25+len(chunk)}" if len(chunks) > 1 else "🏟️ Select Stadium"
+                    select = Select(placeholder=label, options=chunk)
+                    select.callback = self.stadium_callback
+                    self.add_item(select)
 
             async def stadium_callback(self, interaction: discord.Interaction):
                 if interaction.user.id != ctx.author.id:
