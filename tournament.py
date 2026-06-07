@@ -1163,7 +1163,10 @@ def get_team_color_rgb(team_name):
         "Zimbabwe": (255, 33, 33),
         "UAE": (252, 68, 68),
         "Canada": (255, 0, 0),
-        "USA": (8, 0, 38)
+        "USA": (8, 0, 38),
+        "Italy": (0, 100, 170),      # Match with 0x0064AA
+        "Namibia": (0, 53, 128),     # Match with 0x003580
+        "Nepal": (220, 20, 60)       # Match with 0xDC143C
     }
     return colors.get(team_name, (128, 128, 128))
 
@@ -1187,7 +1190,10 @@ def get_team_color(team_name):
         "Zimbabwe": 0xFF2121,
         "UAE": 0xFC4444,
         "Canada": 0xFF0000,
-        "USA": 0x080026
+        "USA": 0x080026,
+        "Italy": 0x0064AA,
+        "Namibia": 0x003580,
+        "Nepal": 0xDC143C
     }
     return colors.get(team_name, 0x808080)
 
@@ -1211,7 +1217,10 @@ def get_team_flag(team_name):
         "Zimbabwe": "🇿🇼",
         "UAE": "🇦🇪",
         "Canada": "🇨🇦",
-        "USA": "🇺🇸"
+        "USA": "🇺🇸",
+        "Italy": "🇮🇹",
+        "Namibia": "🇳🇦",
+        "Nepal": "🇳🇵"
     }
     return flags.get(team_name, "🏳️")
 
@@ -1235,7 +1244,10 @@ def get_team_role_id(team_name):
         "Zimbabwe": 1460376157668245545,
         "UAE": 1460376158985130114,
         "Canada": 1460376154958725152,
-        "USA": 1460376156250570824
+        "USA": 1460376156250570824,
+        "Italy": 1513096652842467328,    # Replace with your actual Discord role ID
+        "Namibia": 1513096608063950878,  # Replace with your actual Discord role ID
+        "Nepal": 1513096680835125398     # Replace with your actual Discord role ID
     }
     return role_ids.get(team_name)
 

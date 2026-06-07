@@ -816,11 +816,13 @@ def get_team_color(team_name):
         "Zimbabwe": 0xFF2121,
         "UAE": 0xFC4444,
         "Canada": 0xFF0000,
-        "USA": 0x080026
+        "USA": 0x080026,
+        "Italy": 0x0064AA,  # Azzurri Blue
+        "Namibia": 0x003580,  # Dark Blue
+        "Nepal": 0xDC143C  # Crimson Red
     }
     return colors.get(team_name, 0x808080)  # Default gray
 
-# Get team flag emoji URL (for thumbnails)
 def get_team_flag_url(team_name):
     # Using Twemoji CDN for flag images
     flag_codes = {
@@ -840,12 +842,16 @@ def get_team_flag_url(team_name):
         "Zimbabwe": "1f1ff-1f1fc",  # 🇿🇼
         "UAE": "1f1e6-1f1ea",  # 🇦🇪
         "Canada": "1f1e8-1f1e6",  # 🇨🇦
-        "USA": "1f1fa-1f1f8"  # 🇺🇸
+        "USA": "1f1fa-1f1f8",  # 🇺🇸
+        "Italy": "1f1ee-1f1f9",  # 🇮🇹
+        "Namibia": "1f1f3-1f1e6",  # 🇳🇦
+        "Nepal": "1f1f3-1f1f5"  # 🇳🇵
     }
     code = flag_codes.get(team_name)
     if code:
         return f"https://cdnjs.cloudflare.com/ajax/libs/twemoji/14.0.2/72x72/{code}.png"
     return None
+
 
 # Get team flag emoji
 def get_team_flag(team_name):
@@ -866,7 +872,10 @@ def get_team_flag(team_name):
         "Zimbabwe": "🇿🇼",
         "UAE": "🇦🇪",
         "Canada": "🇨🇦",
-        "USA": "🇺🇸"
+        "USA": "🇺🇸",
+        "Italy": "🇮🇹",
+        "Namibia": "🇳🇦",
+        "Nepal": "🇳🇵"
     }
     return flags.get(team_name, "🏳️")
 
@@ -3806,7 +3815,10 @@ class MatchTimeButtons(discord.ui.View):
     app_commands.Choice(name="Zimbabwe", value="1460376157668245545"),
     app_commands.Choice(name="UAE", value="1460376158985130114"),
     app_commands.Choice(name="Canada", value="1460376154958725152"),
-    app_commands.Choice(name="USA", value="1460376156250570824")
+    app_commands.Choice(name="USA", value="1460376156250570824"),
+    app_commands.Choice(name="Italy", value="1513096652842467328"),   # Replace with actual ID string
+    app_commands.Choice(name="Namibia", value="1513096608063950878"), # Replace with actual ID string
+    app_commands.Choice(name="Nepal", value="1513096680835125398")    # Replace with actual ID string
 ])
 @app_commands.choices(time=[
     app_commands.Choice(name="7:00 PM IST", value="7:00PM IST"),
@@ -3846,7 +3858,10 @@ async def matchtime(interaction: discord.Interaction, opponent: app_commands.Cho
         "Zimbabwe": 1460376157668245545,
         "UAE": 1460376158985130114,
         "Canada": 1460376154958725152,
-        "USA": 1460376156250570824
+        "USA": 1460376156250570824,
+        "Italy": 1513096652842467328,    # Replace with actual ID integer
+        "Namibia": 1513096608063950878,  # Replace with actual ID integer
+        "Nepal": 1513096680835125398     # Replace with actual ID integer
     }
 
     # Find requester's team

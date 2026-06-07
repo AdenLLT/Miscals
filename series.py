@@ -112,7 +112,8 @@ def get_team_flag(team_name):
         "West Indies": "🏝️", "Sri Lanka": "🇱🇰", "Bangladesh": "🇧🇩",
         "Afghanistan": "🇦🇫", "Netherlands": "🇳🇱", "Scotland": "🏴󠁧󠁢󠁳󠁣󠁴󠁿",
         "Ireland": "🇮🇪", "Zimbabwe": "🇿🇼", "UAE": "🇦🇪",
-        "Canada": "🇨🇦", "USA": "🇺🇸"
+        "Canada": "🇨🇦", "USA": "🇺🇸",
+        "Italy": "🇮🇹", "Namibia": "🇳🇦", "Nepal": "🇳🇵"
     }
     return flags.get(team_name, "🏳️")
 
@@ -123,20 +124,12 @@ def get_team_color(team_name):
         "West Indies": 0x7B0041, "Sri Lanka": 0x003DA5, "Bangladesh": 0x006A4E,
         "Afghanistan": 0x5363ED, "Netherlands": 0xFF3600, "Scotland": 0xA100F2,
         "Ireland": 0x9DFF2E, "Zimbabwe": 0xFF2121, "UAE": 0xFC4444,
-        "Canada": 0xFF0000, "USA": 0x080026
+        "Canada": 0xFF0000, "USA": 0x080026,
+        "Italy": 0x0064AA,      # Azzurri Blue
+        "Namibia": 0x003580,    # Dark Blue from the flag
+        "Nepal": 0xDC143C       # Crimson Red from the flag
     }
-    return colors.get(team_name, 0x808080)
-
-def get_team_color_rgb(team_name):
-    colors = {
-        "India": (0, 102, 204), "Pakistan": (0, 100, 0), "Australia": (255, 215, 0),
-        "England": (1, 33, 105), "New Zealand": (0, 0, 0), "South Africa": (0, 107, 63),
-        "West Indies": (123, 0, 65), "Sri Lanka": (0, 61, 165), "Bangladesh": (0, 106, 78),
-        "Afghanistan": (83, 99, 237), "Netherlands": (255, 54, 0), "Scotland": (161, 0, 242),
-        "Ireland": (157, 255, 46), "Zimbabwe": (255, 33, 33), "UAE": (252, 68, 68),
-        "Canada": (255, 0, 0), "USA": (8, 0, 38)
-    }
-    return colors.get(team_name, (128, 128, 128))
+    return colors.get(team_name, 0xFFFFFF) # Default to white if team not found
 
 def get_team_flag_url(team_name):
     flag_codes = {
@@ -163,7 +156,10 @@ def get_team_role_id(team_name):
         "Netherlands": 1460376154480312370, "Scotland": 1460376151795961897,
         "Ireland": 1460376149908525191, "Zimbabwe": 1460376157668245545,
         "UAE": 1460376158985130114, "Canada": 1460376154958725152,
-        "USA": 1460376156250570824
+        "USA": 1460376156250570824,
+        "Italy": 1513096652842467328,    # Replace with your actual Discord role ID
+        "Namibia": 1513096608063950878,  # Replace with your actual Discord role ID
+        "Nepal": 1513096680835125398     # Replace with your actual Discord role ID
     }
     return role_ids.get(team_name)
 
