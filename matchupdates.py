@@ -31,10 +31,7 @@ TEAM_ABBREVIATIONS = {
     "Zimbabwe": "ZIM",
     "UAE": "UAE",
     "Canada": "CAN",
-    "USA": "USA",
-    "Italy": "ITA",
-    "Namibia": "NAM",
-    "Nepal": "NEP"
+    "USA": "USA"
 }
 
 # Load players from JSON

@@ -196,8 +196,7 @@ def get_team_flag(team_name):
         "India": "🇮🇳", "Pakistan": "🇵🇰", "Australia": "🇦🇺", "England": "🏴󠁧󠁢󠁥󠁮󠁧󠁿",
         "New Zealand": "🇳🇿", "South Africa": "🇿🇦", "West Indies": "🏝️", "Sri Lanka": "🇱🇰",
         "Bangladesh": "🇧🇩", "Afghanistan": "🇦🇫", "Netherlands": "🇳🇱", "Scotland": "🏴󠁧󠁢󠁳󠁣󠁴󠁿",
-        "Ireland": "🇮🇪", "Zimbabwe": "🇿🇼", "UAE": "🇦🇪", "Canada": "🇨🇦", "USA": "🇺🇸",
-        "Italy": "🇮🇹", "Namibia": "🇳🇦", "Nepal": "🇳🇵"
+        "Ireland": "🇮🇪", "Zimbabwe": "🇿🇼", "UAE": "🇦🇪", "Canada": "🇨🇦", "USA": "🇺🇸"
     }
     return flags.get(team_name, "🏳️")
 

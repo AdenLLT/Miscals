@@ -32,10 +32,7 @@ def get_team_flag_url(team_name):
         "Zimbabwe": "1f1ff-1f1fc",  # 🇿🇼
         "UAE": "1f1e6-1f1ea",  # 🇦🇪
         "Canada": "1f1e8-1f1e6",  # 🇨🇦
-        "USA": "1f1fa-1f1f8",  # 🇺🇸
-        "Italy": "1f1ee-1f1f9",  # 🇮🇹
-        "Namibia": "1f1f3-1f1e6",  # 🇳🇦
-        "Nepal": "1f1f3-1f1f5"  # 🇳🇵
+        "USA": "1f1fa-1f1f8"  # 🇺🇸
     }
     code = flag_codes.get(team_name)
     if code:
