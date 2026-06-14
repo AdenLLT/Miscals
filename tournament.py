@@ -1874,58 +1874,65 @@ class TeamSelectionView(View):
         self.ctx = ctx
         self.tournament_name = tournament_name
         self.selected_teams = []
+        self.selected_teams_0 = []
+        self.selected_teams_1 = []
         self.all_teams = all_teams
         self.message = None
 
         self.add_team_select()
 
     def add_team_select(self):
-        options = []
-        for team in self.all_teams[:25]:
-            flag = get_team_flag(team)
-            is_selected = team in self.selected_teams
-            label = f"{'✅ ' if is_selected else ''}{team}"
-            options.append(
-                discord.SelectOption(label=label,
-                                     value=team,
-                                     emoji=flag,
-                                     description="Selected"
-                                     if is_selected else "Click to select"))
-
-        select = Select(
-            placeholder=f"🏆 Select Teams ({len(self.selected_teams)} selected)",
-            options=options,
-            custom_id="team_select",
-            min_values=0,
-            max_values=len(options)  # Allow multiple selections
-        )
-        select.callback = self.team_callback
-
         self.clear_items()
-        self.add_item(select)
+        chunks = [self.all_teams[:25], self.all_teams[25:]]
+        labels = ["🏆 Select Teams (1-25)", "🏆 More Teams (26+)"]
+
+        for idx, chunk in enumerate(chunks):
+            if not chunk:
+                continue
+            options = []
+            for team in chunk:
+                flag = get_team_flag(team)
+                is_selected = team in self.selected_teams
+                label = f"{'✅ ' if is_selected else ''}{team}"
+                options.append(discord.SelectOption(
+                    label=label, value=team, emoji=flag,
+                    description="Selected" if is_selected else "Click to select"
+                ))
+            selected_count = sum(1 for t in self.selected_teams if t in chunk)
+            placeholder = f"{labels[idx]} ({selected_count} selected)"
+            select = Select(
+                placeholder=placeholder,
+                options=options,
+                custom_id=f"team_select_{idx}",
+                min_values=0,
+                max_values=len(options)
+            )
+            select.callback = self._make_team_callback(idx)
+            self.add_item(select)
+
         self.add_item(self.confirm_button)
 
-    async def team_callback(self, interaction: discord.Interaction):
-        if interaction.user.id != self.ctx.author.id:
-            await interaction.response.send_message("❌ This is not your menu!",
-                                                    ephemeral=True)
-            return
-
-        selected_values = interaction.data['values']
-        self.selected_teams = selected_values
-
-        self.add_team_select()
-
-        embed = discord.Embed(
-            title=f"🏆 Creating Tournament: {self.tournament_name}",
-            description=f"**Selected Teams ({len(self.selected_teams)}):**\n" +
-            "\n".join([f"{get_team_flag(t)} {t}" for t in self.selected_teams])
-            if self.selected_teams else "No teams selected yet.",
-            color=0x00FF00)
-        embed.set_footer(
-            text="Select teams from the dropdown • Click Confirm when done")
-
-        await interaction.response.edit_message(embed=embed, view=self)
+    def _make_team_callback(self, chunk_idx):
+        async def callback(interaction: discord.Interaction):
+            if interaction.user.id != self.ctx.author.id:
+                await interaction.response.send_message("❌ This is not your menu!", ephemeral=True)
+                return
+            if chunk_idx == 0:
+                self.selected_teams_0 = interaction.data['values']
+            else:
+                self.selected_teams_1 = interaction.data['values']
+            self.selected_teams = self.selected_teams_0 + self.selected_teams_1
+            self.add_team_select()
+            embed = discord.Embed(
+                title=f"🏆 Creating Tournament: {self.tournament_name}",
+                description=f"**Selected Teams ({len(self.selected_teams)}):**\n" +
+                    "\n".join([f"{get_team_flag(t)} {t}" for t in self.selected_teams])
+                    if self.selected_teams else "No teams selected yet.",
+                color=0x00FF00
+            )
+            embed.set_footer(text="Select teams from the dropdowns • Click Confirm when done")
+            await interaction.response.edit_message(embed=embed, view=self)
+        return callback
 
     @discord.ui.button(label="✅ Confirm Selection",
                        style=discord.ButtonStyle.success,
@@ -2052,38 +2059,31 @@ class FixtureEditView(View):
                                          emoji=get_team_flag(team)))
 
         if team1_options:
-            team1_select = Select(placeholder="Select Team 1",
-                                  options=team1_options[:25],
-                                  custom_id="team1_select")
-
             async def team1_callback(inter: discord.Interaction):
                 if inter.user.id != self.ctx.author.id:
                     await inter.response.send_message(
                         "❌ This is not your menu!", ephemeral=True)
                     return
-
                 new_team1 = inter.data['values'][0]
                 self.fixtures[fixture_idx][0] = new_team1
-
-                # Defer the ephemeral response
                 await inter.response.defer(ephemeral=True)
-
-                # Update the main view
                 self.add_controls()
                 embed = await self.create_fixture_embed()
                 await self.message.edit(embed=embed, view=self)
-
-                # Send confirmation
-                await inter.followup.send(f"✅ Team 1 changed to {new_team1}",
-                                          ephemeral=True)
-
+                await inter.followup.send(f"✅ Team 1 changed to {new_team1}", ephemeral=True)
                 try:
                     await interaction.delete_original_response()
                 except:
                     pass
 
-            team1_select.callback = team1_callback
-            edit_view.add_item(team1_select)
+            for t1_idx, t1_chunk in enumerate([team1_options[:25], team1_options[25:]]):
+                if not t1_chunk:
+                    continue
+                t1_placeholder = "Select Team 1" if t1_idx == 0 else "Select Team 1 (more...)"
+                t1_select = Select(placeholder=t1_placeholder, options=t1_chunk,
+                                   custom_id=f"team1_select_{t1_idx}")
+                t1_select.callback = team1_callback
+                edit_view.add_item(t1_select)
 
         # Team 2 selection
         team2_options = []
@@ -2099,38 +2099,31 @@ class FixtureEditView(View):
                                          emoji=get_team_flag(team)))
 
         if team2_options:
-            team2_select = Select(placeholder="Select Team 2",
-                                  options=team2_options[:25],
-                                  custom_id="team2_select")
-
             async def team2_callback(inter: discord.Interaction):
                 if inter.user.id != self.ctx.author.id:
                     await inter.response.send_message(
                         "❌ This is not your menu!", ephemeral=True)
                     return
-
                 new_team2 = inter.data['values'][0]
                 self.fixtures[fixture_idx][1] = new_team2
-
-                # Defer the ephemeral response
                 await inter.response.defer(ephemeral=True)
-
-                # Update the main view
                 self.add_controls()
                 embed = await self.create_fixture_embed()
                 await self.message.edit(embed=embed, view=self)
-
-                # Send confirmation
-                await inter.followup.send(f"✅ Team 2 changed to {new_team2}",
-                                          ephemeral=True)
-
+                await inter.followup.send(f"✅ Team 2 changed to {new_team2}", ephemeral=True)
                 try:
                     await interaction.delete_original_response()
                 except:
                     pass
 
-            team2_select.callback = team2_callback
-            edit_view.add_item(team2_select)
+            for t2_idx, t2_chunk in enumerate([team2_options[:25], team2_options[25:]]):
+                if not t2_chunk:
+                    continue
+                t2_placeholder = "Select Team 2" if t2_idx == 0 else "Select Team 2 (more...)"
+                t2_select = Select(placeholder=t2_placeholder, options=t2_chunk,
+                                   custom_id=f"team2_select_{t2_idx}")
+                t2_select.callback = team2_callback
+                edit_view.add_item(t2_select)
 
         # Stadium selection
         stadium_options = []
@@ -4055,24 +4048,24 @@ class Tournament(commands.Cog):
                 self.add_team_select()
 
             def add_team_select(self):
-                team_options = []
-                for team in all_teams[:25]:
-                    flag = get_team_flag(team)
-                    team_options.append(
-                        discord.SelectOption(
-                            label=team,
-                            value=team,
-                            emoji=flag
-                        )
+                chunks = [all_teams[:25], all_teams[25:]]
+                placeholders = ["🏆 Select Tournament Winner", "🏆 More Teams..."]
+                for idx, chunk in enumerate(chunks):
+                    if not chunk:
+                        continue
+                    team_options = []
+                    for team in chunk:
+                        flag = get_team_flag(team)
+                        team_options.append(discord.SelectOption(
+                            label=team, value=team, emoji=flag
+                        ))
+                    select = Select(
+                        placeholder=placeholders[idx],
+                        options=team_options,
+                        custom_id=f"winner_select_{idx}"
                     )
-
-                select = Select(
-                    placeholder="🏆 Select Tournament Winner",
-                    options=team_options,
-                    custom_id="winner_select"
-                )
-                select.callback = self.winner_callback
-                self.add_item(select)
+                    select.callback = self.winner_callback
+                    self.add_item(select)
 
             async def winner_callback(self, interaction: discord.Interaction):
                 if interaction.user.id != ctx.author.id:

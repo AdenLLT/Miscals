@@ -1689,35 +1689,33 @@ class TeamSelectView(View):
     def add_team_select(self):
         teams_data = load_players()
 
-        # Create options for team selection
-        options = []
-        for team_data in teams_data[:25]:  # Discord limit is 25 options
-            flag = get_team_flag(team_data['team'])
+        chunks = [teams_data[:25], teams_data[25:]]
+        placeholders = ["🏏 Select Your Nation", "🏏 More Nations..."]
 
-            # Check if all players are claimed
-            total_players = len(team_data['players'])
-            claimed_players = sum(1 for player in team_data['players'] if get_representative(player['name']))
-
-            if claimed_players == total_players:
-                description = f"(TEAM FULL) - All {total_players} players claimed"
-            else:
-                description = f"View {team_data['team']} players - {total_players - claimed_players} available"
-
-            options.append(
-                discord.SelectOption(
+        for idx, chunk in enumerate(chunks):
+            if not chunk:
+                continue
+            options = []
+            for team_data in chunk:
+                flag = get_team_flag(team_data['team'])
+                total_players = len(team_data['players'])
+                claimed_players = sum(1 for player in team_data['players'] if get_representative(player['name']))
+                if claimed_players == total_players:
+                    description = f"(TEAM FULL) - All {total_players} players claimed"
+                else:
+                    description = f"View {team_data['team']} players - {total_players - claimed_players} available"
+                options.append(discord.SelectOption(
                     label=team_data['team'],
                     description=description,
                     emoji=flag
-                )
+                ))
+            select = Select(
+                placeholder=placeholders[idx],
+                options=options,
+                custom_id=f"team_select_{idx}"
             )
-
-        select = Select(
-            placeholder="🏏 Select Your Nation",
-            options=options,
-            custom_id="team_select"
-        )
-        select.callback = self.team_callback
-        self.add_item(select)
+            select.callback = self.team_callback
+            self.add_item(select)
 
     async def team_callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.ctx.author.id:
