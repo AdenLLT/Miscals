@@ -931,6 +931,20 @@ def get_role_emoji(role):
         return "<:allrounder:1451978476033671279>"
     return ""
 
+def emoji_for_select(emoji_str):
+    """Convert a custom emoji string like <:name:id> to a PartialEmoji for SelectOption use."""
+    if not emoji_str:
+        return None
+    if emoji_str.startswith('<:') and emoji_str.endswith('>'):
+        inner = emoji_str[2:-1]
+        parts = inner.split(':')
+        if len(parts) == 2:
+            try:
+                return discord.PartialEmoji(name=parts[0], id=int(parts[1]))
+            except (ValueError, IndexError):
+                pass
+    return emoji_str
+
 # Find player by name (flexible matching)
 def find_player(player_name):
     teams_data = load_players()
@@ -1787,6 +1801,10 @@ class PlayerSelectView(View):
                 elite_emoji = bot.get_emoji(1452949859412738110)
                 if elite_emoji:
                     role_emoji = elite_emoji
+                else:
+                    role_emoji = emoji_for_select(role_emoji)
+            else:
+                role_emoji = emoji_for_select(role_emoji)
 
             options.append(
                 discord.SelectOption(
@@ -2147,6 +2165,12 @@ EMOJI_SERVERS = [
     1159160118018056192
 ]
 
+EXCLUDED_EMOJI_SERVER = 1451591563078533292
+
+def get_emoji_guilds(bot_instance):
+    """Return all guilds available for emoji storage (excludes the main server)."""
+    return [g for g in bot_instance.guilds if g.id != EXCLUDED_EMOJI_SERVER]
+
 # Store emoji mappings {player_name: emoji_id}
 player_emojis = {}
 
@@ -2186,7 +2210,7 @@ async def download_and_process_image(session, url, player_name):
         return None
 
 async def upload_emojis_to_servers(bot):
-    """Upload player emojis to all designated servers"""
+    """Upload player emojis to all servers the bot is in (except the main server)."""
     teams_data = load_players()
 
     # Collect all players
@@ -2201,25 +2225,26 @@ async def upload_emojis_to_servers(bot):
 
     print(f"📊 Total players to process: {len(all_players)}")
 
-    # Distribute players across servers (50 per server for regular, 25 for boosted servers)
+    # Get all available guilds except the excluded main server
+    emoji_guilds = get_emoji_guilds(bot)
+
+    # Distribute players across servers (50 per server)
     emojis_per_server = 50
     server_index = 0
 
     async with aiohttp.ClientSession() as session:
         for i in range(0, len(all_players), emojis_per_server):
-            if server_index >= len(EMOJI_SERVERS):
+            if server_index >= len(emoji_guilds):
                 print("⚠️ Not enough servers to upload all emojis!")
                 break
 
-            server_id = EMOJI_SERVERS[server_index]
-            guild = bot.get_guild(server_id)
+            guild = emoji_guilds[server_index]
 
             if not guild:
-                print(f"❌ Cannot access server {server_id}")
                 server_index += 1
                 continue
 
-            print(f"📤 Uploading to server: {guild.name} ({server_id})")
+            print(f"📤 Uploading to server: {guild.name} ({guild.id})")
 
             # Get batch of players for this server
             batch = all_players[i:i + emojis_per_server]
@@ -2299,9 +2324,8 @@ def get_player_emoji(player_name, bot=None):
     # Create the expected emoji name format
     emoji_name = ''.join(c if c.isalnum() or c == '_' else '_' for c in player_name)[:32]
 
-    # Search for emoji across all emoji servers
-    for guild_id in EMOJI_SERVERS:
-        guild = bot.get_guild(guild_id)
+    # Search for emoji across all available guilds (except excluded main server)
+    for guild in get_emoji_guilds(bot):
         if guild:
             # Try to find emoji by name
             emoji_obj = discord.utils.get(guild.emojis, name=emoji_name)
@@ -2583,16 +2607,14 @@ async def check_emojis_command(ctx):
     )
 
     # Check each server's emoji count
-    for server_id in EMOJI_SERVERS:
-        guild = bot.get_guild(server_id)
-        if guild:
-            emoji_count = len(guild.emojis)
-            emoji_limit = guild.emoji_limit
-            embed.add_field(
-                name=f"{guild.name}",
-                value=f"{emoji_count}/{emoji_limit} emojis",
-                inline=True
-            )
+    for guild in get_emoji_guilds(bot):
+        emoji_count = len(guild.emojis)
+        emoji_limit = guild.emoji_limit
+        embed.add_field(
+            name=f"{guild.name}",
+            value=f"{emoji_count}/{emoji_limit} emojis",
+            inline=True
+        )
 
     await ctx.send(embed=embed)
 
@@ -2607,12 +2629,10 @@ async def test_emoji_command(ctx, *, player_name: str):
     found_emojis = []
     emoji_name = ''.join(c if c.isalnum() or c == '_' else '_' for c in player_name)[:32]
 
-    for guild_id in EMOJI_SERVERS:
-        guild = bot.get_guild(guild_id)
-        if guild:
-            emoji_obj = discord.utils.get(guild.emojis, name=emoji_name)
-            if emoji_obj:
-                found_emojis.append(f"{guild.name}: {emoji_obj} (ID: {emoji_obj.id})")
+    for guild in get_emoji_guilds(bot):
+        emoji_obj = discord.utils.get(guild.emojis, name=emoji_name)
+        if emoji_obj:
+            found_emojis.append(f"{guild.name}: {emoji_obj} (ID: {emoji_obj.id})")
 
     embed = discord.Embed(
         title=f"Emoji Test: {player_name}",
@@ -2651,16 +2671,12 @@ async def test_emoji_command(ctx, *, player_name: str):
 @commands.has_permissions(administrator=True)
 async def list_emojis_command(ctx, server_index: int = 0):
     """[ADMIN] List all emojis in a specific emoji server"""
-    if server_index >= len(EMOJI_SERVERS):
-        await ctx.send(f"❌ Server index must be between 0 and {len(EMOJI_SERVERS)-1}")
+    emoji_guilds = get_emoji_guilds(bot)
+    if server_index >= len(emoji_guilds):
+        await ctx.send(f"❌ Server index must be between 0 and {len(emoji_guilds)-1}")
         return
 
-    server_id = EMOJI_SERVERS[server_index]
-    guild = bot.get_guild(server_id)
-
-    if not guild:
-        await ctx.send(f"❌ Cannot access server {server_id}")
-        return
+    guild = emoji_guilds[server_index]
 
     emojis = guild.emojis
 
@@ -2939,15 +2955,9 @@ async def remove_emojis_command(ctx):
             await ctx.send("❌ No emoji mappings found. Nothing to remove.")
             return
 
-        # Iterate through all emoji servers
-        for server_id in EMOJI_SERVERS:
-            guild = bot.get_guild(server_id)
-
-            if not guild:
-                print(f"❌ Cannot access server {server_id}")
-                continue
-
-            print(f"🗑️ Removing emojis from: {guild.name} ({server_id})")
+        # Iterate through all available guilds (except excluded main server)
+        for guild in get_emoji_guilds(bot):
+            print(f"🗑️ Removing emojis from: {guild.name} ({guild.id})")
 
             # Get all emojis in this server
             for emoji in guild.emojis:
@@ -3298,19 +3308,16 @@ async def forceupload_command(ctx, *, player_name: str):
     emoji_name = emoji_name[:32]
 
     # Check if emoji already exists in any server
-    for guild_id in EMOJI_SERVERS:
-        guild = bot.get_guild(guild_id)
-        if guild:
-            existing_emoji = discord.utils.get(guild.emojis, name=emoji_name)
-            if existing_emoji:
-                await ctx.send(f"✅ Emoji already exists: {existing_emoji} in {guild.name}")
-                return
+    for guild in get_emoji_guilds(bot):
+        existing_emoji = discord.utils.get(guild.emojis, name=emoji_name)
+        if existing_emoji:
+            await ctx.send(f"✅ Emoji already exists: {existing_emoji} in {guild.name}")
+            return
 
     # Find a server with available emoji slots
     target_guild = None
-    for guild_id in EMOJI_SERVERS:
-        guild = bot.get_guild(guild_id)
-        if guild and len(guild.emojis) < guild.emoji_limit:
+    for guild in get_emoji_guilds(bot):
+        if len(guild.emojis) < guild.emoji_limit:
             target_guild = guild
             break
 
@@ -3488,14 +3495,12 @@ async def playeremojiremove_command(ctx, *, player_name: str):
     emoji_name = ''.join(c if c.isalnum() or c == '_' else '_' for c in player['name'])
     emoji_name = emoji_name[:32]
 
-    # Search for emoji across all emoji servers
+    # Search for emoji across all available guilds
     emoji_found = False
 
-    for guild_id in EMOJI_SERVERS:
-        guild = bot.get_guild(guild_id)
-        if guild:
-            emoji_obj = discord.utils.get(guild.emojis, name=emoji_name)
-            if emoji_obj:
+    for guild in get_emoji_guilds(bot):
+        emoji_obj = discord.utils.get(guild.emojis, name=emoji_name)
+        if emoji_obj:
                 try:
                     await emoji_obj.delete(reason=f"Player emoji removal by {ctx.author}")
 
@@ -4796,17 +4801,15 @@ async def deletereal_command(ctx, *, player_name: str):
     emoji_name = ''.join(c if c.isalnum() or c == '_' else '_' for c in exact_player_name)[:32]
     emoji_removed = False
 
-    for guild_id in EMOJI_SERVERS:
-        guild = bot.get_guild(guild_id)
-        if guild:
-            emoji_obj = discord.utils.get(guild.emojis, name=emoji_name)
-            if emoji_obj:
-                try:
-                    await emoji_obj.delete(reason=f"Player deletion by {ctx.author}")
-                    deletion_log.append(f"✅ Removed emoji from {guild.name}")
-                    emoji_removed = True
-                except:
-                    deletion_log.append(f"⚠️ Failed to remove emoji from {guild.name}")
+    for guild in get_emoji_guilds(bot):
+        emoji_obj = discord.utils.get(guild.emojis, name=emoji_name)
+        if emoji_obj:
+            try:
+                await emoji_obj.delete(reason=f"Player deletion by {ctx.author}")
+                deletion_log.append(f"✅ Removed emoji from {guild.name}")
+                emoji_removed = True
+            except:
+                deletion_log.append(f"⚠️ Failed to remove emoji from {guild.name}")
 
     # Remove from emoji mappings
     if exact_player_name in player_emojis:
