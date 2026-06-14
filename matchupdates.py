@@ -95,7 +95,20 @@ def get_team_flag_url(team_name):
         "Zimbabwe": "1f1ff-1f1fc",
         "UAE": "1f1e6-1f1ea",
         "Canada": "1f1e8-1f1e6",
-        "USA": "1f1fa-1f1f8"
+        "USA": "1f1fa-1f1f8",
+        "Italy": "1f1ee-1f1f9",
+        "Nepal": "1f1f3-1f1f5",
+        "Namibia": "1f1f3-1f1e6",
+        "Hong Kong": "1f1ed-1f1f0",
+        "Oman": "1f1f4-1f1f2",
+        "Papua New Guinea": "1f1f5-1f1ec",
+        "Uganda": "1f1fa-1f1ec",
+        "Malaysia": "1f1f2-1f1fe",
+        "Spain": "1f1ea-1f1f8",
+        "Germany": "1f1e9-1f1ea",
+        "Japan": "1f1ef-1f1f5",
+        "Portugal": "1f1f5-1f1f9",
+        "Denmark": "1f1e9-1f1f0"
     }
     code = flag_codes.get(team_name)
     if code:

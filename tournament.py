@@ -1163,7 +1163,20 @@ def get_team_color_rgb(team_name):
         "Zimbabwe": (255, 33, 33),
         "UAE": (252, 68, 68),
         "Canada": (255, 0, 0),
-        "USA": (8, 0, 38)
+        "USA": (8, 0, 38),
+        "Italy": (0, 146, 70),
+        "Nepal": (220, 20, 60),
+        "Namibia": (0, 53, 128),
+        "Hong Kong": (222, 41, 16),
+        "Oman": (0, 154, 68),
+        "Papua New Guinea": (191, 10, 48),
+        "Uganda": (252, 220, 4),
+        "Malaysia": (204, 0, 1),
+        "Spain": (170, 21, 27),
+        "Germany": (221, 0, 0),
+        "Japan": (188, 0, 45),
+        "Portugal": (26, 122, 60),
+        "Denmark": (198, 12, 48)
     }
     return colors.get(team_name, (128, 128, 128))
 
@@ -1187,7 +1200,20 @@ def get_team_color(team_name):
         "Zimbabwe": 0xFF2121,
         "UAE": 0xFC4444,
         "Canada": 0xFF0000,
-        "USA": 0x080026
+        "USA": 0x080026,
+        "Italy": 0x009246,
+        "Nepal": 0xDC143C,
+        "Namibia": 0x003580,
+        "Hong Kong": 0xDE2910,
+        "Oman": 0x009A44,
+        "Papua New Guinea": 0xBF0A30,
+        "Uganda": 0xFCDC04,
+        "Malaysia": 0xCC0001,
+        "Spain": 0xAA151B,
+        "Germany": 0xDD0000,
+        "Japan": 0xBC002D,
+        "Portugal": 0x1A7A3C,
+        "Denmark": 0xC60C30
     }
     return colors.get(team_name, 0x808080)
 
@@ -1211,7 +1237,20 @@ def get_team_flag(team_name):
         "Zimbabwe": "🇿🇼",
         "UAE": "🇦🇪",
         "Canada": "🇨🇦",
-        "USA": "🇺🇸"
+        "USA": "🇺🇸",
+        "Italy": "🇮🇹",
+        "Nepal": "🇳🇵",
+        "Namibia": "🇳🇦",
+        "Hong Kong": "🇭🇰",
+        "Oman": "🇴🇲",
+        "Papua New Guinea": "🇵🇬",
+        "Uganda": "🇺🇬",
+        "Malaysia": "🇲🇾",
+        "Spain": "🇪🇸",
+        "Germany": "🇩🇪",
+        "Japan": "🇯🇵",
+        "Portugal": "🇵🇹",
+        "Denmark": "🇩🇰"
     }
     return flags.get(team_name, "🏳️")
 
@@ -1235,7 +1274,20 @@ def get_team_role_id(team_name):
         "Zimbabwe": 1460376157668245545,
         "UAE": 1460376158985130114,
         "Canada": 1460376154958725152,
-        "USA": 1460376156250570824
+        "USA": 1460376156250570824,
+        "Italy": 1513096652842467328,
+        "Nepal": 1513096680835125398,
+        "Namibia": 1513096608063950878,
+        "Hong Kong": 1513236745527889951,
+        "Oman": 1513236895595757768,
+        "Papua New Guinea": 1513237053935194262,
+        "Uganda": 1513237221560287312,
+        "Malaysia": 1513238128482320454,
+        "Spain": 1513238260502233198,
+        "Germany": 1513238268777595073,
+        "Japan": 1513238484075282432,
+        "Portugal": 1513238487707549958,
+        "Denmark": 1513238490723385466
     }
     return role_ids.get(team_name)
 

@@ -32,7 +32,20 @@ def get_team_flag_url(team_name):
         "Zimbabwe": "1f1ff-1f1fc",  # 🇿🇼
         "UAE": "1f1e6-1f1ea",  # 🇦🇪
         "Canada": "1f1e8-1f1e6",  # 🇨🇦
-        "USA": "1f1fa-1f1f8"  # 🇺🇸
+        "USA": "1f1fa-1f1f8",  # 🇺🇸
+        "Italy": "1f1ee-1f1f9",  # 🇮🇹
+        "Nepal": "1f1f3-1f1f5",  # 🇳🇵
+        "Namibia": "1f1f3-1f1e6",  # 🇳🇦
+        "Hong Kong": "1f1ed-1f1f0",  # 🇭🇰
+        "Oman": "1f1f4-1f1f2",  # 🇴🇲
+        "Papua New Guinea": "1f1f5-1f1ec",  # 🇵🇬
+        "Uganda": "1f1fa-1f1ec",  # 🇺🇬
+        "Malaysia": "1f1f2-1f1fe",  # 🇲🇾
+        "Spain": "1f1ea-1f1f8",  # 🇪🇸
+        "Germany": "1f1e9-1f1ea",  # 🇩🇪
+        "Japan": "1f1ef-1f1f5",  # 🇯🇵
+        "Portugal": "1f1f5-1f1f9",  # 🇵🇹
+        "Denmark": "1f1e9-1f1f0"  # 🇩🇰
     }
     code = flag_codes.get(team_name)
     if code:
@@ -430,7 +443,12 @@ def get_team_color(team_name):
         "West Indies": 0x7B0041, "Sri Lanka": 0x003DA5, "Bangladesh": 0x006A4E,
         "Afghanistan": 0x5363ED, "Netherlands": 0xFF3600, "Scotland": 0xA100F2,
         "Ireland": 0x9DFF2E, "Zimbabwe": 0xFF2121, "UAE": 0xFC4444,
-        "Canada": 0xFF0000, "USA": 0x080026
+        "Canada": 0xFF0000, "USA": 0x080026,
+        "Italy": 0x009246, "Nepal": 0xDC143C, "Namibia": 0x003580,
+        "Hong Kong": 0xDE2910, "Oman": 0x009A44, "Papua New Guinea": 0xBF0A30,
+        "Uganda": 0xFCDC04, "Malaysia": 0xCC0001, "Spain": 0xAA151B,
+        "Germany": 0xDD0000, "Japan": 0xBC002D, "Portugal": 0x1A7A3C,
+        "Denmark": 0xC60C30
     }
     return colors.get(team_name, 0x808080)
 
@@ -441,7 +459,12 @@ def get_team_color_rgb(team_name):
         "West Indies": (123, 0, 65), "Sri Lanka": (0, 61, 165), "Bangladesh": (0, 106, 78),
         "Afghanistan": (83, 99, 237), "Netherlands": (255, 54, 0), "Scotland": (161, 0, 242),
         "Ireland": (157, 255, 46), "Zimbabwe": (255, 33, 33), "UAE": (252, 68, 68),
-        "Canada": (255, 0, 0), "USA": (8, 0, 38)
+        "Canada": (255, 0, 0), "USA": (8, 0, 38),
+        "Italy": (0, 146, 70), "Nepal": (220, 20, 60), "Namibia": (0, 53, 128),
+        "Hong Kong": (222, 41, 16), "Oman": (0, 154, 68), "Papua New Guinea": (191, 10, 48),
+        "Uganda": (252, 220, 4), "Malaysia": (204, 0, 1), "Spain": (170, 21, 27),
+        "Germany": (221, 0, 0), "Japan": (188, 0, 45), "Portugal": (26, 122, 60),
+        "Denmark": (198, 12, 48)
     }
     return colors.get(team_name, (128, 128, 128))
 
@@ -474,7 +497,12 @@ def get_team_flag(team_name):
         "West Indies": "🏝️", "Sri Lanka": "🇱🇰", "Bangladesh": "🇧🇩",
         "Afghanistan": "🇦🇫", "Netherlands": "🇳🇱", "Scotland": "🏴󠁧󠁢󠁳󠁣󠁴󠁿",
         "Ireland": "🇮🇪", "Zimbabwe": "🇿🇼", "UAE": "🇦🇪",
-        "Canada": "🇨🇦", "USA": "🇺🇸"
+        "Canada": "🇨🇦", "USA": "🇺🇸",
+        "Italy": "🇮🇹", "Nepal": "🇳🇵", "Namibia": "🇳🇦",
+        "Hong Kong": "🇭🇰", "Oman": "🇴🇲", "Papua New Guinea": "🇵🇬",
+        "Uganda": "🇺🇬", "Malaysia": "🇲🇾", "Spain": "🇪🇸",
+        "Germany": "🇩🇪", "Japan": "🇯🇵", "Portugal": "🇵🇹",
+        "Denmark": "🇩🇰"
     }
     return flags.get(team_name, "🏳️")
 
