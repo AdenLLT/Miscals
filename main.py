@@ -974,15 +974,32 @@ def calc_bowling_ovr(bowl_avg, economy):
 
 
 def calc_player_ovr(bat_ovr, bowl_ovr, role):
-    if bowl_ovr is None:
-        return bat_ovr if bat_ovr is not None else 60
-    bat_eff = bat_ovr if bat_ovr is not None else 60
     if "All-Rounder" in role or "All-rounder" in role:
-        return round((bat_eff + bowl_ovr) / 2)
+        if bat_ovr is None and bowl_ovr is None:
+            return 60
+        if bat_ovr is None:
+            return bowl_ovr
+        if bowl_ovr is None:
+            return bat_ovr
+        high = max(bat_ovr, bowl_ovr)
+        low  = min(bat_ovr, bowl_ovr)
+        return round(0.65 * high + 0.35 * low)
     elif "Bowler" in role:
-        return round(bowl_ovr * 0.8 + bat_eff * 0.2)
-    else:
-        return round(bat_eff * 0.8 + bowl_ovr * 0.2)
+        if bowl_ovr is None:
+            return bat_ovr if bat_ovr is not None else 60
+        base = bowl_ovr
+        if bat_ovr is not None:
+            bat_bonus = min(2, round(max(0, (bat_ovr - 72) * 0.1)))
+            base += bat_bonus
+        return base
+    else:  # Batsman, Wicketkeeper, WK-Batsman
+        if bat_ovr is None:
+            return 60
+        base = bat_ovr
+        if bowl_ovr is not None:
+            bowl_bonus = min(5, round(max(0, (bowl_ovr - 70) * 0.2)))
+            base += bowl_bonus
+        return base
 
 
 def get_player_ovr_for_vt(user_id, role="Batsman"):
@@ -2502,23 +2519,12 @@ async def viewteam_command(ctx, *, team_name: str):
         await ctx.send("❌ No player data available.")
         return
 
-    # Find the team — exact match first, then partial match
+    # Find the team
     team_data = None
-    query = team_name.lower()
     for t in teams_data:
-        if t['team'].lower() == query:
+        if t['team'].lower() == team_name.lower():
             team_data = t
             break
-
-    if not team_data:
-        matches = [t for t in teams_data if query in t['team'].lower()]
-        if len(matches) == 1:
-            team_data = matches[0]
-        elif len(matches) > 1:
-            await loading_msg.delete()
-            options = ", ".join(f"**{t['team']}**" for t in matches)
-            await ctx.send(f"🔍 Multiple teams match **'{team_name}'**: {options}\nPlease be more specific.")
-            return
 
     if not team_data:
         await loading_msg.delete()

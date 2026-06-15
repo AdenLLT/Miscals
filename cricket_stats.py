@@ -102,16 +102,45 @@ def calc_bowling_ovr(bowl_avg, economy):
 
 
 def calc_player_ovr(bat_ovr, bowl_ovr, role):
-    """Combine batting and bowling OVR into a main OVR based on role."""
-    if bowl_ovr is None:
-        return bat_ovr if bat_ovr is not None else 60
-    bat_eff = bat_ovr if bat_ovr is not None else 60
+    """
+    Compute main OVR with the primary role stat as the base.
+    The secondary stat acts as a bonus (not a simple blend).
+
+    Batsman / WK / WK-Batsman:
+      base = bat_ovr; bowl OVR adds up to +5 if bowl_ovr > 70.
+    Bowler:
+      base = bowl_ovr; bat OVR adds up to +2 if bat_ovr > 72.
+    All-Rounder:
+      leans toward the higher of the two (65 / 35 split).
+    """
     if "All-Rounder" in role or "All-rounder" in role:
-        return round((bat_eff + bowl_ovr) / 2)
+        if bat_ovr is None and bowl_ovr is None:
+            return 60
+        if bat_ovr is None:
+            return bowl_ovr
+        if bowl_ovr is None:
+            return bat_ovr
+        high = max(bat_ovr, bowl_ovr)
+        low  = min(bat_ovr, bowl_ovr)
+        return round(0.65 * high + 0.35 * low)
+
     elif "Bowler" in role:
-        return round(bowl_ovr * 0.8 + bat_eff * 0.2)
-    else:
-        return round(bat_eff * 0.8 + bowl_ovr * 0.2)
+        if bowl_ovr is None:
+            return bat_ovr if bat_ovr is not None else 60
+        base = bowl_ovr
+        if bat_ovr is not None:
+            bat_bonus = min(2, round(max(0, (bat_ovr - 72) * 0.1)))
+            base += bat_bonus
+        return base
+
+    else:  # Batsman, Wicketkeeper, WK-Batsman
+        if bat_ovr is None:
+            return 60
+        base = bat_ovr
+        if bowl_ovr is not None:
+            bowl_bonus = min(5, round(max(0, (bowl_ovr - 70) * 0.2)))
+            base += bowl_bonus
+        return base
 
 
 def get_player_ovr(user_id, mode="career"):
