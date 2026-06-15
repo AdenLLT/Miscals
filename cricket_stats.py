@@ -103,15 +103,15 @@ def calc_bowling_ovr(bowl_avg, economy):
 
 def calc_player_ovr(bat_ovr, bowl_ovr, role):
     """
-    Compute main OVR with the primary role stat as the base.
-    The secondary stat acts as a bonus (not a simple blend).
+    Compute main OVR. Role determines the primary stat, but if the
+    secondary stat actually outperforms the role-expected one, we
+    swap so the stronger stat always drives the base.
 
-    Batsman / WK / WK-Batsman:
-      base = bat_ovr; bowl OVR adds up to +5 if bowl_ovr > 70.
-    Bowler:
-      base = bowl_ovr; bat OVR adds up to +2 if bat_ovr > 72.
-    All-Rounder:
-      leans toward the higher of the two (65 / 35 split).
+    Batsman / WK / WK-Batsman  → bat is base (bowl adds up to +5 if >70).
+      Smart-swap if bowl_ovr > bat_ovr → bowl becomes base instead.
+    Bowler  → bowl is base (bat adds up to +2 if >72).
+      Smart-swap if bat_ovr > bowl_ovr → bat becomes base instead.
+    All-Rounder  → leans toward the higher of the two (65 / 35 split).
     """
     if "All-Rounder" in role or "All-rounder" in role:
         if bat_ovr is None and bowl_ovr is None:
@@ -125,37 +125,72 @@ def calc_player_ovr(bat_ovr, bowl_ovr, role):
         return round(0.65 * high + 0.35 * low)
 
     elif "Bowler" in role:
+        if bowl_ovr is None and bat_ovr is None:
+            return 60
         if bowl_ovr is None:
-            return bat_ovr if bat_ovr is not None else 60
-        base = bowl_ovr
-        if bat_ovr is not None:
-            bat_bonus = min(2, round(max(0, (bat_ovr - 72) * 0.1)))
-            base += bat_bonus
-        return base
+            return bat_ovr
+        if bat_ovr is None:
+            return bowl_ovr
+        if bat_ovr > bowl_ovr:
+            # Batting unexpectedly higher — use bat as base, bowl as bonus
+            bonus = min(5, round(max(0, (bowl_ovr - 70) * 0.2)))
+            return bat_ovr + bonus
+        else:
+            bonus = min(2, round(max(0, (bat_ovr - 72) * 0.1)))
+            return bowl_ovr + bonus
 
     else:  # Batsman, Wicketkeeper, WK-Batsman
-        if bat_ovr is None:
+        if bat_ovr is None and bowl_ovr is None:
             return 60
-        base = bat_ovr
-        if bowl_ovr is not None:
-            bowl_bonus = min(5, round(max(0, (bowl_ovr - 70) * 0.2)))
-            base += bowl_bonus
-        return base
+        if bat_ovr is None:
+            return bowl_ovr
+        if bowl_ovr is None:
+            return bat_ovr
+        if bowl_ovr > bat_ovr:
+            # Bowling unexpectedly higher — use bowl as base, bat as bonus
+            bonus = min(2, round(max(0, (bat_ovr - 72) * 0.1)))
+            return bowl_ovr + bonus
+        else:
+            bonus = min(5, round(max(0, (bowl_ovr - 70) * 0.2)))
+            return bat_ovr + bonus
+
+
+def _get_ghost_ovr(user_id):
+    """Return (bat_ovr, bowl_ovr) from the ghost table, or None if not found."""
+    try:
+        conn = sqlite3.connect('players.db')
+        c = conn.cursor()
+        c.execute("SELECT bat_ovr, bowl_ovr FROM ovr_ghost_stats WHERE user_id = ?", (user_id,))
+        row = c.fetchone()
+        conn.close()
+        return row  # (bat_ovr, bowl_ovr) or None
+    except Exception:
+        return None
 
 
 def get_player_ovr(user_id, mode="career"):
     """
     Return (bat_ovr, bowl_ovr, main_ovr, matches_played).
-    OVRs are None when the player has fewer than 5 matches.
+    Falls back to ghost OVR (saved on -unrep) when live stats are insufficient.
     """
     stats = get_user_stats(user_id, mode)
-    if not stats or stats[0] is None:
-        return None, None, None, 0
+    matches_played = stats[6] if (stats and stats[0] is not None) else 0
+
+    if not stats or stats[0] is None or (stats[6] or 0) < 5:
+        ghost = _get_ghost_ovr(user_id)
+        if ghost:
+            bat_ovr, bowl_ovr = ghost[0], ghost[1]
+            player_name = get_player_name_by_user_id(user_id)
+            role = "Batsman"
+            if player_name:
+                players, _ = find_player(player_name)
+                if players:
+                    role = players[0].get('role', 'Batsman')
+            main_ovr = calc_player_ovr(bat_ovr, bowl_ovr, role)
+            return bat_ovr, bowl_ovr, main_ovr, matches_played
+        return None, None, None, matches_played
 
     total_runs, _, total_runs_conceded, total_balls_bowled, total_wickets, times_not_out, matches_played = stats
-
-    if (matches_played or 0) < 5:
-        return None, None, None, matches_played
 
     dismissals = matches_played - (times_not_out or 0)
     batting_avg = (float(total_runs or 0) / dismissals) if dismissals > 0 else (float(total_runs or 0) / matches_played)

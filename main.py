@@ -985,25 +985,49 @@ def calc_player_ovr(bat_ovr, bowl_ovr, role):
         low  = min(bat_ovr, bowl_ovr)
         return round(0.65 * high + 0.35 * low)
     elif "Bowler" in role:
-        if bowl_ovr is None:
-            return bat_ovr if bat_ovr is not None else 60
-        base = bowl_ovr
-        if bat_ovr is not None:
-            bat_bonus = min(2, round(max(0, (bat_ovr - 72) * 0.1)))
-            base += bat_bonus
-        return base
-    else:  # Batsman, Wicketkeeper, WK-Batsman
-        if bat_ovr is None:
+        if bowl_ovr is None and bat_ovr is None:
             return 60
-        base = bat_ovr
-        if bowl_ovr is not None:
-            bowl_bonus = min(5, round(max(0, (bowl_ovr - 70) * 0.2)))
-            base += bowl_bonus
-        return base
+        if bowl_ovr is None:
+            return bat_ovr
+        if bat_ovr is None:
+            return bowl_ovr
+        if bat_ovr > bowl_ovr:
+            bonus = min(5, round(max(0, (bowl_ovr - 70) * 0.2)))
+            return bat_ovr + bonus
+        else:
+            bonus = min(2, round(max(0, (bat_ovr - 72) * 0.1)))
+            return bowl_ovr + bonus
+    else:  # Batsman, Wicketkeeper, WK-Batsman
+        if bat_ovr is None and bowl_ovr is None:
+            return 60
+        if bat_ovr is None:
+            return bowl_ovr
+        if bowl_ovr is None:
+            return bat_ovr
+        if bowl_ovr > bat_ovr:
+            bonus = min(2, round(max(0, (bat_ovr - 72) * 0.1)))
+            return bowl_ovr + bonus
+        else:
+            bonus = min(5, round(max(0, (bowl_ovr - 70) * 0.2)))
+            return bat_ovr + bonus
+
+
+def _get_ghost_ovr(user_id):
+    """Return (bat_ovr, bowl_ovr) from the ghost table, or None if not found."""
+    try:
+        conn = sqlite3.connect('players.db')
+        c = conn.cursor()
+        c.execute("SELECT bat_ovr, bowl_ovr FROM ovr_ghost_stats WHERE user_id = ?", (user_id,))
+        row = c.fetchone()
+        conn.close()
+        return row
+    except Exception:
+        return None
 
 
 def get_player_ovr_for_vt(user_id, role="Batsman"):
-    """Return the main OVR for a player (for use in -vt). None if < 5 matches."""
+    """Return the main OVR for a player (for use in -vt). None if < 5 matches.
+    Falls back to ghost OVR (saved on -unrep) when live stats are insufficient."""
     conn = sqlite3.connect('players.db')
     c = conn.cursor()
     c.execute("""
@@ -1014,12 +1038,15 @@ def get_player_ovr_for_vt(user_id, role="Batsman"):
     row = c.fetchone()
     conn.close()
 
-    if not row or row[0] is None:
+    if not row or row[0] is None or (row[5] or 0) < 5:
+        ghost = _get_ghost_ovr(user_id)
+        if ghost:
+            bat_ovr = ghost[0]
+            bowl_ovr = ghost[1]
+            return calc_player_ovr(bat_ovr, bowl_ovr, role)
         return None
-    total_runs, total_runs_conceded, total_balls_bowled, total_wickets, times_not_out, matches_played = row
 
-    if (matches_played or 0) < 5:
-        return None
+    total_runs, total_runs_conceded, total_balls_bowled, total_wickets, times_not_out, matches_played = row
 
     dismissals = matches_played - (times_not_out or 0)
     batting_avg = (float(total_runs or 0) / dismissals) if dismissals > 0 else (float(total_runs or 0) / max(matches_played, 1))
@@ -2101,7 +2128,8 @@ async def unrepresent_command(ctx):
         title="⚠️ Warning: Stats Will Be Reset",
         description=(
             f"You are about to stop representing **{player_name}**.\n\n"
-            f"**⚠️ This will permanently reset ALL your cricket stats** (runs, wickets, matches, etc.) tied to this player.\n\n"
+            f"**⚠️ Your cricket stats (runs, wickets, matches, etc.) will be wiped** — they'll appear as zero.\n\n"
+            f"🔒 **Your OVR rating is secretly preserved.** If you've played 5+ matches, your Bat OVR and Bowl OVR are saved in the background and will still show on `-vt` and future `-statsi` lookups.\n\n"
             f"Your old player will be recorded in history via `-oldreps`.\n\n"
             f"Are you sure you want to continue?"
         ),
@@ -2133,7 +2161,36 @@ async def unrepresent_command(ctx):
     c.execute("INSERT INTO old_representatives (user_id, player_name) VALUES (?, ?)",
               (ctx.author.id, player_name))
 
-    # Reset stats
+    # ── Ghost OVR: snapshot bat/bowl OVR before wiping stats ──
+    c.execute('''CREATE TABLE IF NOT EXISTS ovr_ghost_stats
+                 (user_id INTEGER PRIMARY KEY,
+                  bat_ovr INTEGER,
+                  bowl_ovr INTEGER,
+                  saved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+
+    c.execute("""
+        SELECT SUM(runs), SUM(runs_conceded), SUM(balls_bowled),
+               SUM(wickets), SUM(not_out), COUNT(*)
+        FROM match_stats WHERE user_id = ?
+    """, (ctx.author.id,))
+    ghost_row = c.fetchone()
+    if ghost_row and ghost_row[0] is not None and (ghost_row[5] or 0) >= 5:
+        g_runs, g_rc, g_bb, g_wk, g_no, g_mp = ghost_row
+        g_dis = g_mp - (g_no or 0)
+        g_bat_avg = float(g_runs or 0) / g_dis if g_dis > 0 else float(g_runs or 0) / max(g_mp, 1)
+        g_bat_ovr = calc_batting_ovr(g_bat_avg)
+        if (g_bb or 0) >= 6:
+            g_econ = float(g_rc or 0) / (g_bb / 6.0)
+            g_bowl_avg = float(g_rc or 0) / g_wk if (g_wk or 0) > 0 else 0.0
+            g_bowl_ovr = calc_bowling_ovr(g_bowl_avg, g_econ)
+        else:
+            g_bowl_ovr = None
+        c.execute(
+            "INSERT OR REPLACE INTO ovr_ghost_stats (user_id, bat_ovr, bowl_ovr) VALUES (?, ?, ?)",
+            (ctx.author.id, g_bat_ovr, g_bowl_ovr)
+        )
+
+    # Reset displayed stats (OVR is preserved via ghost table above)
     c.execute("DELETE FROM match_stats WHERE user_id = ?", (ctx.author.id,))
     c.execute("DELETE FROM player_trophies WHERE user_id = ?", (ctx.author.id,))
     
