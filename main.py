@@ -1016,19 +1016,20 @@ def _get_ghost_ovr(user_id):
 
 
 def get_player_ovr_for_vt(user_id, role="Batsman"):
-    """Return the main OVR for a player (for use in -vt). None if < 5 matches.
-    Falls back to ghost OVR (saved on -unrep) when live stats are insufficient."""
+    """Return the main OVR for a player (for use in -vt).
+    Bat OVR unlocks at 60 balls faced, Bowl OVR unlocks at 60 balls bowled.
+    Falls back to ghost OVR when there are no live stats at all."""
     conn = sqlite3.connect('players.db')
     c = conn.cursor()
     c.execute("""
-        SELECT SUM(runs), SUM(runs_conceded), SUM(balls_bowled),
+        SELECT SUM(runs), SUM(balls_faced), SUM(runs_conceded), SUM(balls_bowled),
                SUM(wickets), SUM(not_out), COUNT(*)
         FROM match_stats WHERE user_id = ?
     """, (user_id,))
     row = c.fetchone()
     conn.close()
 
-    if not row or row[0] is None or (row[5] or 0) < 5:
+    if not row or row[0] is None:
         ghost = _get_ghost_ovr(user_id)
         if ghost:
             bat_ovr = ghost[0]
@@ -1036,17 +1037,22 @@ def get_player_ovr_for_vt(user_id, role="Batsman"):
             return calc_player_ovr(bat_ovr, bowl_ovr, role)
         return None
 
-    total_runs, total_runs_conceded, total_balls_bowled, total_wickets, times_not_out, matches_played = row
+    total_runs, total_balls_faced, total_runs_conceded, total_balls_bowled, total_wickets, times_not_out, matches_played = row
 
-    dismissals = matches_played - (times_not_out or 0)
-    batting_avg = (float(total_runs or 0) / dismissals) if dismissals > 0 else (float(total_runs or 0) / max(matches_played, 1))
-    bat_ovr = calc_batting_ovr(batting_avg)
+    FALLBACK_OVR = 60
 
-    if (total_balls_bowled or 0) >= 6:
+    if (total_balls_faced or 0) >= 60:
+        dismissals = matches_played - (times_not_out or 0)
+        batting_avg = (float(total_runs or 0) / dismissals) if dismissals > 0 else (float(total_runs or 0) / max(matches_played, 1))
+        bat_ovr = calc_batting_ovr(batting_avg)
+    else:
+        bat_ovr = FALLBACK_OVR
+
+    if (total_balls_bowled or 0) >= 60:
         bowl_avg_val = (float(total_runs_conceded or 0) / total_wickets) if (total_wickets or 0) > 0 else 0.0
         bowl_ovr = calc_bowling_ovr(bowl_avg_val)
     else:
-        bowl_ovr = None
+        bowl_ovr = FALLBACK_OVR
 
     return calc_player_ovr(bat_ovr, bowl_ovr, role)
 
