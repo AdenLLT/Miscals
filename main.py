@@ -1957,8 +1957,8 @@ class PlayerSelectView(View):
             try:
                 elite_emoji = interaction.client.get_emoji(1452949859412738110)
                 emoji_str = f"<:elite:{elite_emoji.id}>" if elite_emoji else "<:elite:1452949859412738110>"
-                auction_channel = interaction.client.get_channel(1452950205715714120)
-                channel_mention = auction_channel.mention if auction_channel else "<#1452950205715714120>"
+                auction_channel = interaction.client.get_channel(1516051222136623104)
+                channel_mention = auction_channel.mention if auction_channel else "<#1516051222136623104>"
 
                 dm_embed = discord.Embed(
                     title="⭐ Elite Player Selected",
@@ -2502,12 +2502,23 @@ async def viewteam_command(ctx, *, team_name: str):
         await ctx.send("❌ No player data available.")
         return
 
-    # Find the team
+    # Find the team — exact match first, then partial match
     team_data = None
+    query = team_name.lower()
     for t in teams_data:
-        if t['team'].lower() == team_name.lower():
+        if t['team'].lower() == query:
             team_data = t
             break
+
+    if not team_data:
+        matches = [t for t in teams_data if query in t['team'].lower()]
+        if len(matches) == 1:
+            team_data = matches[0]
+        elif len(matches) > 1:
+            await loading_msg.delete()
+            options = ", ".join(f"**{t['team']}**" for t in matches)
+            await ctx.send(f"🔍 Multiple teams match **'{team_name}'**: {options}\nPlease be more specific.")
+            return
 
     if not team_data:
         await loading_msg.delete()
@@ -2853,7 +2864,7 @@ async def elite_command(ctx, *, players: str):
         return
 
     # Get the auction channel
-    auction_channel = bot.get_channel(1452950205715714120)
+    auction_channel = bot.get_channel(1516051222136623104)
     if not auction_channel:
         await ctx.send("❌ Auction channel not found!")
         return
