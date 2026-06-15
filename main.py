@@ -931,6 +931,94 @@ def get_role_emoji(role):
         return "<:allrounder:1451978476033671279>"
     return ""
 
+# ========== OVR RATING SYSTEM ==========
+
+def calc_batting_ovr(batting_avg):
+    thresholds = [
+        (70, 99), (62, 98), (55, 97), (50, 96),
+        (47, 95), (43, 94), (40, 93), (37, 92),
+        (35, 91), (30, 90), (27, 89), (24, 88),
+        (21, 87), (18, 85), (16, 83), (14, 81),
+        (12, 79), (10, 77), (9, 75),  (8, 73),
+        (7, 71),  (6, 69),  (5, 67),  (4, 65),
+        (3, 63),
+    ]
+    for min_avg, ovr in thresholds:
+        if batting_avg >= min_avg:
+            return ovr
+    return 60
+
+
+def calc_bowling_ovr(bowl_avg, economy):
+    econ_score = 62
+    for econ_thresh, score in [
+        (4.0, 99), (5.0, 96), (6.0, 93), (7.0, 90),
+        (8.0, 86), (9.0, 82), (10.0, 77), (11.0, 72), (12.0, 67)
+    ]:
+        if economy <= econ_thresh:
+            econ_score = score
+            break
+    if bowl_avg > 0:
+        avg_score = 60
+        for avg_thresh, score in [
+            (10, 99), (12, 97), (14, 95), (16, 93),
+            (18, 91), (20, 89), (22, 87), (25, 84),
+            (28, 81), (31, 78), (35, 74), (40, 70), (50, 65)
+        ]:
+            if bowl_avg <= avg_thresh:
+                avg_score = score
+                break
+        return round(avg_score * 0.55 + econ_score * 0.45)
+    else:
+        return round(econ_score * 0.65 + 60 * 0.35)
+
+
+def calc_player_ovr(bat_ovr, bowl_ovr, role):
+    if bowl_ovr is None:
+        return bat_ovr if bat_ovr is not None else 60
+    bat_eff = bat_ovr if bat_ovr is not None else 60
+    if "All-Rounder" in role or "All-rounder" in role:
+        return round((bat_eff + bowl_ovr) / 2)
+    elif "Bowler" in role:
+        return round(bowl_ovr * 0.8 + bat_eff * 0.2)
+    else:
+        return round(bat_eff * 0.8 + bowl_ovr * 0.2)
+
+
+def get_player_ovr_for_vt(user_id, role="Batsman"):
+    """Return the main OVR for a player (for use in -vt). None if < 5 matches."""
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute("""
+        SELECT SUM(runs), SUM(runs_conceded), SUM(balls_bowled),
+               SUM(wickets), SUM(not_out), COUNT(*)
+        FROM match_stats WHERE user_id = ?
+    """, (user_id,))
+    row = c.fetchone()
+    conn.close()
+
+    if not row or row[0] is None:
+        return None
+    total_runs, total_runs_conceded, total_balls_bowled, total_wickets, times_not_out, matches_played = row
+
+    if (matches_played or 0) < 5:
+        return None
+
+    dismissals = matches_played - (times_not_out or 0)
+    batting_avg = (float(total_runs or 0) / dismissals) if dismissals > 0 else (float(total_runs or 0) / max(matches_played, 1))
+    bat_ovr = calc_batting_ovr(batting_avg)
+
+    if (total_balls_bowled or 0) >= 6:
+        economy = float(total_runs_conceded or 0) / (total_balls_bowled / 6.0)
+        bowl_avg_val = (float(total_runs_conceded or 0) / total_wickets) if (total_wickets or 0) > 0 else 0.0
+        bowl_ovr = calc_bowling_ovr(bowl_avg_val, economy)
+    else:
+        bowl_ovr = None
+
+    return calc_player_ovr(bat_ovr, bowl_ovr, role)
+
+# ========================================
+
 def emoji_for_select(emoji_str):
     """Convert a custom emoji string like <:name:id> to a PartialEmoji for SelectOption use."""
     if not emoji_str:
@@ -2436,8 +2524,22 @@ async def viewteam_command(ctx, *, team_name: str):
     # Get team captain
     captain_name = get_team_captain(team_data['team'])
 
+    # Compute OVR for every player in the squad
+    ovr_sum = 0
+    total_player_count = len(team_data['players'])
+
+    for player in team_data['players']:
+        rep_info = get_representative(player['name'])
+        if rep_info:
+            p_ovr = get_player_ovr_for_vt(rep_info[0], player['role'])
+        else:
+            p_ovr = None
+        ovr_sum += p_ovr if p_ovr is not None else 60
+
+    team_avg_ovr = round(ovr_sum / total_player_count) if total_player_count > 0 else 60
+
     embed = discord.Embed(
-        title=f"{flag} Official {team_data['team']} Squad",
+        title=f"{flag} Official {team_data['team']} Squad · {team_avg_ovr} OVR",
         color=get_team_color(team_data['team'])
     )
 
@@ -2461,11 +2563,18 @@ async def viewteam_command(ctx, *, team_name: str):
         rep_text = f"**@{rep_info[1]}**" if rep_info else "*Unclaimed*"
         emoji = get_player_emoji(player['name'], bot)
 
+        # Player OVR
+        if rep_info:
+            p_ovr = get_player_ovr_for_vt(rep_info[0], player['role'])
+        else:
+            p_ovr = None
+        ovr_display = str(p_ovr) if p_ovr is not None else "NIL"
+
         # Add (C) if this player is the captain
         captain_badge = " **(C)**" if player['name'] == captain_name else ""
 
-        # Format: [emoji] · Player Name · Representative (C)
-        player_line = f"{emoji} · {player['name']}{captain_badge} · {rep_text}"
+        # Format: [emoji] · Player Name (C) · @rep · OVR OVR
+        player_line = f"{emoji} · {player['name']}{captain_badge} · {rep_text} · {ovr_display} OVR"
 
         if "Wicketkeeper" in player['role']:
             wicketkeepers.append(player_line)

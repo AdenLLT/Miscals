@@ -52,6 +52,105 @@ def get_team_flag_url(team_name):
         return f"https://cdnjs.cloudflare.com/ajax/libs/twemoji/14.0.2/72x72/{code}.png"
     return None
 
+# ========== OVR RATING SYSTEM ==========
+
+def calc_batting_ovr(batting_avg):
+    """Calculate batting OVR (60–99) from batting average. Higher average = higher OVR."""
+    thresholds = [
+        (70, 99), (62, 98), (55, 97), (50, 96),
+        (47, 95), (43, 94), (40, 93), (37, 92),
+        (35, 91), (30, 90), (27, 89), (24, 88),
+        (21, 87), (18, 85), (16, 83), (14, 81),
+        (12, 79), (10, 77), (9, 75),  (8, 73),
+        (7, 71),  (6, 69),  (5, 67),  (4, 65),
+        (3, 63),
+    ]
+    for min_avg, ovr in thresholds:
+        if batting_avg >= min_avg:
+            return ovr
+    return 60
+
+
+def calc_bowling_ovr(bowl_avg, economy):
+    """
+    Calculate bowling OVR (60–99) from bowling average + economy.
+    Lower bowl_avg and economy = better.
+    Pass bowl_avg=0 when the player has no wickets.
+    """
+    econ_score = 62
+    for econ_thresh, score in [
+        (4.0, 99), (5.0, 96), (6.0, 93), (7.0, 90),
+        (8.0, 86), (9.0, 82), (10.0, 77), (11.0, 72), (12.0, 67)
+    ]:
+        if economy <= econ_thresh:
+            econ_score = score
+            break
+
+    if bowl_avg > 0:
+        avg_score = 60
+        for avg_thresh, score in [
+            (10, 99), (12, 97), (14, 95), (16, 93),
+            (18, 91), (20, 89), (22, 87), (25, 84),
+            (28, 81), (31, 78), (35, 74), (40, 70), (50, 65)
+        ]:
+            if bowl_avg <= avg_thresh:
+                avg_score = score
+                break
+        return round(avg_score * 0.55 + econ_score * 0.45)
+    else:
+        return round(econ_score * 0.65 + 60 * 0.35)
+
+
+def calc_player_ovr(bat_ovr, bowl_ovr, role):
+    """Combine batting and bowling OVR into a main OVR based on role."""
+    if bowl_ovr is None:
+        return bat_ovr if bat_ovr is not None else 60
+    bat_eff = bat_ovr if bat_ovr is not None else 60
+    if "All-Rounder" in role or "All-rounder" in role:
+        return round((bat_eff + bowl_ovr) / 2)
+    elif "Bowler" in role:
+        return round(bowl_ovr * 0.8 + bat_eff * 0.2)
+    else:
+        return round(bat_eff * 0.8 + bowl_ovr * 0.2)
+
+
+def get_player_ovr(user_id, mode="career"):
+    """
+    Return (bat_ovr, bowl_ovr, main_ovr, matches_played).
+    OVRs are None when the player has fewer than 5 matches.
+    """
+    stats = get_user_stats(user_id, mode)
+    if not stats or stats[0] is None:
+        return None, None, None, 0
+
+    total_runs, _, total_runs_conceded, total_balls_bowled, total_wickets, times_not_out, matches_played = stats
+
+    if (matches_played or 0) < 5:
+        return None, None, None, matches_played
+
+    dismissals = matches_played - (times_not_out or 0)
+    batting_avg = (float(total_runs or 0) / dismissals) if dismissals > 0 else (float(total_runs or 0) / matches_played)
+    bat_ovr = calc_batting_ovr(batting_avg)
+
+    if (total_balls_bowled or 0) >= 6:
+        economy = float(total_runs_conceded or 0) / (total_balls_bowled / 6.0)
+        bowl_avg_val = (float(total_runs_conceded or 0) / total_wickets) if (total_wickets or 0) > 0 else 0.0
+        bowl_ovr = calc_bowling_ovr(bowl_avg_val, economy)
+    else:
+        bowl_ovr = None
+
+    player_name = get_player_name_by_user_id(user_id)
+    role = "Batsman"
+    if player_name:
+        players, _ = find_player(player_name)
+        if players:
+            role = players[0].get('role', 'Batsman')
+
+    main_ovr = calc_player_ovr(bat_ovr, bowl_ovr, role)
+    return bat_ovr, bowl_ovr, main_ovr, matches_played
+
+# =======================================
+
 def get_user_stats(user_id, mode="career"):
     conn = sqlite3.connect('players.db')
     c = conn.cursor()
@@ -1517,10 +1616,43 @@ class PersonalStatsView(View):
                        f"**Economy:** {economy:.2f}  •  **Average:** {bowl_avg_str}")
         embed.add_field(name="🎳 Bowling", value=bowling_text, inline=True)
 
-        if member and member.avatar:
-            embed.set_footer(text="Nations Player 2025-2026", icon_url=member.avatar.url)
+        # ── OVR Rating ──
+        dismissals_for_ovr = matches_played - (times_not_out or 0)
+        if dismissals_for_ovr > 0:
+            batting_avg_for_ovr = float(total_runs or 0) / dismissals_for_ovr
         else:
-            embed.set_footer(text="Nations Player 2025-2026")
+            batting_avg_for_ovr = float(total_runs or 0) / max(matches_played, 1)
+
+        if matches_played >= 5:
+            bat_ovr = calc_batting_ovr(batting_avg_for_ovr)
+
+            if (total_balls_bowled or 0) >= 6:
+                economy_for_ovr = float(total_runs_conceded or 0) / (total_balls_bowled / 6.0)
+                bowl_avg_for_ovr = (float(total_runs_conceded or 0) / total_wickets) if (total_wickets or 0) > 0 else 0.0
+                bowl_ovr = calc_bowling_ovr(bowl_avg_for_ovr, economy_for_ovr)
+                bowl_ovr_str = str(bowl_ovr)
+            else:
+                bowl_ovr = None
+                bowl_ovr_str = "NIL"
+
+            role_for_ovr = player_data['role'] if player_data else "Batsman"
+            main_ovr = calc_player_ovr(bat_ovr, bowl_ovr, role_for_ovr)
+
+            ovr_text = f"**OVR:** {main_ovr}  •  **Bat OVR:** {bat_ovr}  •  **Bowl OVR:** {bowl_ovr_str}"
+            embed.add_field(name="⭐ OVR Rating", value=ovr_text, inline=False)
+            footer_text = "Nations Player 2025-2026"
+        else:
+            embed.add_field(
+                name="⭐ OVR Rating",
+                value="**OVR:** NIL  •  **Bat OVR:** NIL  •  **Bowl OVR:** NIL",
+                inline=False
+            )
+            footer_text = "Nations Player 2025-2026 • Play 5+ matches to unlock your OVR rating"
+
+        if member and member.avatar:
+            embed.set_footer(text=footer_text, icon_url=member.avatar.url)
+        else:
+            embed.set_footer(text=footer_text)
 
         return embed
 
