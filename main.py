@@ -949,28 +949,18 @@ def calc_batting_ovr(batting_avg):
     return 60
 
 
-def calc_bowling_ovr(bowl_avg, economy):
-    econ_score = 62
-    for econ_thresh, score in [
-        (4.0, 99), (5.0, 96), (6.0, 93), (7.0, 90),
-        (8.0, 86), (9.0, 82), (10.0, 77), (11.0, 72), (12.0, 67)
-    ]:
-        if economy <= econ_thresh:
-            econ_score = score
-            break
+def calc_bowling_ovr(bowl_avg):
     if bowl_avg > 0:
-        avg_score = 60
         for avg_thresh, score in [
             (10, 99), (12, 97), (14, 95), (16, 93),
             (18, 91), (20, 89), (22, 87), (25, 84),
             (28, 81), (31, 78), (35, 74), (40, 70), (50, 65)
         ]:
             if bowl_avg <= avg_thresh:
-                avg_score = score
-                break
-        return round(avg_score * 0.55 + econ_score * 0.45)
+                return score
+        return 60
     else:
-        return round(econ_score * 0.65 + 60 * 0.35)
+        return 60
 
 
 def calc_player_ovr(bat_ovr, bowl_ovr, role):
@@ -1053,9 +1043,8 @@ def get_player_ovr_for_vt(user_id, role="Batsman"):
     bat_ovr = calc_batting_ovr(batting_avg)
 
     if (total_balls_bowled or 0) >= 6:
-        economy = float(total_runs_conceded or 0) / (total_balls_bowled / 6.0)
         bowl_avg_val = (float(total_runs_conceded or 0) / total_wickets) if (total_wickets or 0) > 0 else 0.0
-        bowl_ovr = calc_bowling_ovr(bowl_avg_val, economy)
+        bowl_ovr = calc_bowling_ovr(bowl_avg_val)
     else:
         bowl_ovr = None
 
@@ -2129,7 +2118,7 @@ async def unrepresent_command(ctx):
         description=(
             f"You are about to stop representing **{player_name}**.\n\n"
             f"**⚠️ Your cricket stats (runs, wickets, matches, etc.) will be wiped** — they'll appear as zero.\n\n"
-            f"🔒 **Your OVR rating is secretly preserved.** If you've played 5+ matches, your Bat OVR and Bowl OVR are saved in the background and will still show on `-vt` and future `-statsi` lookups.\n\n"
+            f"🔒 **Your OVR rating is secretly preserved.** If you've batted or bowled 60+ balls, your Bat OVR and Bowl OVR are saved in the background and will still show on `-vt` and future `-statsi` lookups.\n\n"
             f"Your old player will be recorded in history via `-oldreps`.\n\n"
             f"Are you sure you want to continue?"
         ),
@@ -2180,9 +2169,8 @@ async def unrepresent_command(ctx):
         g_bat_avg = float(g_runs or 0) / g_dis if g_dis > 0 else float(g_runs or 0) / max(g_mp, 1)
         g_bat_ovr = calc_batting_ovr(g_bat_avg)
         if (g_bb or 0) >= 6:
-            g_econ = float(g_rc or 0) / (g_bb / 6.0)
             g_bowl_avg = float(g_rc or 0) / g_wk if (g_wk or 0) > 0 else 0.0
-            g_bowl_ovr = calc_bowling_ovr(g_bowl_avg, g_econ)
+            g_bowl_ovr = calc_bowling_ovr(g_bowl_avg)
         else:
             g_bowl_ovr = None
         c.execute(
@@ -2193,7 +2181,7 @@ async def unrepresent_command(ctx):
     # Reset displayed stats (OVR is preserved via ghost table above)
     c.execute("DELETE FROM match_stats WHERE user_id = ?", (ctx.author.id,))
     c.execute("DELETE FROM player_trophies WHERE user_id = ?", (ctx.author.id,))
-    
+
     # Remove representation
     c.execute("DELETE FROM player_representatives WHERE user_id = ?", (ctx.author.id,))
 
@@ -2241,7 +2229,7 @@ async def resetmanualstats_command(ctx, target: str):
             description=f"This will reset stats and trophies for **{len(users)}** users who switched players in the last 5 days.\n\n**This cannot be undone!**",
             color=0xFF0000
         )
-        
+
         confirm_view = ConfirmationView()
         conf_msg = await ctx.send(embed=confirm_embed, view=confirm_view)
         await confirm_view.wait()
@@ -2256,7 +2244,7 @@ async def resetmanualstats_command(ctx, target: str):
             await conf_msg.edit(content=f"✅ Stats and trophies reset for {reset_count} users.", embed=None, view=None)
         else:
             await conf_msg.edit(content="❌ Bulk reset cancelled.", embed=None, view=None)
-            
+
     else:
         # Handle single member
         try:
@@ -2270,25 +2258,25 @@ async def resetmanualstats_command(ctx, target: str):
         c.execute("SELECT player_name, removed_at FROM old_representatives WHERE user_id = ? AND removed_at > ? ORDER BY removed_at DESC LIMIT 1", 
                   (member.id, five_days_ago))
         last_unrep = c.fetchone()
-        
+
         if not last_unrep:
             await ctx.send(f"❌ {member.display_name} has not unrepped a player in the last 5 days.")
             conn.close()
             return
-            
+
         old_player, unrep_time = last_unrep
-        
+
         # Check if they currently represent someone
         c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (member.id,))
         current_rep = c.fetchone()
-        
+
         if not current_rep:
             await ctx.send(f"❌ {member.display_name} currently does not represent any player. Use `-unrep` normally.")
             conn.close()
             return
-            
+
         current_player = current_rep[0]
-        
+
         # Confirmation
         confirm_embed = discord.Embed(
             title="⚠️ Confirm Manual Stats Reset",
@@ -2300,11 +2288,11 @@ async def resetmanualstats_command(ctx, target: str):
             ),
             color=0xFF0000
         )
-        
+
         confirm_view = ConfirmationView()
         conf_msg = await ctx.send(embed=confirm_embed, view=confirm_view)
         await confirm_view.wait()
-        
+
         if confirm_view.confirmed:
             c.execute("DELETE FROM match_stats WHERE user_id = ?", (member.id,))
             c.execute("DELETE FROM player_trophies WHERE user_id = ?", (member.id,))
@@ -2312,7 +2300,7 @@ async def resetmanualstats_command(ctx, target: str):
             await conf_msg.edit(content=f"✅ Stats and trophies reset for {member.mention}.", embed=None, view=None)
         else:
             await conf_msg.edit(content="❌ Reset cancelled.", embed=None, view=None)
-        
+
     conn.close()
 
 # Server IDs to upload emojis to
@@ -4366,7 +4354,7 @@ async def syncnicknames_command(ctx):
         # Format new nickname: "M. Adair ○ customnick"
         # Discord limit is 32 characters
         formatted_name = format_player_nickname(player_name, custom_nickname)
-        
+
         # Ensure it fits 32 chars
         if len(formatted_name) > 32:
             # Calculate length of "M. Adair ○ " part

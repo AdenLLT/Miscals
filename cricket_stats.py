@@ -71,34 +71,22 @@ def calc_batting_ovr(batting_avg):
     return 60
 
 
-def calc_bowling_ovr(bowl_avg, economy):
+def calc_bowling_ovr(bowl_avg):
     """
-    Calculate bowling OVR (60–99) from bowling average + economy.
-    Lower bowl_avg and economy = better.
-    Pass bowl_avg=0 when the player has no wickets.
+    Calculate bowling OVR (60–99) from bowling average only.
+    Lower bowl_avg = better. Pass bowl_avg=0 when the player has no wickets.
     """
-    econ_score = 62
-    for econ_thresh, score in [
-        (4.0, 99), (5.0, 96), (6.0, 93), (7.0, 90),
-        (8.0, 86), (9.0, 82), (10.0, 77), (11.0, 72), (12.0, 67)
-    ]:
-        if economy <= econ_thresh:
-            econ_score = score
-            break
-
     if bowl_avg > 0:
-        avg_score = 60
         for avg_thresh, score in [
             (10, 99), (12, 97), (14, 95), (16, 93),
             (18, 91), (20, 89), (22, 87), (25, 84),
             (28, 81), (31, 78), (35, 74), (40, 70), (50, 65)
         ]:
             if bowl_avg <= avg_thresh:
-                avg_score = score
-                break
-        return round(avg_score * 0.55 + econ_score * 0.45)
+                return score
+        return 60
     else:
-        return round(econ_score * 0.65 + 60 * 0.35)
+        return 60
 
 
 def calc_player_ovr(bat_ovr, bowl_ovr, role):
@@ -176,7 +164,7 @@ def get_player_ovr(user_id, mode="career"):
     stats = get_user_stats(user_id, mode)
     matches_played = stats[6] if (stats and stats[0] is not None) else 0
 
-    if not stats or stats[0] is None or (stats[6] or 0) < 5:
+    if not stats or stats[0] is None:
         ghost = _get_ghost_ovr(user_id)
         if ghost:
             bat_ovr, bowl_ovr = ghost[0], ghost[1]
@@ -190,18 +178,24 @@ def get_player_ovr(user_id, mode="career"):
             return bat_ovr, bowl_ovr, main_ovr, matches_played
         return None, None, None, matches_played
 
-    total_runs, _, total_runs_conceded, total_balls_bowled, total_wickets, times_not_out, matches_played = stats
+    total_runs, total_balls_faced, total_runs_conceded, total_balls_bowled, total_wickets, times_not_out, matches_played = stats
 
-    dismissals = matches_played - (times_not_out or 0)
-    batting_avg = (float(total_runs or 0) / dismissals) if dismissals > 0 else (float(total_runs or 0) / matches_played)
-    bat_ovr = calc_batting_ovr(batting_avg)
+    FALLBACK_OVR = 60
 
-    if (total_balls_bowled or 0) >= 6:
-        economy = float(total_runs_conceded or 0) / (total_balls_bowled / 6.0)
-        bowl_avg_val = (float(total_runs_conceded or 0) / total_wickets) if (total_wickets or 0) > 0 else 0.0
-        bowl_ovr = calc_bowling_ovr(bowl_avg_val, economy)
+    # Batting OVR: unlocked after facing 60 balls
+    if (total_balls_faced or 0) >= 60:
+        dismissals = matches_played - (times_not_out or 0)
+        batting_avg = (float(total_runs or 0) / dismissals) if dismissals > 0 else (float(total_runs or 0) / max(matches_played, 1))
+        bat_ovr = calc_batting_ovr(batting_avg)
     else:
-        bowl_ovr = None
+        bat_ovr = FALLBACK_OVR
+
+    # Bowling OVR: unlocked after bowling 60 balls
+    if (total_balls_bowled or 0) >= 60:
+        bowl_avg_val = (float(total_runs_conceded or 0) / total_wickets) if (total_wickets or 0) > 0 else 0.0
+        bowl_ovr = calc_bowling_ovr(bowl_avg_val)
+    else:
+        bowl_ovr = FALLBACK_OVR
 
     player_name = get_player_name_by_user_id(user_id)
     role = "Batsman"
@@ -218,20 +212,20 @@ def get_player_ovr(user_id, mode="career"):
 def get_user_stats(user_id, mode="career"):
     conn = sqlite3.connect('players.db')
     c = conn.cursor()
-    
+
     table = "match_stats"
     where_clause = "WHERE user_id = ?"
     params = [user_id]
-    
+
     if mode == "ongoing":
         # Check for active tournament
         c.execute("SELECT id FROM tournaments WHERE is_active = 1 LIMIT 1")
         tourney = c.fetchone()
-        
+
         # Check for active series
         c.execute("SELECT id FROM series WHERE is_active = 1 LIMIT 1")
         series = c.fetchone()
-        
+
         if tourney or series:
             conditions = []
             if tourney:
@@ -240,7 +234,7 @@ def get_user_stats(user_id, mode="career"):
                 # For tournaments, stats are usually tracked in match_stats but we might need a way to filter.
                 # If there's no tournament_id in match_stats, we'll look at series_match_stats for series.
                 pass
-            
+
             if series:
                 table = "series_match_stats"
                 where_clause = "WHERE user_id = ? AND series_id = ?"
@@ -1634,7 +1628,7 @@ class PersonalStatsView(View):
             c.execute("SELECT name FROM tournaments WHERE is_active = 1 LIMIT 1")
             tourney = c.fetchone()
             conn.close()
-            
+
             if series:
                 embed.title = f"{flag + '  ' if flag else ''}✦ {series[0]} Statistics"
             elif tourney:
@@ -1681,37 +1675,41 @@ class PersonalStatsView(View):
         embed.add_field(name="🎳 Bowling", value=bowling_text, inline=True)
 
         # ── OVR Rating ──
-        dismissals_for_ovr = matches_played - (times_not_out or 0)
-        if dismissals_for_ovr > 0:
-            batting_avg_for_ovr = float(total_runs or 0) / dismissals_for_ovr
-        else:
-            batting_avg_for_ovr = float(total_runs or 0) / max(matches_played, 1)
+        FALLBACK_OVR = 60
 
-        if matches_played >= 5:
-            bat_ovr = calc_batting_ovr(batting_avg_for_ovr)
+        bat_unlocked = (total_balls_faced or 0) >= 60
+        bowl_unlocked = (total_balls_bowled or 0) >= 60
 
-            if (total_balls_bowled or 0) >= 6:
-                economy_for_ovr = float(total_runs_conceded or 0) / (total_balls_bowled / 6.0)
-                bowl_avg_for_ovr = (float(total_runs_conceded or 0) / total_wickets) if (total_wickets or 0) > 0 else 0.0
-                bowl_ovr = calc_bowling_ovr(bowl_avg_for_ovr, economy_for_ovr)
-                bowl_ovr_str = str(bowl_ovr)
+        if bat_unlocked:
+            dismissals_for_ovr = matches_played - (times_not_out or 0)
+            if dismissals_for_ovr > 0:
+                batting_avg_for_ovr = float(total_runs or 0) / dismissals_for_ovr
             else:
-                bowl_ovr = None
-                bowl_ovr_str = "NIL"
-
-            role_for_ovr = player_data['role'] if player_data else "Batsman"
-            main_ovr = calc_player_ovr(bat_ovr, bowl_ovr, role_for_ovr)
-
-            ovr_text = f"**OVR:** {main_ovr}  •  **Bat OVR:** {bat_ovr}  •  **Bowl OVR:** {bowl_ovr_str}"
-            embed.add_field(name="⭐ OVR Rating", value=ovr_text, inline=False)
-            footer_text = "Nations Player 2025-2026"
+                batting_avg_for_ovr = float(total_runs or 0) / max(matches_played, 1)
+            bat_ovr = calc_batting_ovr(batting_avg_for_ovr)
+            bat_ovr_str = str(bat_ovr)
         else:
-            embed.add_field(
-                name="⭐ OVR Rating",
-                value="**OVR:** NIL  •  **Bat OVR:** NIL  •  **Bowl OVR:** NIL",
-                inline=False
-            )
-            footer_text = "Nations Player 2025-2026 • Play 5+ matches to unlock your OVR rating"
+            bat_ovr = FALLBACK_OVR
+            bat_ovr_str = f"{FALLBACK_OVR}*"
+
+        if bowl_unlocked:
+            bowl_avg_for_ovr = (float(total_runs_conceded or 0) / total_wickets) if (total_wickets or 0) > 0 else 0.0
+            bowl_ovr = calc_bowling_ovr(bowl_avg_for_ovr)
+            bowl_ovr_str = str(bowl_ovr)
+        else:
+            bowl_ovr = FALLBACK_OVR
+            bowl_ovr_str = f"{FALLBACK_OVR}*"
+
+        role_for_ovr = player_data['role'] if player_data else "Batsman"
+        main_ovr = calc_player_ovr(bat_ovr, bowl_ovr, role_for_ovr)
+
+        ovr_text = f"**OVR:** {main_ovr}  •  **Bat OVR:** {bat_ovr_str}  •  **Bowl OVR:** {bowl_ovr_str}"
+        embed.add_field(name="⭐ OVR Rating", value=ovr_text, inline=False)
+
+        if not bat_unlocked or not bowl_unlocked:
+            footer_text = "Nations Player 2025-2026 • * = provisional OVR (bat 60 balls / bowl 60 balls to unlock)"
+        else:
+            footer_text = "Nations Player 2025-2026"
 
         if member and member.avatar:
             embed.set_footer(text=footer_text, icon_url=member.avatar.url)
@@ -2967,7 +2965,7 @@ class CricketStats(commands.Cog):
         # Create view with career mode
         view = PersonalStatsView(ctx, user_id, mode="career")
         embed = await view.create_stats_embed("overview")
-        
+
         # Add international branding
         embed.color = 0x1E90FF  # Blue theme
         if embed.title:
