@@ -2110,126 +2110,126 @@
                 "role": "Batsman",
                 "batting_style": "Right Handed",
                 "bowling_style": "Right-arm medium",
-                "image": "https://img1.hscicdn.com/image/upload/f_auto,t_ds_square_w_320,q_50/lsci/db/PICTURES/CMS/354900/354962.1.png"
-            },
-            {
-                "name": "Vriitya Aravind",
-                "role": "Wicketkeeper Batsman",
-                "batting_style": "Right Handed",
-                "bowling_style": null,
-                "image": "https://img1.hscicdn.com/image/upload/f_auto,t_ds_square_w_320,q_50/lsci/db/PICTURES/CMS/354900/354964.1.png"
-            },
-            {
-                "name": "Aryansh Sharma",
-                "role": "Wicketkeeper Batsman",
-                "batting_style": "Right Handed",
-                "bowling_style": null,
-                "image": "https://img1.hscicdn.com/image/upload/f_auto,t_ds_square_w_320,q_50/lsci/db/PICTURES/CMS/384200/384247.1.png"
+                "image": "https://img1.hscicdn.com/image/upload/f_auto,t_ds_square_w_320,q_50/lsci/db/PICTURES/CMS/384700/384768.1.png"
             },
             {
                 "name": "Asif Khan",
                 "role": "Batsman",
                 "batting_style": "Right Handed",
                 "bowling_style": "Right-arm off break",
-                "image": "https://img1.hscicdn.com/image/upload/f_auto,t_ds_square_w_320,q_50/lsci/db/PICTURES/CMS/384200/384242.1.png"
+                "image": "https://img1.hscicdn.com/image/upload/f_auto,t_ds_square_w_320,q_50/lsci/db/PICTURES/CMS/359200/359281.4.png"
             },
             {
                 "name": "Alishan Sharafu",
                 "role": "Batsman",
                 "batting_style": "Right Handed",
-                "bowling_style": "Right-arm leg break",
-                "image": "https://img1.hscicdn.com/image/upload/f_auto,t_ds_square_w_320,q_50/lsci/db/PICTURES/CMS/351800/351852.1.png"
+                "bowling_style": "Right-arm medium",
+                "image": "https://img1.hscicdn.com/image/upload/f_auto,t_ds_square_w_320,q_50/lsci/db/PICTURES/CMS/354500/354536.4.png"
+            },
+            {
+                "name": "Haider Ali",
+                "role": "Batsman",
+                "batting_style": "Right Handed",
+                "bowling_style": "Right-arm medium fast",
+                "image": "https://img1.hscicdn.com/image/upload/f_auto,t_h_100_2x/lsci/db/PICTURES/CMS/413600/413640.2.png"
             },
             {
                 "name": "Basil Hameed",
                 "role": "Batsman",
                 "batting_style": "Right Handed",
                 "bowling_style": "Right-arm off break",
-                "image": "https://img1.hscicdn.com/image/upload/f_auto,t_ds_square_w_320,q_50/lsci/db/PICTURES/CMS/354900/354958.png"
+                "image": "https://img1.hscicdn.com/image/upload/f_auto,t_h_100_2x/lsci/db/PICTURES/CMS/354900/354958.png"
+            },
+            {
+                "name": "Aryansh Sharma",
+                "role": "Wicketkeeper Batsman",
+                "batting_style": "Right Handed",
+                "bowling_style": null,
+                "image": "https://img1.hscicdn.com/image/upload/f_auto,t_h_100_2x/lsci/db/PICTURES/CMS/384200/384247.1.png"
+            },
+            {
+                "name": "Ethan D'Souza",
+                "role": "Wicketkeeper Batsman",
+                "batting_style": "Left Handed",
+                "bowling_style": null,
+                "image": "https://d13ir53smqqeyp.cloudfront.net/fc-player-images/100125.png"
+            },
+            {
+                "name": "Aayan Afzal Khan",
+                "role": "All-Rounder",
+                "batting_style": "Right Handed",
+                "bowling_style": "Left-arm orthodox",
+                "image": "https://img1.hscicdn.com/image/upload/f_auto,t_h_100_2x/lsci/db/PICTURES/CMS/354900/354956.1.png"
+            },
+            {
+                "name": "Ali Naseer",
+                "role": "All-Rounder",
+                "batting_style": "Left Handed",
+                "bowling_style": "Left-arm medium fast",
+                "image": "https://img1.hscicdn.com/image/upload/f_auto,t_h_100_2x/lsci/db/PICTURES/CMS/384200/384245.1.png"
+            },
+            {
+                "name": "Dhruv Parashar",
+                "role": "All-Rounder",
+                "batting_style": "Right Handed",
+                "bowling_style": "Right-arm off break",
+                "image": "https://img1.hscicdn.com/image/upload/f_auto,t_h_100_2x/lsci/db/PICTURES/CMS/407400/407430.2.png"
+            },
+            {
+                "name": "Muhammad Farooq",
+                "role": "All-Rounder",
+                "batting_style": "Right Handed",
+                "bowling_style": "Right-arm leg break",
+                "image": "https://img1.hscicdn.com/image/upload/f_auto,t_h_100_2x/lsci/db/PICTURES/CMS/413600/413639.2.png"
             },
             {
                 "name": "Rohan Mustafa",
                 "role": "All-Rounder",
                 "batting_style": "Left Handed",
-                "bowling_style": "Left-arm orthodox",
-                "image": "https://img1.hscicdn.com/image/upload/f_auto,t_ds_square_w_320,q_50/lsci/db/PICTURES/CMS/316600/316640.2.png"
+                "bowling_style": "Right-arm off break",
+                "image": "https://img1.hscicdn.com/image/upload/f_auto,t_h_100_2x/lsci/db/PICTURES/CMS/316600/316640.2.png"
             },
             {
-                "name": "Aayan Afzal Khan",
+                "name": "Harshit Kaushik",
                 "role": "All-Rounder",
                 "batting_style": "Left Handed",
-                "bowling_style": "Slow left-arm orthodox",
-                "image": "https://img1.hscicdn.com/image/upload/f_auto,t_ds_square_w_320,q_50/lsci/db/PICTURES/CMS/354900/354956.1.png"
+                "bowling_style": "Left-arm orthodox",
+                "image": "https://img1.hscicdn.com/image/upload/f_auto,t_ds_square_w_320,q_50/lsci/db/PICTURES/CMS/405400/405475.1.png"
             },
             {
-                "name": "Karthik Meiyappan",
+                "name": "Khazaima Bin Tanvir",
                 "role": "Bowler",
                 "batting_style": "Right Handed",
-                "bowling_style": "Right-arm leg break",
-                "image": "https://img1.hscicdn.com/image/upload/f_auto,t_ds_square_w_320,q_50/lsci/db/PICTURES/CMS/351500/351563.1.png"
+                "bowling_style": "Right-arm medium fast",
+                "image": https://www.ilt20.ae/static-assets/images/players/88923.png?v=31.62
             },
             {
-                "name": "Zahoor Khan",
+                "name": "Sanchit Sharma",
                 "role": "Bowler",
                 "batting_style": "Right Handed",
-                "bowling_style": "Right-arm medium-fast",
-                "image": "https://img1.hscicdn.com/image/upload/f_auto,t_ds_square_w_320,q_50/lsci/db/PICTURES/CMS/320100/320104.1.png"
+                "bowling_style": "Right-arm medium fast",
+                "image": "https://img1.hscicdn.com/image/upload/f_auto,t_h_100_2x/lsci/db/PICTURES/CMS/403800/403899.2.png"
             },
             {
                 "name": "Junaid Siddique",
                 "role": "Bowler",
                 "batting_style": "Right Handed",
-                "bowling_style": "Right-arm fast",
-                "image": "https://img1.hscicdn.com/image/upload/f_auto,t_ds_square_w_320,q_50/lsci/db/PICTURES/CMS/354900/354960.1.png"
+                "bowling_style": "Right-arm medium fast",
+                "image": "https://img1.hscicdn.com/image/upload/f_auto,t_h_100_2x/lsci/db/PICTURES/CMS/413900/413975.5.png"
             },
             {
-                "name": "Sultan Ahmed",
-                "role": "Bowler",
-                "batting_style": "Right Handed",
-                "bowling_style": "Left-arm orthodox",
-                "image": "https://img1.hscicdn.com/image/upload/f_auto,t_ds_square_w_320,q_50/lsci/db/PICTURES/CMS/287100/287115.4.png"
-            },
-            {
-                "name": "Ahmed Raza",
+                "name": "Muhammad Jawadullah",
                 "role": "Bowler",
                 "batting_style": "Left Handed",
-                "bowling_style": "Slow left-arm orthodox",
-                "image": "https://img1.hscicdn.com/image/upload/f_auto,t_ds_square_w_320,q_50/lsci/db/PICTURES/CMS/320000/320094.1.png"
+                "bowling_style": "Left-arm fast medium",
+                "image": "https://img1.hscicdn.com/image/upload/f_auto,t_h_100_2x/lsci/db/PICTURES/CMS/392800/392880.2.png"
             },
             {
-                "name": "Sabir Ali",
-                "role": "Bowler",
-                "batting_style": "Right Handed",
-                "bowling_style": "Right-arm fast-medium",
-                "image": "https://img1.hscicdn.com/image/upload/f_auto/lsci/db/PICTURES/CMS/351800/351851.1.png"
-            },
-            {
-                "name": "Nilansh Keswani",
+                "name": "Muhammad Rohid",
                 "role": "Bowler",
                 "batting_style": "Left Handed",
-                "bowling_style": "Slow left-arm orthodox",
-                "image": "https://i.ibb.co/GvWNRX0K/Untitled-design-4.png"
-            },
-            {
-                "name": "Chundangapoyil Rizwan",
-                "role": "All-Rounder",
-                "batting_style": "Left Handed",
-                "bowling_style": "Slow left-arm orthodox",
-                "image": "https://img1.hscicdn.com/image/upload/f_auto,t_ds_square_w_320,q_50/lsci/db/PICTURES/CMS/320300/320320.1.png"
-            },
-            {
-                "name": "Ansh Tandon",
-                "role": "Batsman",
-                "batting_style": "Right Handed",
-                "bowling_style": null,
-                "image": "https://img1.hscicdn.com/image/upload/f_auto,t_ds_square_w_320,q_50/lsci/db/PICTURES/CMS/384200/384246.1.png"
-            },
-            {
-                "name": "Rahul Chopra",
-                "role": "Batsman",
-                "batting_style": "Right Handed",
-                "bowling_style": null,
-                "image": null
+                "bowling_style": "Left-arm fast medium",
+                "image": "https://img1.hscicdn.com/image/upload/f_auto,t_ds_square_w_320,q_50/lsci/db/PICTURES/CMS/413600/413642.2.png"
             }
         ]
     },
