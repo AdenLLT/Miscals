@@ -25,6 +25,7 @@ intents.presences = True
 intents.message_content = True
 intents.voice_states = True  # Required for voice
 intents.guilds = True  # Required for voice
+intents.invites = True
 mydb = sqlite3.connect("players.db")
 crsr = mydb.cursor()
 mydb.commit()
@@ -76,6 +77,8 @@ bot = commands.Bot(
     help_command=MyHelp()
 )
 
+invite_cache = {}  # guild_id -> {invite_code: uses}
+
 
 @bot.event
 async def on_ready():
@@ -94,7 +97,46 @@ async def on_ready():
     await bot.tree.sync()
     print(f'{bot.user} has connected to Discord!')
     print(f'Bot is ready! Prefix: .')
+    # Cache all guild invites for invite tracking
+    for guild in bot.guilds:
+        try:
+            invites = await guild.fetch_invites()
+            invite_cache[guild.id] = {inv.code: inv.uses for inv in invites}
+        except Exception:
+            pass
     await backup_db_to_channel()
+
+@bot.event
+async def on_invite_create(invite):
+    guild_id = invite.guild.id
+    if guild_id not in invite_cache:
+        invite_cache[guild_id] = {}
+    invite_cache[guild_id][invite.code] = invite.uses
+
+@bot.event
+async def on_member_join(member):
+    guild = member.guild
+    try:
+        new_invites = await guild.fetch_invites()
+        old_invites = invite_cache.get(guild.id, {})
+        for invite in new_invites:
+            old_uses = old_invites.get(invite.code, 0)
+            if invite.uses > old_uses and invite.inviter:
+                inviter_id = invite.inviter.id
+                conn = sqlite3.connect('players.db')
+                c = conn.cursor()
+                c.execute(
+                    '''INSERT INTO invite_counts (user_id, guild_id, invite_uses)
+                       VALUES (?, ?, 1)
+                       ON CONFLICT(user_id, guild_id) DO UPDATE SET invite_uses = invite_uses + 1''',
+                    (inviter_id, guild.id)
+                )
+                conn.commit()
+                conn.close()
+                break
+        invite_cache[guild.id] = {inv.code: inv.uses for inv in new_invites}
+    except Exception:
+        pass
 
 @bot.after_invoke
 async def after_command_backup(ctx):
@@ -687,6 +729,11 @@ def init_db():
                   username TEXT,
                   content TEXT,
                   sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS invite_counts
+                 (user_id INTEGER,
+                  guild_id INTEGER,
+                  invite_uses INTEGER DEFAULT 0,
+                  PRIMARY KEY (user_id, guild_id))''')
     conn.commit()
     conn.close()
 
@@ -1054,7 +1101,13 @@ def get_player_ovr_for_vt(user_id, role="Batsman"):
     else:
         bowl_ovr = FALLBACK_OVR
 
-    return calc_player_ovr(bat_ovr, bowl_ovr, role)
+    # ── <18 matches nerf: reduce bat/bowl by 10%, then derive main OVR ──
+    if (matches_played or 0) < 18:
+        bat_ovr = round(bat_ovr * 0.90)
+        bowl_ovr = round(bowl_ovr * 0.90)
+    main_ovr = calc_player_ovr(bat_ovr, bowl_ovr, role)
+
+    return main_ovr
 
 # ========================================
 

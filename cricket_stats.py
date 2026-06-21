@@ -4,6 +4,7 @@ import re
 import io
 import aiohttp
 import json
+import os
 from discord.ext import commands
 from discord import app_commands
 from discord.ui import View, Button
@@ -12,6 +13,132 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter
 # ========== HELPER FUNCTIONS ==========
 
 # ========== HELPER FUNCTIONS ==========
+
+def get_invite_count(user_id, guild_id):
+    """Return how many users this user has invited to the given guild."""
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute('SELECT invite_uses FROM invite_counts WHERE user_id = ? AND guild_id = ?',
+              (user_id, guild_id))
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else 0
+
+
+def _get_role_card(role):
+    """Return the card image filename based on player role."""
+    if role and "Wicketkeeper" in role:
+        return "wkcard.png"
+    elif role and ("All-Rounder" in role or "All-rounder" in role or "Allrounder" in role):
+        return "alrcard.png"
+    elif role and "Bowler" in role:
+        return "bowlcard.png"
+    else:
+        return "batcard.png"
+
+
+async def generate_stats_card(role, avatar_url, flag_url, main_ovr, bat_ovr, bowl_ovr, username=None):
+    """
+    Generates the player stats card image and returns it as a BytesIO PNG.
+    Overlays avatar, flag, and OVR numbers on the role-specific card background.
+    """
+    card_file = _get_role_card(role)
+    card = Image.open(card_file).convert("RGBA")
+
+    try:
+        font_ovr_main = ImageFont.truetype("ovrfont.otf", 240)
+        font_ovr_big = ImageFont.truetype("ovrfont.otf", 210)
+        # Dynamic username font: shrink by 5px per character over 16
+        base_username_size = 90
+        if username and len(username) > 16:
+            base_username_size = max(40, base_username_size - (len(username) - 16) * 5)
+        font_username = ImageFont.truetype("userfont.otf", base_username_size)
+    except Exception:
+        font_ovr_main = ImageFont.load_default()
+        font_ovr_big = font_ovr_main
+        font_username = font_ovr_main
+
+    async with aiohttp.ClientSession() as session:
+        # ── Avatar ──
+        avatar_img = None
+        if avatar_url:
+            try:
+                async with session.get(avatar_url) as resp:
+                    if resp.status == 200:
+                        avatar_data = await resp.read()
+                        avatar_img = Image.open(io.BytesIO(avatar_data)).convert("RGBA")
+            except Exception:
+                pass
+
+        # ── Flag ──
+        flag_img = None
+        if flag_url:
+            try:
+                async with session.get(flag_url) as resp:
+                    if resp.status == 200:
+                        flag_data = await resp.read()
+                        flag_img = Image.open(io.BytesIO(flag_data)).convert("RGBA")
+            except Exception:
+                pass
+
+    # ── Paste flag at (330, 660) – centred, moved way down ──
+    if flag_img:
+        flag_size = 105
+        flag_img = flag_img.resize((flag_size, flag_size), Image.LANCZOS)
+        fx = 330 - flag_size // 2
+        fy = 660 - flag_size // 2
+        card.paste(flag_img, (fx, fy), flag_img)
+
+    # ── Paste avatar at (660, 511) – circle with thick black stroke, way bigger ──
+    if avatar_img:
+        av_size = 390
+        stroke = 11
+
+        avatar_img = avatar_img.resize((av_size, av_size), Image.LANCZOS).convert("RGBA")
+
+        # Circular mask for avatar
+        av_mask = Image.new("L", (av_size, av_size), 0)
+        ImageDraw.Draw(av_mask).ellipse((0, 0, av_size - 1, av_size - 1), fill=255)
+        avatar_circle = Image.new("RGBA", (av_size, av_size), (0, 0, 0, 0))
+        avatar_circle.paste(avatar_img, mask=av_mask)
+
+        # Black stroke circle behind avatar
+        total = av_size + stroke * 2
+        stroke_circle = Image.new("RGBA", (total, total), (0, 0, 0, 0))
+        ImageDraw.Draw(stroke_circle).ellipse((0, 0, total - 1, total - 1), fill=(0, 0, 0, 255))
+        stroke_circle.paste(avatar_circle, (stroke, stroke), avatar_circle)
+
+        ax = 685 - total // 2
+        ay = 511 - total // 2
+        card.paste(stroke_circle, (ax, ay), stroke_circle)
+
+    # ── Draw text ──
+    draw = ImageDraw.Draw(card)
+
+    def draw_centered_text(text, cx, cy, font, color=(255, 255, 255, 255)):
+        bbox = draw.textbbox((0, 0), text, font=font)
+        tw = bbox[2] - bbox[0]
+        th = bbox[3] - bbox[1]
+        draw.text((cx - tw // 2, cy - th // 2), text, font=font, fill=color)
+
+    # Main OVR at (330, 445)
+    draw_centered_text(str(main_ovr), 330, 445, font_ovr_main)
+
+    # Username at (532, 850)
+    if username:
+        draw_centered_text(username, 532, 850, font_username)
+
+    # Bat OVR at (315, 1045) – moved up a bit
+    draw_centered_text(str(bat_ovr), 315, 1045, font_ovr_big)
+
+    # Bowl OVR at (748, 1045) – moved up a bit
+    draw_centered_text(str(bowl_ovr), 748, 1045, font_ovr_big)
+
+    # Convert to PNG bytes
+    output = io.BytesIO()
+    card.save(output, format="PNG")
+    output.seek(0)
+    return output
 
 def get_team_flag_url(team_name):
     """Get team flag emoji URL for images"""
@@ -204,7 +331,12 @@ def get_player_ovr(user_id, mode="career"):
         if players:
             role = players[0].get('role', 'Batsman')
 
+    # ── <18 matches nerf: reduce bat/bowl by 10%, then derive main OVR ──
+    if matches_played < 18:
+        bat_ovr = round(bat_ovr * 0.90)
+        bowl_ovr = round(bowl_ovr * 0.90)
     main_ovr = calc_player_ovr(bat_ovr, bowl_ovr, role)
+
     return bat_ovr, bowl_ovr, main_ovr, matches_played
 
 # =======================================
@@ -1701,6 +1833,13 @@ class PersonalStatsView(View):
             bowl_ovr_str = f"{FALLBACK_OVR}*"
 
         role_for_ovr = player_data['role'] if player_data else "Batsman"
+
+        # ── <18 matches nerf: reduce bat/bowl by 10%, then derive main OVR ──
+        if (matches_played or 0) < 18:
+            bat_ovr = round(bat_ovr * 0.90)
+            bowl_ovr = round(bowl_ovr * 0.90)
+            bat_ovr_str = str(bat_ovr)
+            bowl_ovr_str = str(bowl_ovr)
         main_ovr = calc_player_ovr(bat_ovr, bowl_ovr, role_for_ovr)
 
         ovr_text = f"**OVR:** {main_ovr}  •  **Bat OVR:** {bat_ovr_str}  •  **Bowl OVR:** {bowl_ovr_str}"
@@ -2975,7 +3114,153 @@ class CricketStats(commands.Cog):
             footer_text = "International Cricket • All-Time Statistics"
             embed.set_footer(text=footer_text, icon_url=embed.footer.icon_url)
 
+        # Check if user has invited 2+ members – show card if so
+        invite_count = get_invite_count(user_id, ctx.guild.id)
+        if invite_count >= 2:
+            card_file = await self._build_card_for_user(user_id, ctx)
+            if card_file:
+                # Remove avatar image from embed (card replaces it)
+                embed.set_image(url=None)
+                await ctx.send(embed=embed, file=discord.File(card_file, filename="statscard.png"))
+                return
+
         await ctx.send(embed=embed)
+
+    async def _build_card_for_user(self, user_id, ctx):
+        """Build the stats card for a user and return a BytesIO, or None on failure."""
+        try:
+            stats = get_user_stats(user_id, mode="career")
+            if not stats or stats[0] is None:
+                return None
+
+            total_runs, total_balls_faced, total_runs_conceded, total_balls_bowled, total_wickets, times_not_out, matches_played = stats
+            FALLBACK_OVR = 60
+
+            bat_unlocked = (total_balls_faced or 0) >= 60
+            bowl_unlocked = (total_balls_bowled or 0) >= 60
+
+            if bat_unlocked:
+                dism = matches_played - (times_not_out or 0)
+                bat_avg = float(total_runs or 0) / dism if dism > 0 else float(total_runs or 0) / max(matches_played, 1)
+                bat_ovr = calc_batting_ovr(bat_avg)
+            else:
+                bat_ovr = FALLBACK_OVR
+
+            if bowl_unlocked:
+                b_avg = (float(total_runs_conceded or 0) / total_wickets) if (total_wickets or 0) > 0 else 0.0
+                bowl_ovr = calc_bowling_ovr(b_avg)
+            else:
+                bowl_ovr = FALLBACK_OVR
+
+            player_name = get_player_name_by_user_id(user_id)
+            player_data = None
+            if player_name:
+                players, _ = find_player(player_name)
+                if players:
+                    player_data = players[0]
+
+            role = player_data['role'] if player_data else "Batsman"
+
+            # ── <18 matches nerf: reduce bat/bowl by 10%, then derive main OVR ──
+            if (matches_played or 0) < 18:
+                bat_ovr = round(bat_ovr * 0.90)
+                bowl_ovr = round(bowl_ovr * 0.90)
+            main_ovr = calc_player_ovr(bat_ovr, bowl_ovr, role)
+
+            member = ctx.guild.get_member(user_id)
+            avatar_url = None
+            username = None
+            if member:
+                if member.avatar:
+                    avatar_url = str(member.avatar.url)
+                username = member.name
+
+            team_name = get_user_team(user_id)
+            flag_url = get_team_flag_url(team_name) if team_name else None
+
+            card_bytes = await generate_stats_card(role, avatar_url, flag_url, main_ovr, bat_ovr, bowl_ovr, username=username)
+            return card_bytes
+        except Exception as e:
+            print(f"[Card Error] {e}")
+            return None
+
+    @commands.command(name="invites", help="Check invite count for yourself or another user")
+    async def invites_command(self, ctx, member: discord.Member = None):
+        """Shows invite count and a top-inviters leaderboard."""
+        target = member or ctx.author
+
+        # ── Personal invite count ──
+        count = get_invite_count(target.id, ctx.guild.id)
+        unlocked = count >= 2
+
+        embed = discord.Embed(
+            title="📨 Invites",
+            color=0x1E90FF
+        )
+        embed.set_author(
+            name=target.display_name,
+            icon_url=target.avatar.url if target.avatar else None
+        )
+        embed.add_field(
+            name="Invites Sent",
+            value=f"**{count}** member{'s' if count != 1 else ''} invited to this server",
+            inline=False
+        )
+        if unlocked:
+            embed.add_field(name="Card Status", value="✅ Stats card unlocked!", inline=False)
+        else:
+            needed = 2 - count
+            embed.add_field(
+                name="Card Status",
+                value=f"🔒 Invite **{needed}** more member{'s' if needed != 1 else ''} to unlock your stats card",
+                inline=False
+            )
+
+        # ── Top inviters leaderboard ──
+        conn = sqlite3.connect('players.db')
+        c = conn.cursor()
+        c.execute(
+            'SELECT user_id, invite_uses FROM invite_counts WHERE guild_id = ? ORDER BY invite_uses DESC LIMIT 10',
+            (ctx.guild.id,)
+        )
+        rows = c.fetchall()
+        conn.close()
+
+        if rows:
+            lb_lines = []
+            medals = ["🥇", "🥈", "🥉"]
+            for i, (uid, uses) in enumerate(rows):
+                m = ctx.guild.get_member(uid)
+                name = m.display_name if m else f"<@{uid}>"
+                prefix = medals[i] if i < 3 else f"**{i+1}.**"
+                lb_lines.append(f"{prefix} {name} — **{uses}** invite{'s' if uses != 1 else ''}")
+            embed.add_field(name="🏆 Top Inviters", value="\n".join(lb_lines), inline=False)
+
+        embed.set_footer(text=f"{ctx.guild.name} • Invite Leaderboard")
+        await ctx.send(embed=embed)
+
+    @commands.command(name="testcard", help="Preview your stats card")
+    async def testcard_command(self, ctx):
+        """Restricted to one specific user — previews the stats card regardless of invite count."""
+        ALLOWED_USER_ID = 765965975761715241
+        if ctx.author.id != ALLOWED_USER_ID:
+            await ctx.send("❌ You don't have permission to use this command.")
+            return
+
+        user_id = ctx.author.id
+        stats = get_user_stats(user_id, mode="career")
+        if not stats or stats[0] is None:
+            await ctx.send("❌ You haven't played any matches yet!")
+            return
+
+        card_bytes = await self._build_card_for_user(user_id, ctx)
+        if card_bytes:
+            await ctx.send(
+                content="🃏 **Your stats card preview:**",
+                file=discord.File(card_bytes, filename="statscard.png")
+            )
+        else:
+            await ctx.send("❌ Could not generate the card. Make sure you have a claimed player and match data.")
 
 async def setup(bot):
     await bot.add_cog(CricketStats(bot))
