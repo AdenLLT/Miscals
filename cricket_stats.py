@@ -116,10 +116,7 @@ async def generate_stats_card(role, avatar_url, flag_url, main_ovr, bat_ovr, bow
     draw = ImageDraw.Draw(card)
 
     def draw_centered_text(text, cx, cy, font, color=(255, 255, 255, 255)):
-        bbox = draw.textbbox((0, 0), text, font=font)
-        tw = bbox[2] - bbox[0]
-        th = bbox[3] - bbox[1]
-        draw.text((cx - tw // 2, cy - th // 2), text, font=font, fill=color)
+        draw.text((cx, cy), text, font=font, fill=color, anchor="mm")
 
     # Main OVR at (330, 445)
     draw_centered_text(str(main_ovr), 330, 445, font_ovr_main)
@@ -3114,14 +3111,14 @@ class CricketStats(commands.Cog):
             footer_text = "International Cricket • All-Time Statistics"
             embed.set_footer(text=footer_text, icon_url=embed.footer.icon_url)
 
-        # Check if user has invited 2+ members – show card if so
+        # Check if user has invited 2+ members – show card as embed image if so
         invite_count = get_invite_count(user_id, ctx.guild.id)
         if invite_count >= 2:
             card_file = await self._build_card_for_user(user_id, ctx)
             if card_file:
-                # Remove avatar image from embed (card replaces it)
-                embed.set_image(url=None)
-                await ctx.send(embed=embed, file=discord.File(card_file, filename="statscard.png"))
+                file = discord.File(card_file, filename="statscard.png")
+                embed.set_image(url="attachment://statscard.png")
+                await ctx.send(embed=embed, file=file)
                 return
 
         await ctx.send(embed=embed)
