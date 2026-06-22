@@ -49,10 +49,10 @@ async def generate_stats_card(role, avatar_url, flag_url, main_ovr, bat_ovr, bow
         font_ovr_main = ImageFont.truetype("ovrfont.otf", 240)
         font_ovr_big = ImageFont.truetype("ovrfont.otf", 210)
         # Dynamic username font: shrink by 5px per character over 16
-        base_username_size = 90
+        base_username_size = 75
         if username and len(username) > 16:
             base_username_size = max(40, base_username_size - (len(username) - 16) * 5)
-        font_username = ImageFont.truetype("userfont.otf", base_username_size)
+        font_username = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", base_username_size)
     except Exception:
         font_ovr_main = ImageFont.load_default()
         font_ovr_big = font_ovr_main
@@ -81,7 +81,7 @@ async def generate_stats_card(role, avatar_url, flag_url, main_ovr, bat_ovr, bow
             except Exception:
                 pass
 
-    # ── Paste flag at (330, 660) – centred, moved way down ──
+    # ── Paste flag at (330, 660) – centred ──
     if flag_img:
         flag_size = 105
         flag_img = flag_img.resize((flag_size, flag_size), Image.LANCZOS)
@@ -116,14 +116,17 @@ async def generate_stats_card(role, avatar_url, flag_url, main_ovr, bat_ovr, bow
     draw = ImageDraw.Draw(card)
 
     def draw_centered_text(text, cx, cy, font, color=(255, 255, 255, 255)):
-        draw.text((cx, cy), text, font=font, fill=color, anchor="mm")
+        bbox = draw.textbbox((0, 0), text, font=font)
+        tw = bbox[2] - bbox[0]
+        th = bbox[3] - bbox[1]
+        draw.text((cx - tw // 2, cy - th // 2), text, font=font, fill=color)
 
     # Main OVR at (330, 445)
     draw_centered_text(str(main_ovr), 330, 445, font_ovr_main)
 
-    # Username at (532, 850)
+    # Username at (532, 850) – uppercase italic
     if username:
-        draw_centered_text(username, 532, 850, font_username)
+        draw_centered_text(username.upper(), 532, 850, font_username)
 
     # Bat OVR at (315, 1045) – moved up a bit
     draw_centered_text(str(bat_ovr), 315, 1045, font_ovr_big)
