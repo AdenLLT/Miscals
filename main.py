@@ -77,7 +77,7 @@ bot = commands.Bot(
     help_command=MyHelp()
 )
 
-invite_cache = {}  # guild_id -> {invite_code: uses}
+invite_cache = {}  # guild_id -> {invite_code: {'uses': int, 'inviter_id': int|None}}
 
 
 @bot.event
@@ -101,7 +101,10 @@ async def on_ready():
     for guild in bot.guilds:
         try:
             invites = await guild.fetch_invites()
-            invite_cache[guild.id] = {inv.code: inv.uses for inv in invites}
+            invite_cache[guild.id] = {
+                inv.code: {'uses': inv.uses, 'inviter_id': inv.inviter.id if inv.inviter else None}
+                for inv in invites
+            }
         except Exception:
             pass
     await backup_db_to_channel()
@@ -111,30 +114,55 @@ async def on_invite_create(invite):
     guild_id = invite.guild.id
     if guild_id not in invite_cache:
         invite_cache[guild_id] = {}
-    invite_cache[guild_id][invite.code] = invite.uses
+    invite_cache[guild_id][invite.code] = {
+        'uses': invite.uses,
+        'inviter_id': invite.inviter.id if invite.inviter else None
+    }
 
 @bot.event
 async def on_member_join(member):
     guild = member.guild
     try:
         new_invites = await guild.fetch_invites()
-        old_invites = invite_cache.get(guild.id, {})
-        for invite in new_invites:
-            old_uses = old_invites.get(invite.code, 0)
-            if invite.uses > old_uses and invite.inviter:
-                inviter_id = invite.inviter.id
-                conn = sqlite3.connect('players.db')
-                c = conn.cursor()
-                c.execute(
-                    '''INSERT INTO invite_counts (user_id, guild_id, invite_uses)
-                       VALUES (?, ?, 1)
-                       ON CONFLICT(user_id, guild_id) DO UPDATE SET invite_uses = invite_uses + 1''',
-                    (inviter_id, guild.id)
-                )
-                conn.commit()
-                conn.close()
+        old_cache = invite_cache.get(guild.id, {})
+        new_map = {inv.code: inv for inv in new_invites}
+
+        inviter_id = None
+
+        # Multi-use invites: still exist but uses count went up
+        for inv in new_invites:
+            old_data = old_cache.get(inv.code, {})
+            old_uses = old_data.get('uses', 0) if isinstance(old_data, dict) else old_data
+            if inv.uses > old_uses and inv.inviter:
+                inviter_id = inv.inviter.id
                 break
-        invite_cache[guild.id] = {inv.code: inv.uses for inv in new_invites}
+
+        # Single-use invites: code was cached but is now gone (consumed on use)
+        if inviter_id is None:
+            for code, data in old_cache.items():
+                if code not in new_map:
+                    if isinstance(data, dict):
+                        inviter_id = data.get('inviter_id')
+                    if inviter_id:
+                        break
+
+        if inviter_id:
+            conn = sqlite3.connect('players.db')
+            c = conn.cursor()
+            c.execute(
+                '''INSERT INTO invite_counts (user_id, guild_id, invite_uses)
+                   VALUES (?, ?, 1)
+                   ON CONFLICT(user_id, guild_id) DO UPDATE SET invite_uses = invite_uses + 1''',
+                (inviter_id, guild.id)
+            )
+            conn.commit()
+            conn.close()
+
+        # Update cache with rich format
+        invite_cache[guild.id] = {
+            inv.code: {'uses': inv.uses, 'inviter_id': inv.inviter.id if inv.inviter else None}
+            for inv in new_invites
+        }
     except Exception:
         pass
 

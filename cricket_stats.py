@@ -3239,6 +3239,26 @@ class CricketStats(commands.Cog):
         embed.set_footer(text=f"{ctx.guild.name} • Invite Leaderboard")
         await ctx.send(embed=embed)
 
+    @commands.command(name="giveinvites", help="[Admin] Manually give invite credits to a user")
+    async def giveinvites_command(self, ctx, member: discord.Member = None, amount: int = 1):
+        if ctx.author.id != 765965975761715241:
+            return
+        if member is None:
+            await ctx.send("Usage: `-giveinvites @user [amount]`")
+            return
+        conn = sqlite3.connect('players.db')
+        c = conn.cursor()
+        c.execute(
+            '''INSERT INTO invite_counts (user_id, guild_id, invite_uses)
+               VALUES (?, ?, ?)
+               ON CONFLICT(user_id, guild_id) DO UPDATE SET invite_uses = invite_uses + ?''',
+            (member.id, ctx.guild.id, amount, amount)
+        )
+        conn.commit()
+        conn.close()
+        new_total = get_invite_count(member.id, ctx.guild.id)
+        await ctx.send(f"✅ Gave **{amount}** invite{'s' if amount != 1 else ''} to {member.mention}. They now have **{new_total}** total.")
+
     @commands.command(name="testcard", help="Preview your stats card")
     async def testcard_command(self, ctx):
         """Restricted to one specific user — previews the stats card regardless of invite count."""
