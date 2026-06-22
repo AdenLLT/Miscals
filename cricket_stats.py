@@ -342,6 +342,23 @@ def get_player_ovr(user_id, mode="career"):
 # =======================================
 
 def get_user_stats(user_id, mode="career"):
+    # ── Check for a manual stat override (career mode only) ──
+    if mode == "career":
+        try:
+            _oc = sqlite3.connect('players.db')
+            _cur = _oc.cursor()
+            _cur.execute(
+                "SELECT total_runs, total_balls_faced, total_runs_conceded, "
+                "total_balls_bowled, total_wickets, times_not_out, matches_played "
+                "FROM stat_overrides WHERE user_id = ?", (user_id,)
+            )
+            _ov = _cur.fetchone()
+            _oc.close()
+            if _ov and _ov[0] is not None:
+                return _ov  # same tuple shape as the normal query result
+        except Exception:
+            pass
+
     conn = sqlite3.connect('players.db')
     c = conn.cursor()
 
@@ -3281,6 +3298,86 @@ class CricketStats(commands.Cog):
             )
         else:
             await ctx.send("❌ Could not generate the card. Make sure you have a claimed player and match data.")
+
+    @app_commands.command(name="setovr", description="Override a user's career stats used for OVR calculation")
+    @app_commands.describe(
+        user="The Discord member to override",
+        runs="Total runs scored (batting avg numerator)",
+        balls_faced="Total balls faced — must be ≥60 to unlock bat OVR",
+        times_not_out="Times the batter was not out",
+        matches_played="Total matches played",
+        runs_conceded="Total runs conceded while bowling (bowling avg numerator)",
+        balls_bowled="Total balls bowled — must be ≥60 to unlock bowl OVR",
+        wickets="Total wickets taken"
+    )
+    async def setovr_slash(
+        self,
+        interaction: discord.Interaction,
+        user: discord.Member,
+        runs: int,
+        balls_faced: int,
+        times_not_out: int,
+        matches_played: int,
+        runs_conceded: int,
+        balls_bowled: int,
+        wickets: int
+    ):
+        required_role_id = 1452028308735922339
+        if not any(r.id == required_role_id for r in interaction.user.roles):
+            await interaction.response.send_message("❌ You don't have permission to use this command.", ephemeral=True)
+            return
+
+        conn = sqlite3.connect('players.db')
+        c = conn.cursor()
+        c.execute(
+            '''INSERT INTO stat_overrides
+               (user_id, total_runs, total_balls_faced, times_not_out, matches_played,
+                total_runs_conceded, total_balls_bowled, total_wickets)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(user_id) DO UPDATE SET
+                 total_runs = excluded.total_runs,
+                 total_balls_faced = excluded.total_balls_faced,
+                 times_not_out = excluded.times_not_out,
+                 matches_played = excluded.matches_played,
+                 total_runs_conceded = excluded.total_runs_conceded,
+                 total_balls_bowled = excluded.total_balls_bowled,
+                 total_wickets = excluded.total_wickets''',
+            (user.id, runs, balls_faced, times_not_out, matches_played,
+             runs_conceded, balls_bowled, wickets)
+        )
+        conn.commit()
+        conn.close()
+
+        # Show the resulting OVRs so the admin can confirm
+        FALLBACK_OVR = 60
+        bat_ovr = calc_batting_ovr(runs / (matches_played - times_not_out) if (matches_played - times_not_out) > 0 else runs / max(matches_played, 1)) if balls_faced >= 60 else FALLBACK_OVR
+        bowl_ovr = calc_bowling_ovr(runs_conceded / wickets if wickets > 0 else 0.0) if balls_bowled >= 60 else FALLBACK_OVR
+
+        player_name = get_player_name_by_user_id(user.id)
+        role = "Batsman"
+        if player_name:
+            players, _ = find_player(player_name)
+            if players:
+                role = players[0].get('role', 'Batsman')
+
+        if matches_played < 18:
+            bat_ovr = round(bat_ovr * 0.90)
+            bowl_ovr = round(bowl_ovr * 0.90)
+        main_ovr = calc_player_ovr(bat_ovr, bowl_ovr, role)
+
+        bat_str = str(bat_ovr) if balls_faced >= 60 else f"{bat_ovr}*"
+        bowl_str = str(bowl_ovr) if balls_bowled >= 60 else f"{bowl_ovr}*"
+
+        embed = discord.Embed(
+            title=f"✅ Stats override set for {user.display_name}",
+            color=0x2ECC71
+        )
+        embed.add_field(name="Batting", value=f"Runs: {runs} | Balls: {balls_faced} | NO: {times_not_out} | MP: {matches_played}", inline=False)
+        embed.add_field(name="Bowling", value=f"RC: {runs_conceded} | Balls: {balls_bowled} | Wkts: {wickets}", inline=False)
+        embed.add_field(name="⭐ Resulting OVR", value=f"OVR: **{main_ovr}** | Bat: **{bat_str}** | Bowl: **{bowl_str}**", inline=False)
+        if matches_played < 18:
+            embed.set_footer(text="* = provisional OVR (< 18 matches, 10% nerf applied)")
+        await interaction.response.send_message(embed=embed)
 
 async def setup(bot):
     await bot.add_cog(CricketStats(bot))

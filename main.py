@@ -78,6 +78,7 @@ bot = commands.Bot(
 )
 
 invite_cache = {}  # guild_id -> {invite_code: {'uses': int, 'inviter_id': int|None}}
+recently_deleted_invites = {}  # guild_id -> [(inviter_id, datetime)] for single-use invite detection
 
 
 @bot.event
@@ -120,31 +121,58 @@ async def on_invite_create(invite):
     }
 
 @bot.event
+async def on_invite_delete(invite):
+    """Fires when a single-use invite is consumed — capture the inviter before the invite disappears."""
+    guild_id = invite.guild.id
+    # Try to get inviter from our cache first (most reliable)
+    cached = invite_cache.get(guild_id, {}).get(invite.code, {})
+    inviter_id = cached.get('inviter_id') if isinstance(cached, dict) else None
+    # Fallback: use the invite object directly
+    if inviter_id is None and invite.inviter:
+        inviter_id = invite.inviter.id
+    if inviter_id:
+        if guild_id not in recently_deleted_invites:
+            recently_deleted_invites[guild_id] = []
+        recently_deleted_invites[guild_id].append((inviter_id, datetime.utcnow()))
+        print(f"[invites] Invite deleted — inviter {inviter_id} queued for credit in {guild_id}")
+    # Remove from cache
+    if guild_id in invite_cache:
+        invite_cache[guild_id].pop(invite.code, None)
+
+@bot.event
 async def on_member_join(member):
     guild = member.guild
     try:
         new_invites = await guild.fetch_invites()
         old_cache = invite_cache.get(guild.id, {})
-        new_map = {inv.code: inv for inv in new_invites}
 
         inviter_id = None
 
-        # Multi-use invites: still exist but uses count went up
-        for inv in new_invites:
-            old_data = old_cache.get(inv.code, {})
-            old_uses = old_data.get('uses', 0) if isinstance(old_data, dict) else old_data
-            if inv.uses > old_uses and inv.inviter:
-                inviter_id = inv.inviter.id
-                break
+        # ── Path 1: Multi-use invites (invite still exists but uses went up) ──
+        # Only attempt when cache is populated — an empty cache means we can't
+        # compare reliably and would falsely match any invite with uses > 0.
+        if old_cache:
+            for inv in new_invites:
+                old_data = old_cache.get(inv.code, {})
+                old_uses = old_data.get('uses', 0) if isinstance(old_data, dict) else 0
+                if inv.uses > old_uses and inv.inviter:
+                    inviter_id = inv.inviter.id
+                    print(f"[invites] Multi-use match: inviter {inviter_id} for {member}")
+                    break
 
-        # Single-use invites: code was cached but is now gone (consumed on use)
+        # ── Path 2: Single-use invites (caught by on_invite_delete) ──
         if inviter_id is None:
-            for code, data in old_cache.items():
-                if code not in new_map:
-                    if isinstance(data, dict):
-                        inviter_id = data.get('inviter_id')
-                    if inviter_id:
-                        break
+            now = datetime.utcnow()
+            pending = recently_deleted_invites.get(guild.id, [])
+            for inv_id, ts in reversed(pending):
+                if (now - ts).total_seconds() <= 15:
+                    inviter_id = inv_id
+                    print(f"[invites] Single-use match: inviter {inviter_id} for {member}")
+                    break
+            # Prune entries older than 30 s
+            recently_deleted_invites[guild.id] = [
+                (i, t) for i, t in pending if (now - t).total_seconds() <= 30
+            ]
 
         if inviter_id:
             conn = sqlite3.connect('players.db')
@@ -157,14 +185,17 @@ async def on_member_join(member):
             )
             conn.commit()
             conn.close()
+            print(f"[invites] ✅ Credited user {inviter_id} — {member} joined {guild.name}")
+        else:
+            print(f"[invites] ⚠️ Could not determine inviter for {member} joining {guild.name} (cache size: {len(old_cache)})")
 
-        # Update cache with rich format
+        # Update cache
         invite_cache[guild.id] = {
             inv.code: {'uses': inv.uses, 'inviter_id': inv.inviter.id if inv.inviter else None}
             for inv in new_invites
         }
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[invites error] {e}")
 
 @bot.after_invoke
 async def after_command_backup(ctx):
@@ -762,6 +793,15 @@ def init_db():
                   guild_id INTEGER,
                   invite_uses INTEGER DEFAULT 0,
                   PRIMARY KEY (user_id, guild_id))''')
+    c.execute('''CREATE TABLE IF NOT EXISTS stat_overrides
+                 (user_id INTEGER PRIMARY KEY,
+                  total_runs INTEGER,
+                  total_balls_faced INTEGER,
+                  times_not_out INTEGER,
+                  matches_played INTEGER,
+                  total_runs_conceded INTEGER,
+                  total_balls_bowled INTEGER,
+                  total_wickets INTEGER)''')
     conn.commit()
     conn.close()
 
