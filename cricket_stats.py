@@ -2362,6 +2362,7 @@ class OVRCardLeaderboardView(View):
         self.current_page = 0
         self.message = None
         self._ranked = []   # (user_id, main_ovr, bat_ovr, bowl_ovr)
+        self._loading = False  # guard against double-clicks while generating
 
     # ── Data ───────────────────────────────────────────────────────────────
     async def load_rankings(self):
@@ -2529,6 +2530,9 @@ class OVRCardLeaderboardView(View):
         if interaction.user.id != self.ctx.author.id:
             await interaction.response.send_message("❌ Not your menu!", ephemeral=True)
             return
+        if self._loading:
+            await interaction.response.defer()
+            return
         await interaction.response.defer()
         if self.current_page > 0:
             self.current_page -= 1
@@ -2539,24 +2543,31 @@ class OVRCardLeaderboardView(View):
         if interaction.user.id != self.ctx.author.id:
             await interaction.response.send_message("❌ Not your menu!", ephemeral=True)
             return
+        if self._loading:
+            await interaction.response.defer()
+            return
         await interaction.response.defer()
         if self.current_page < self.total_pages - 1:
             self.current_page += 1
         await self._update(interaction)
 
     async def _update(self, interaction):
-        embed = await self.create_embed()
-        graphic = await self.build_page_image(self.current_page)
-        self._refresh_nav()
-        if graphic:
-            f = discord.File(graphic, filename="ovr_leaderboard.png")
-            await interaction.followup.edit_message(
-                message_id=interaction.message.id, embed=embed, attachments=[f], view=self
-            )
-        else:
-            await interaction.followup.edit_message(
-                message_id=interaction.message.id, embed=embed, attachments=[], view=self
-            )
+        self._loading = True
+        try:
+            embed = await self.create_embed()
+            graphic = await self.build_page_image(self.current_page)
+            self._refresh_nav()
+            if graphic:
+                f = discord.File(graphic, filename="ovr_leaderboard.png")
+                await interaction.followup.edit_message(
+                    message_id=interaction.message.id, embed=embed, attachments=[f], view=self
+                )
+            else:
+                await interaction.followup.edit_message(
+                    message_id=interaction.message.id, embed=embed, attachments=[], view=self
+                )
+        finally:
+            self._loading = False
 
     async def on_timeout(self):
         for child in self.children:
