@@ -25,7 +25,6 @@ intents.presences = True
 intents.message_content = True
 intents.voice_states = True  # Required for voice
 intents.guilds = True  # Required for voice
-intents.invites = True
 mydb = sqlite3.connect("players.db")
 crsr = mydb.cursor()
 mydb.commit()
@@ -77,10 +76,6 @@ bot = commands.Bot(
     help_command=MyHelp()
 )
 
-invite_cache = {}  # guild_id -> {invite_code: {'uses': int, 'inviter_id': int|None}}
-recently_deleted_invites = {}  # guild_id -> [(inviter_id, datetime)] for single-use invite detection
-
-
 @bot.event
 async def on_ready():
     global elite_players
@@ -98,104 +93,7 @@ async def on_ready():
     await bot.tree.sync()
     print(f'{bot.user} has connected to Discord!')
     print(f'Bot is ready! Prefix: .')
-    # Cache all guild invites for invite tracking
-    for guild in bot.guilds:
-        try:
-            invites = await guild.fetch_invites()
-            invite_cache[guild.id] = {
-                inv.code: {'uses': inv.uses, 'inviter_id': inv.inviter.id if inv.inviter else None}
-                for inv in invites
-            }
-        except Exception:
-            pass
     await backup_db_to_channel()
-
-@bot.event
-async def on_invite_create(invite):
-    guild_id = invite.guild.id
-    if guild_id not in invite_cache:
-        invite_cache[guild_id] = {}
-    invite_cache[guild_id][invite.code] = {
-        'uses': invite.uses,
-        'inviter_id': invite.inviter.id if invite.inviter else None
-    }
-
-@bot.event
-async def on_invite_delete(invite):
-    """Fires when a single-use invite is consumed — capture the inviter before the invite disappears."""
-    guild_id = invite.guild.id
-    # Try to get inviter from our cache first (most reliable)
-    cached = invite_cache.get(guild_id, {}).get(invite.code, {})
-    inviter_id = cached.get('inviter_id') if isinstance(cached, dict) else None
-    # Fallback: use the invite object directly
-    if inviter_id is None and invite.inviter:
-        inviter_id = invite.inviter.id
-    if inviter_id:
-        if guild_id not in recently_deleted_invites:
-            recently_deleted_invites[guild_id] = []
-        recently_deleted_invites[guild_id].append((inviter_id, datetime.utcnow()))
-        print(f"[invites] Invite deleted — inviter {inviter_id} queued for credit in {guild_id}")
-    # Remove from cache
-    if guild_id in invite_cache:
-        invite_cache[guild_id].pop(invite.code, None)
-
-@bot.event
-async def on_member_join(member):
-    guild = member.guild
-    try:
-        new_invites = await guild.fetch_invites()
-        old_cache = invite_cache.get(guild.id, {})
-
-        inviter_id = None
-
-        # ── Path 1: Multi-use invites (invite still exists but uses went up) ──
-        # Only attempt when cache is populated — an empty cache means we can't
-        # compare reliably and would falsely match any invite with uses > 0.
-        if old_cache:
-            for inv in new_invites:
-                old_data = old_cache.get(inv.code, {})
-                old_uses = old_data.get('uses', 0) if isinstance(old_data, dict) else 0
-                if inv.uses > old_uses and inv.inviter:
-                    inviter_id = inv.inviter.id
-                    print(f"[invites] Multi-use match: inviter {inviter_id} for {member}")
-                    break
-
-        # ── Path 2: Single-use invites (caught by on_invite_delete) ──
-        if inviter_id is None:
-            now = datetime.utcnow()
-            pending = recently_deleted_invites.get(guild.id, [])
-            for inv_id, ts in reversed(pending):
-                if (now - ts).total_seconds() <= 15:
-                    inviter_id = inv_id
-                    print(f"[invites] Single-use match: inviter {inviter_id} for {member}")
-                    break
-            # Prune entries older than 30 s
-            recently_deleted_invites[guild.id] = [
-                (i, t) for i, t in pending if (now - t).total_seconds() <= 30
-            ]
-
-        if inviter_id:
-            conn = sqlite3.connect('players.db')
-            c = conn.cursor()
-            c.execute(
-                '''INSERT INTO invite_counts (user_id, guild_id, invite_uses)
-                   VALUES (?, ?, 1)
-                   ON CONFLICT(user_id, guild_id) DO UPDATE SET invite_uses = invite_uses + 1''',
-                (inviter_id, guild.id)
-            )
-            conn.commit()
-            conn.close()
-            print(f"[invites] ✅ Credited user {inviter_id} — {member} joined {guild.name}")
-        else:
-            print(f"[invites] ⚠️ Could not determine inviter for {member} joining {guild.name} (cache size: {len(old_cache)})")
-
-        # Update cache
-        invite_cache[guild.id] = {
-            inv.code: {'uses': inv.uses, 'inviter_id': inv.inviter.id if inv.inviter else None}
-            for inv in new_invites
-        }
-    except Exception as e:
-        print(f"[invites error] {e}")
 
 @bot.after_invoke
 async def after_command_backup(ctx):
@@ -3462,11 +3360,7 @@ async def captains_command(ctx):
     """List all teams and their captains"""
     teams_data = load_players()
 
-    embed = discord.Embed(
-        title="👑 Team Captains",
-        color=0xFFD700
-    )
-
+    fields = []
     has_captains = False
 
     for team_data in teams_data:
@@ -3476,23 +3370,25 @@ async def captains_command(ctx):
         if captain_name:
             rep_info = get_representative(captain_name)
             username = rep_info[1] if rep_info else "Unknown"
-            embed.add_field(
-                name=f"{flag} {team_data['team']}",
-                value=f"**{captain_name}**\n@{username}",
-                inline=True
-            )
+            fields.append((f"{flag} {team_data['team']}", f"**{captain_name}**\n@{username}"))
             has_captains = True
         else:
-            embed.add_field(
-                name=f"{flag} {team_data['team']}",
-                value="*No captain set*",
-                inline=True
-            )
+            fields.append((f"{flag} {team_data['team']}", "*No captain set*"))
 
-    if not has_captains:
-        embed.description = "No captains have been assigned yet."
+    # Discord allows max 25 fields per embed — split into pages if needed
+    page_size = 25
+    chunks = [fields[i:i + page_size] for i in range(0, len(fields), page_size)]
 
-    await ctx.send(embed=embed)
+    for idx, chunk in enumerate(chunks):
+        embed = discord.Embed(
+            title="👑 Team Captains" if idx == 0 else "👑 Team Captains (cont.)",
+            color=0xFFD700
+        )
+        if not has_captains and idx == 0:
+            embed.description = "No captains have been assigned yet."
+        for name, value in chunk:
+            embed.add_field(name=name, value=value, inline=True)
+        await ctx.send(embed=embed)
 
 @bot.command(name="fixcaptainstable", aliases=["fct"])
 @commands.has_permissions(administrator=True)

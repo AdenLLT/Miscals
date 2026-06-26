@@ -14,17 +14,6 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 # ========== HELPER FUNCTIONS ==========
 
-def get_invite_count(user_id, guild_id):
-    """Return how many users this user has invited to the given guild."""
-    conn = sqlite3.connect('players.db')
-    c = conn.cursor()
-    c.execute('SELECT invite_uses FROM invite_counts WHERE user_id = ? AND guild_id = ?',
-              (user_id, guild_id))
-    row = c.fetchone()
-    conn.close()
-    return row[0] if row else 0
-
-
 def _get_role_card(role):
     """Return the card image filename based on player role."""
     if role and "Wicketkeeper" in role:
@@ -2345,6 +2334,228 @@ class LeaderboardView(View):
             except:
                 pass
 
+# ========== OVR CARD LEADERBOARD ==========
+
+class OVRCardLeaderboardView(View):
+    """Leaderboard ranked by OVR, showing actual stat-cards 5 at a time."""
+
+    CARDS_PER_PAGE = 5
+    MEDAL_COLORS = [
+        (255, 215, 0),    # Gold
+        (192, 192, 192),  # Silver
+        (205, 127, 50),   # Bronze
+        (100, 149, 237),  # Blue
+        (147, 112, 219),  # Purple
+    ]
+
+    def __init__(self, ctx, bot):
+        super().__init__(timeout=300)
+        self.ctx = ctx
+        self.bot = bot
+        self.current_page = 0
+        self.message = None
+        self._ranked = []   # (user_id, main_ovr, bat_ovr, bowl_ovr)
+
+    # ── Data ───────────────────────────────────────────────────────────────
+    async def load_rankings(self):
+        if self._ranked:
+            return
+        conn = sqlite3.connect('players.db')
+        c = conn.cursor()
+        c.execute("SELECT user_id FROM player_representatives")
+        user_ids = [r[0] for r in c.fetchall()]
+        conn.close()
+
+        ranked = []
+        for uid in user_ids:
+            bat_ovr, bowl_ovr, main_ovr, _ = get_player_ovr(uid, mode="career")
+            if main_ovr is not None:
+                ranked.append((uid, main_ovr, bat_ovr or 60, bowl_ovr or 60))
+        ranked.sort(key=lambda x: x[1], reverse=True)
+        self._ranked = ranked
+
+    @property
+    def total_pages(self):
+        return max(1, (len(self._ranked) + self.CARDS_PER_PAGE - 1) // self.CARDS_PER_PAGE)
+
+    def _page_slice(self, page):
+        start = page * self.CARDS_PER_PAGE
+        return self._ranked[start:start + self.CARDS_PER_PAGE]
+
+    # ── Image generation ───────────────────────────────────────────────────
+    async def build_page_image(self, page):
+        entries = self._page_slice(page)
+        if not entries:
+            return None
+
+        start_rank = page * self.CARDS_PER_PAGE
+
+        # Generate each card
+        raw_cards = []
+        for uid, main_ovr, bat_ovr, bowl_ovr in entries:
+            player_name = get_player_name_by_user_id(uid)
+            player_data = None
+            if player_name:
+                plist, _ = find_player(player_name)
+                if plist:
+                    player_data = plist[0]
+
+            role = player_data.get('role', 'Batsman') if player_data else 'Batsman'
+            member = self.ctx.guild.get_member(uid)
+            avatar_url = str(member.avatar.url) if (member and member.avatar) else None
+            username = member.name if member else None
+            team_name = get_user_team(uid)
+            flag_url = get_team_flag_url(team_name) if team_name else None
+
+            try:
+                card_bytes = await generate_stats_card(
+                    role, avatar_url, flag_url,
+                    main_ovr, bat_ovr, bowl_ovr,
+                    username=username
+                )
+                card_bytes.seek(0)
+                raw_cards.append(Image.open(card_bytes).convert("RGBA"))
+            except Exception as e:
+                print(f"[OVR LB card error uid={uid}] {e}")
+                raw_cards.append(None)
+
+        # Layout constants
+        CARD_W, CARD_H = 360, 462
+        GAP = 22
+        TOP_PAD = 90
+        SIDE_PAD = 30
+        BOTTOM_PAD = 30
+
+        n = len(raw_cards)
+        total_w = SIDE_PAD * 2 + n * CARD_W + (n - 1) * GAP
+        total_h = TOP_PAD + CARD_H + BOTTOM_PAD
+
+        # Gradient background
+        composite = Image.new("RGBA", (total_w, total_h), (0, 0, 0, 255))
+        draw = ImageDraw.Draw(composite)
+        for y in range(total_h):
+            t = y / total_h
+            r = int(10 + 20 * t)
+            g = int(15 + 35 * t)
+            b = int(50 + 70 * t)
+            draw.rectangle([(0, y), (total_w, y + 1)], fill=(r, g, b, 255))
+
+        try:
+            rank_font  = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 48)
+            label_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 30)
+        except Exception:
+            rank_font = label_font = ImageFont.load_default()
+
+        for i, (card_img, (uid, main_ovr, bat_ovr, bowl_ovr)) in enumerate(zip(raw_cards, entries)):
+            card_x = SIDE_PAD + i * (CARD_W + GAP)
+            global_rank = start_rank + i + 1
+            medal_col = self.MEDAL_COLORS[i] if i < len(self.MEDAL_COLORS) else (255, 255, 255)
+
+            # Rank badge
+            rank_txt = f"#{global_rank}"
+            rb = draw.textbbox((0, 0), rank_txt, font=rank_font)
+            rw = rb[2] - rb[0]
+            draw.text((card_x + (CARD_W - rw) // 2, 6), rank_txt, font=rank_font, fill=medal_col)
+
+            # OVR label
+            ovr_txt = f"OVR {main_ovr}"
+            ob = draw.textbbox((0, 0), ovr_txt, font=label_font)
+            ow = ob[2] - ob[0]
+            draw.text((card_x + (CARD_W - ow) // 2, 58), ovr_txt, font=label_font, fill=(255, 255, 255))
+
+            # Paste resized card
+            if card_img is not None:
+                resized = card_img.resize((CARD_W, CARD_H), Image.LANCZOS)
+                composite.paste(resized, (card_x, TOP_PAD), resized)
+
+        out = io.BytesIO()
+        composite.convert("RGB").save(out, format="PNG", quality=95)
+        out.seek(0)
+        return out
+
+    # ── Embed ──────────────────────────────────────────────────────────────
+    async def create_embed(self):
+        entries = self._page_slice(self.current_page)
+        start_rank = self.current_page * self.CARDS_PER_PAGE
+        medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
+
+        lines = []
+        for i, (uid, main_ovr, bat_ovr, bowl_ovr) in enumerate(entries):
+            global_rank = start_rank + i + 1
+            player_name = get_player_name_by_user_id(uid)
+            member = self.ctx.guild.get_member(uid)
+            username = member.name if member else "Unknown"
+            team_name = get_user_team(uid)
+            flag = get_team_flag(team_name) if team_name else ""
+            badge = medals[i] if i < len(medals) else f"**#{global_rank}**"
+            display = f"{flag} **{player_name}**" if player_name else f"@{username}"
+            lines.append(f"{badge} {display} — OVR **{main_ovr}**")
+
+        embed = discord.Embed(
+            title="⭐ OVR Card Rankings",
+            description=("\n".join(lines) if lines else "No ranked players yet."),
+            color=0x1E90FF
+        )
+        embed.set_image(url="attachment://ovr_leaderboard.png")
+        embed.set_footer(
+            text=f"Page {self.current_page + 1} of {self.total_pages} "
+                 f"• {len(self._ranked)} players ranked • International Statistics (All-Time)"
+        )
+        return embed
+
+    # ── Buttons ────────────────────────────────────────────────────────────
+    def _refresh_nav(self):
+        for child in self.children:
+            if isinstance(child, Button):
+                if child.label == "◀️ Prev":
+                    child.disabled = (self.current_page == 0)
+                elif child.label == "Next ➡️":
+                    child.disabled = (self.current_page >= self.total_pages - 1)
+
+    @discord.ui.button(label="◀️ Prev", style=discord.ButtonStyle.secondary, row=0)
+    async def prev_btn(self, interaction: discord.Interaction, button: Button):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("❌ Not your menu!", ephemeral=True)
+            return
+        await interaction.response.defer()
+        if self.current_page > 0:
+            self.current_page -= 1
+        await self._update(interaction)
+
+    @discord.ui.button(label="Next ➡️", style=discord.ButtonStyle.secondary, row=0)
+    async def next_btn(self, interaction: discord.Interaction, button: Button):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("❌ Not your menu!", ephemeral=True)
+            return
+        await interaction.response.defer()
+        if self.current_page < self.total_pages - 1:
+            self.current_page += 1
+        await self._update(interaction)
+
+    async def _update(self, interaction):
+        embed = await self.create_embed()
+        graphic = await self.build_page_image(self.current_page)
+        self._refresh_nav()
+        if graphic:
+            f = discord.File(graphic, filename="ovr_leaderboard.png")
+            await interaction.followup.edit_message(
+                message_id=interaction.message.id, embed=embed, attachments=[f], view=self
+            )
+        else:
+            await interaction.followup.edit_message(
+                message_id=interaction.message.id, embed=embed, attachments=[], view=self
+            )
+
+    async def on_timeout(self):
+        for child in self.children:
+            child.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except Exception:
+                pass
+
+
 # ========== COG CLASS ==========
 
 class CricketStats(commands.Cog):
@@ -2832,7 +3043,14 @@ class CricketStats(commands.Cog):
         # Pass "ongoing" mode to view
         view = PersonalStatsView(ctx, user_id, mode="ongoing")
         embed = await view.create_stats_embed("overview")
-        await ctx.send(embed=embed)
+
+        card_file = await self._build_card_for_user(user_id, ctx)
+        if card_file:
+            file = discord.File(card_file, filename="statscard.png")
+            embed.set_image(url="attachment://statscard.png")
+            await ctx.send(embed=embed, file=file)
+        else:
+            await ctx.send(embed=embed)
 
     @commands.command(name="leaderboard", aliases=["lb"], help="View tournament leaderboards")
     async def leaderboard_command(self, ctx):
@@ -3052,34 +3270,25 @@ class CricketStats(commands.Cog):
 
     @commands.command(name="lbi", aliases=["internationallb"], help="View international (all-time) leaderboards")
     async def lbi_command(self, ctx):
-        """International leaderboard - shows all-time stats with blue/white theme"""
+        """International leaderboard — default view is the OVR card leaderboard."""
+        await ctx.trigger_typing()
 
-        class InternationalLeaderboardView(LeaderboardView):
-            async def create_leaderboard_embed(self, page=0):
-                embed, graphic = await super().create_leaderboard_embed(page)
-                embed.color = 0x1E90FF
+        view = OVRCardLeaderboardView(ctx, self.bot)
+        await view.load_rankings()
 
-                # Replace graphic with international-themed one for page 0 of runs/wickets
-                if page == 0 and self.stat_type in ["runs", "wickets"]:
-                    data = get_leaderboard_data(self.stat_type, self.series_id)
-                    graphic = await create_top5_graphic_international(self.stat_type, data, self.ctx.guild, self.bot)
+        if not view._ranked:
+            await ctx.send("❌ No ranked players yet — players need match data first.")
+            return
 
-                if embed.footer:
-                    footer_text = embed.footer.text.replace("Tournament Statistics", "International Statistics (All-Time)")
-                    embed.set_footer(text=footer_text)
-
-                return embed, graphic
-
-        view = InternationalLeaderboardView(ctx, "runs", self.bot)
-        embed, graphic = await view.create_leaderboard_embed(0)
+        embed = await view.create_embed()
+        graphic = await view.build_page_image(0)
+        view._refresh_nav()
 
         if graphic:
-            file = discord.File(graphic, filename="leaderboard_top5.png")
+            file = discord.File(graphic, filename="ovr_leaderboard.png")
             view.message = await ctx.send(embed=embed, file=file, view=view)
         else:
             view.message = await ctx.send(embed=embed, view=view)
-
-        view.update_buttons()
 
     @commands.command(name="statsi", aliases=["si"], help="View Career Statistics")
     async def statsi_command(self, ctx, *, target: str = None):
@@ -3131,17 +3340,13 @@ class CricketStats(commands.Cog):
             footer_text = "International Cricket • All-Time Statistics"
             embed.set_footer(text=footer_text, icon_url=embed.footer.icon_url)
 
-        # Check if user has invited 2+ members – show card as embed image if so
-        invite_count = get_invite_count(user_id, ctx.guild.id)
-        if invite_count >= 2:
-            card_file = await self._build_card_for_user(user_id, ctx)
-            if card_file:
-                file = discord.File(card_file, filename="statscard.png")
-                embed.set_image(url="attachment://statscard.png")
-                await ctx.send(embed=embed, file=file)
-                return
-
-        await ctx.send(embed=embed)
+        card_file = await self._build_card_for_user(user_id, ctx)
+        if card_file:
+            file = discord.File(card_file, filename="statscard.png")
+            embed.set_image(url="attachment://statscard.png")
+            await ctx.send(embed=embed, file=file)
+        else:
+            await ctx.send(embed=embed)
 
     async def _build_card_for_user(self, user_id, ctx):
         """Build the stats card for a user and return a BytesIO, or None on failure."""
@@ -3201,81 +3406,6 @@ class CricketStats(commands.Cog):
             print(f"[Card Error] {e}")
             return None
 
-    @commands.command(name="invites", help="Check invite count for yourself or another user")
-    async def invites_command(self, ctx, member: discord.Member = None):
-        """Shows invite count and a top-inviters leaderboard."""
-        target = member or ctx.author
-
-        # ── Personal invite count ──
-        count = get_invite_count(target.id, ctx.guild.id)
-        unlocked = count >= 2
-
-        embed = discord.Embed(
-            title="📨 Invites",
-            color=0x1E90FF
-        )
-        embed.set_author(
-            name=target.display_name,
-            icon_url=target.avatar.url if target.avatar else None
-        )
-        embed.add_field(
-            name="Invites Sent",
-            value=f"**{count}** member{'s' if count != 1 else ''} invited to this server",
-            inline=False
-        )
-        if unlocked:
-            embed.add_field(name="Card Status", value="✅ Stats card unlocked!", inline=False)
-        else:
-            needed = 2 - count
-            embed.add_field(
-                name="Card Status",
-                value=f"🔒 Invite **{needed}** more member{'s' if needed != 1 else ''} to unlock your stats card",
-                inline=False
-            )
-
-        # ── Top inviters leaderboard ──
-        conn = sqlite3.connect('players.db')
-        c = conn.cursor()
-        c.execute(
-            'SELECT user_id, invite_uses FROM invite_counts WHERE guild_id = ? ORDER BY invite_uses DESC LIMIT 10',
-            (ctx.guild.id,)
-        )
-        rows = c.fetchall()
-        conn.close()
-
-        if rows:
-            lb_lines = []
-            medals = ["🥇", "🥈", "🥉"]
-            for i, (uid, uses) in enumerate(rows):
-                m = ctx.guild.get_member(uid)
-                name = m.display_name if m else f"<@{uid}>"
-                prefix = medals[i] if i < 3 else f"**{i+1}.**"
-                lb_lines.append(f"{prefix} {name} — **{uses}** invite{'s' if uses != 1 else ''}")
-            embed.add_field(name="🏆 Top Inviters", value="\n".join(lb_lines), inline=False)
-
-        embed.set_footer(text=f"{ctx.guild.name} • Invite Leaderboard")
-        await ctx.send(embed=embed)
-
-    @commands.command(name="giveinvites", help="[Admin] Manually give invite credits to a user")
-    async def giveinvites_command(self, ctx, member: discord.Member = None, amount: int = 1):
-        if ctx.author.id != 765965975761715241:
-            return
-        if member is None:
-            await ctx.send("Usage: `-giveinvites @user [amount]`")
-            return
-        conn = sqlite3.connect('players.db')
-        c = conn.cursor()
-        c.execute(
-            '''INSERT INTO invite_counts (user_id, guild_id, invite_uses)
-               VALUES (?, ?, ?)
-               ON CONFLICT(user_id, guild_id) DO UPDATE SET invite_uses = invite_uses + ?''',
-            (member.id, ctx.guild.id, amount, amount)
-        )
-        conn.commit()
-        conn.close()
-        new_total = get_invite_count(member.id, ctx.guild.id)
-        await ctx.send(f"✅ Gave **{amount}** invite{'s' if amount != 1 else ''} to {member.mention}. They now have **{new_total}** total.")
-
     @commands.command(name="testcard", help="Preview your stats card")
     async def testcard_command(self, ctx):
         """Restricted to one specific user — previews the stats card regardless of invite count."""
@@ -3298,86 +3428,6 @@ class CricketStats(commands.Cog):
             )
         else:
             await ctx.send("❌ Could not generate the card. Make sure you have a claimed player and match data.")
-
-    @app_commands.command(name="setovr", description="Override a user's career stats used for OVR calculation")
-    @app_commands.describe(
-        user="The Discord member to override",
-        runs="Total runs scored (batting avg numerator)",
-        balls_faced="Total balls faced — must be ≥60 to unlock bat OVR",
-        times_not_out="Times the batter was not out",
-        matches_played="Total matches played",
-        runs_conceded="Total runs conceded while bowling (bowling avg numerator)",
-        balls_bowled="Total balls bowled — must be ≥60 to unlock bowl OVR",
-        wickets="Total wickets taken"
-    )
-    async def setovr_slash(
-        self,
-        interaction: discord.Interaction,
-        user: discord.Member,
-        runs: int,
-        balls_faced: int,
-        times_not_out: int,
-        matches_played: int,
-        runs_conceded: int,
-        balls_bowled: int,
-        wickets: int
-    ):
-        required_role_id = 1452028308735922339
-        if not any(r.id == required_role_id for r in interaction.user.roles):
-            await interaction.response.send_message("❌ You don't have permission to use this command.", ephemeral=True)
-            return
-
-        conn = sqlite3.connect('players.db')
-        c = conn.cursor()
-        c.execute(
-            '''INSERT INTO stat_overrides
-               (user_id, total_runs, total_balls_faced, times_not_out, matches_played,
-                total_runs_conceded, total_balls_bowled, total_wickets)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(user_id) DO UPDATE SET
-                 total_runs = excluded.total_runs,
-                 total_balls_faced = excluded.total_balls_faced,
-                 times_not_out = excluded.times_not_out,
-                 matches_played = excluded.matches_played,
-                 total_runs_conceded = excluded.total_runs_conceded,
-                 total_balls_bowled = excluded.total_balls_bowled,
-                 total_wickets = excluded.total_wickets''',
-            (user.id, runs, balls_faced, times_not_out, matches_played,
-             runs_conceded, balls_bowled, wickets)
-        )
-        conn.commit()
-        conn.close()
-
-        # Show the resulting OVRs so the admin can confirm
-        FALLBACK_OVR = 60
-        bat_ovr = calc_batting_ovr(runs / (matches_played - times_not_out) if (matches_played - times_not_out) > 0 else runs / max(matches_played, 1)) if balls_faced >= 60 else FALLBACK_OVR
-        bowl_ovr = calc_bowling_ovr(runs_conceded / wickets if wickets > 0 else 0.0) if balls_bowled >= 60 else FALLBACK_OVR
-
-        player_name = get_player_name_by_user_id(user.id)
-        role = "Batsman"
-        if player_name:
-            players, _ = find_player(player_name)
-            if players:
-                role = players[0].get('role', 'Batsman')
-
-        if matches_played < 18:
-            bat_ovr = round(bat_ovr * 0.90)
-            bowl_ovr = round(bowl_ovr * 0.90)
-        main_ovr = calc_player_ovr(bat_ovr, bowl_ovr, role)
-
-        bat_str = str(bat_ovr) if balls_faced >= 60 else f"{bat_ovr}*"
-        bowl_str = str(bowl_ovr) if balls_bowled >= 60 else f"{bowl_ovr}*"
-
-        embed = discord.Embed(
-            title=f"✅ Stats override set for {user.display_name}",
-            color=0x2ECC71
-        )
-        embed.add_field(name="Batting", value=f"Runs: {runs} | Balls: {balls_faced} | NO: {times_not_out} | MP: {matches_played}", inline=False)
-        embed.add_field(name="Bowling", value=f"RC: {runs_conceded} | Balls: {balls_bowled} | Wkts: {wickets}", inline=False)
-        embed.add_field(name="⭐ Resulting OVR", value=f"OVR: **{main_ovr}** | Bat: **{bat_str}** | Bowl: **{bowl_str}**", inline=False)
-        if matches_played < 18:
-            embed.set_footer(text="* = provisional OVR (< 18 matches, 10% nerf applied)")
-        await interaction.response.send_message(embed=embed)
 
 async def setup(bot):
     await bot.add_cog(CricketStats(bot))

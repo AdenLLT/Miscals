@@ -476,7 +476,7 @@ class Series(commands.Cog):
         init_series_db()
 
     @commands.command(name="seriesmake", aliases=["seriesm"], help="Create a new series (2-3 teams)")
-    @commands.has_permissions(administrator=True)
+    @commands.check(lambda ctx: ctx.author.guild_permissions.administrator or any(r.id == 1452028308735922339 for r in ctx.author.roles))
     async def seriesmake(self, ctx, *teams):
         """Create a series with 2 or 3 teams. Usage: -seriesmake India Pakistan [Australia]"""
 
@@ -1089,7 +1089,7 @@ class Series(commands.Cog):
         standings = c.fetchall()
 
         c.execute("UPDATE series SET is_active = 0 WHERE id = ?", (series_id,))
-        
+
         # Update international series leaderboard
         winner_team = standings[0][0] if standings else "Unknown"
         if winner_team != "Unknown":
@@ -1097,12 +1097,12 @@ class Series(commands.Cog):
             c.execute("INSERT OR IGNORE INTO international_series_lb (team_name) VALUES (?)", (winner_team,))
             # Increment wins and series_won
             c.execute("UPDATE international_series_lb SET wins = wins + 1, series_won = series_won + 1 WHERE team_name = ?", (winner_team,))
-            
+
             # Update losers
             for team_name, wins, losses, mp in standings[1:]:
                 c.execute("INSERT OR IGNORE INTO international_series_lb (team_name) VALUES (?)", (team_name,))
                 c.execute("UPDATE international_series_lb SET losses = losses + 1, series_lost = series_lost + 1 WHERE team_name = ?", (team_name,))
-        
+
         conn.commit()
         conn.close()
         winner_flag = get_team_flag(winner_team)
@@ -1239,7 +1239,7 @@ class Series(commands.Cog):
         c.execute("""UPDATE series_teams 
                     SET wins = wins + 1, matches_played = matches_played + 1, nrr = nrr + ?
                     WHERE series_id = ? AND team_name = ?""", (nrr_change, series_id, winner_team))
-        
+
         c.execute("""UPDATE series_teams 
                     SET losses = losses + 1, matches_played = matches_played + 1, nrr = nrr - ?
                     WHERE series_id = ? AND team_name = ?""", (nrr_change, series_id, opponent_team))
@@ -1292,7 +1292,7 @@ class Series(commands.Cog):
         c = conn.cursor()
         c.execute("SELECT id, name FROM series WHERE is_active = 1")
         active_series = c.fetchall()
-        
+
         if not active_series:
             await ctx.send("❌ No active series found!")
             conn.close()
@@ -1369,19 +1369,19 @@ class Series(commands.Cog):
                         f"Please get ready for your match!",
             color=0xFFA500
         )
-        
+
         await ctx.send(content=ping_text.strip(), embed=embed)
-        
+
         guild = ctx.guild
         players_notified = set()
-        
+
         for role_id in [role1_id, role2_id]:
             if not role_id:
                 continue
             role = guild.get_role(role_id)
             if not role:
                 continue
-            
+
             for member in role.members:
                 if member.id not in players_notified and not member.bot:
                     players_notified.add(member.id)
@@ -1402,61 +1402,61 @@ class Series(commands.Cog):
     async def addwinlbi(self, ctx, *, team_name):
         """Manually add a win to a team's international leaderboard"""
         team_name = team_name.strip()
-        
+
         conn = sqlite3.connect('players.db')
         c = conn.cursor()
-        
+
         # Ensure team exists in international lb
         c.execute("INSERT OR IGNORE INTO international_series_lb (team_name) VALUES (?)", (team_name,))
         # Increment wins and series_won
         c.execute("UPDATE international_series_lb SET wins = wins + 1, series_won = series_won + 1 WHERE team_name = ?", (team_name,))
-        
+
         conn.commit()
         conn.close()
-        
+
         flag = get_team_flag(team_name)
         await ctx.send(f"✅ Added win to {flag} **{team_name}**'s international leaderboard!")
-    
+
     @commands.command(name="addloselbi", help="Add a series loss to a team's international leaderboard")
     @commands.has_permissions(administrator=True)
     async def addloselbi(self, ctx, *, team_name):
         """Manually add a loss to a team's international leaderboard"""
         team_name = team_name.strip()
-        
+
         conn = sqlite3.connect('players.db')
         c = conn.cursor()
-        
+
         # Ensure team exists in international lb
         c.execute("INSERT OR IGNORE INTO international_series_lb (team_name) VALUES (?)", (team_name,))
         # Increment losses and series_lost
         c.execute("UPDATE international_series_lb SET losses = losses + 1, series_lost = series_lost + 1 WHERE team_name = ?", (team_name,))
-        
+
         conn.commit()
         conn.close()
-        
+
         flag = get_team_flag(team_name)
         await ctx.send(f"✅ Added loss to {flag} **{team_name}**'s international leaderboard!")
-    
+
     @commands.command(name="intlb", aliases=["lbiseries"], help="View international series leaderboard")
     async def international_series_lb(self, ctx):
         """View the international series leaderboard"""
         conn = sqlite3.connect('players.db')
         c = conn.cursor()
-        
+
         c.execute("SELECT team_name, wins, losses, series_won, series_lost FROM international_series_lb ORDER BY series_won DESC, wins DESC")
         standings = c.fetchall()
         conn.close()
-        
+
         if not standings:
             await ctx.send("❌ No international series data yet!")
             return
-        
+
         embed = discord.Embed(
             title="🌍 International Series Leaderboard",
             description="All-Time Series Records",
             color=0x1E90FF
         )
-        
+
         for i, (team_name, wins, losses, series_won, series_lost) in enumerate(standings, 1):
             flag = get_team_flag(team_name)
             total_series = series_won + series_lost
@@ -1465,7 +1465,7 @@ class Series(commands.Cog):
                 value=f"Series: **{series_won}W-{series_lost}L** | Matches: **{wins}W-{losses}L**",
                 inline=False
             )
-        
+
         await ctx.send(embed=embed)
 
     @commands.command(name="editteamstat", aliases=["ets"], help="[ADMIN] Edit a team's stat in tournament, series, or international leaderboard")
