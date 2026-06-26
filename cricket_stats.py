@@ -3271,8 +3271,6 @@ class CricketStats(commands.Cog):
     @commands.command(name="lbi", aliases=["internationallb"], help="View international (all-time) leaderboards")
     async def lbi_command(self, ctx):
         """International leaderboard — default view is the OVR card leaderboard."""
-        await ctx.trigger_typing()
-
         view = OVRCardLeaderboardView(ctx, self.bot)
         await view.load_rankings()
 
