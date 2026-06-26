@@ -56,9 +56,12 @@ async def restore_db_from_channel():
 
 async def backup_db_to_channel():
     """Send the current players.db to the backup channel."""
-    channel = bot.get_channel(DB_BACKUP_CHANNEL_ID)
-    if channel:
-        await channel.send(file=discord.File('players.db'))
+    try:
+        channel = bot.get_channel(DB_BACKUP_CHANNEL_ID)
+        if channel:
+            await channel.send(file=discord.File('players.db'))
+    except Exception as e:
+        print(f"[backup] DB backup failed (non-critical): {e}")
 
 class MyHelp(commands.MinimalHelpCommand):
     async def send_pages(self):
