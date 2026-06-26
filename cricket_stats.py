@@ -2,6 +2,7 @@ import discord
 import sqlite3
 import re
 import io
+import asyncio
 import aiohttp
 import json
 import os
@@ -26,10 +27,12 @@ def _get_role_card(role):
         return "batcard.png"
 
 
-async def generate_stats_card(role, avatar_url, flag_url, main_ovr, bat_ovr, bowl_ovr, username=None):
+async def generate_stats_card(role, avatar_url, flag_url, main_ovr, bat_ovr, bowl_ovr, username=None, session=None):
     """
     Generates the player stats card image and returns it as a BytesIO PNG.
     Overlays avatar, flag, and OVR numbers on the role-specific card background.
+    Pass an existing aiohttp.ClientSession as `session` to avoid the overhead of
+    creating a new one (useful when generating multiple cards in parallel).
     """
     card_file = _get_role_card(role)
     card = Image.open(card_file).convert("RGBA")
@@ -47,28 +50,32 @@ async def generate_stats_card(role, avatar_url, flag_url, main_ovr, bat_ovr, bow
         font_ovr_big = font_ovr_main
         font_username = font_ovr_main
 
-    async with aiohttp.ClientSession() as session:
+    async def _fetch(sess):
         # ── Avatar ──
         avatar_img = None
         if avatar_url:
             try:
-                async with session.get(avatar_url) as resp:
+                async with sess.get(avatar_url) as resp:
                     if resp.status == 200:
-                        avatar_data = await resp.read()
-                        avatar_img = Image.open(io.BytesIO(avatar_data)).convert("RGBA")
+                        avatar_img = Image.open(io.BytesIO(await resp.read())).convert("RGBA")
             except Exception:
                 pass
-
         # ── Flag ──
         flag_img = None
         if flag_url:
             try:
-                async with session.get(flag_url) as resp:
+                async with sess.get(flag_url) as resp:
                     if resp.status == 200:
-                        flag_data = await resp.read()
-                        flag_img = Image.open(io.BytesIO(flag_data)).convert("RGBA")
+                        flag_img = Image.open(io.BytesIO(await resp.read())).convert("RGBA")
             except Exception:
                 pass
+        return avatar_img, flag_img
+
+    if session is not None:
+        avatar_img, flag_img = await _fetch(session)
+    else:
+        async with aiohttp.ClientSession() as session:
+            avatar_img, flag_img = await _fetch(session)
 
     # ── Paste flag at (330, 660) – centred ──
     if flag_img:
@@ -2390,8 +2397,8 @@ class OVRCardLeaderboardView(View):
 
         start_rank = page * self.CARDS_PER_PAGE
 
-        # Generate each card
-        raw_cards = []
+        # Collect per-card params (pure sync, no I/O)
+        card_params = []
         for uid, main_ovr, bat_ovr, bowl_ovr in entries:
             player_name = get_player_name_by_user_id(uid)
             player_data = None
@@ -2399,25 +2406,30 @@ class OVRCardLeaderboardView(View):
                 plist, _ = find_player(player_name)
                 if plist:
                     player_data = plist[0]
-
             role = player_data.get('role', 'Batsman') if player_data else 'Batsman'
             member = self.ctx.guild.get_member(uid)
             avatar_url = str(member.avatar.url) if (member and member.avatar) else None
             username = member.name if member else None
             team_name = get_user_team(uid)
             flag_url = get_team_flag_url(team_name) if team_name else None
+            card_params.append((role, avatar_url, flag_url, main_ovr, bat_ovr, bowl_ovr, username))
 
+        # Generate all cards concurrently with a shared HTTP session
+        async def _gen(sess, role, avatar_url, flag_url, main_ovr, bat_ovr, bowl_ovr, username):
             try:
-                card_bytes = await generate_stats_card(
-                    role, avatar_url, flag_url,
-                    main_ovr, bat_ovr, bowl_ovr,
-                    username=username
-                )
-                card_bytes.seek(0)
-                raw_cards.append(Image.open(card_bytes).convert("RGBA"))
+                b = await generate_stats_card(role, avatar_url, flag_url,
+                                              main_ovr, bat_ovr, bowl_ovr,
+                                              username=username, session=sess)
+                b.seek(0)
+                return Image.open(b).convert("RGBA")
             except Exception as e:
-                print(f"[OVR LB card error uid={uid}] {e}")
-                raw_cards.append(None)
+                print(f"[OVR LB card error] {e}")
+                return None
+
+        async with aiohttp.ClientSession() as sess:
+            raw_cards = await asyncio.gather(*[
+                _gen(sess, *p) for p in card_params
+            ])
 
         # Layout constants
         CARD_W, CARD_H = 360, 462
@@ -3270,7 +3282,37 @@ class CricketStats(commands.Cog):
 
     @commands.command(name="lbi", aliases=["internationallb"], help="View international (all-time) leaderboards")
     async def lbi_command(self, ctx):
-        """International leaderboard — default view is the OVR card leaderboard."""
+        """International leaderboard - shows all-time stats with blue/white theme"""
+
+        class InternationalLeaderboardView(LeaderboardView):
+            async def create_leaderboard_embed(self, page=0):
+                embed, graphic = await super().create_leaderboard_embed(page)
+                embed.color = 0x1E90FF
+
+                if page == 0 and self.stat_type in ["runs", "wickets"]:
+                    data = get_leaderboard_data(self.stat_type, self.series_id)
+                    graphic = await create_top5_graphic_international(self.stat_type, data, self.ctx.guild, self.bot)
+
+                if embed.footer:
+                    footer_text = embed.footer.text.replace("Tournament Statistics", "International Statistics (All-Time)")
+                    embed.set_footer(text=footer_text)
+
+                return embed, graphic
+
+        view = InternationalLeaderboardView(ctx, "runs", self.bot)
+        embed, graphic = await view.create_leaderboard_embed(0)
+
+        if graphic:
+            file = discord.File(graphic, filename="leaderboard_top5.png")
+            view.message = await ctx.send(embed=embed, file=file, view=view)
+        else:
+            view.message = await ctx.send(embed=embed, view=view)
+
+        view.update_buttons()
+
+    @commands.command(name="topcards", aliases=["tc"], help="View OVR card leaderboard")
+    async def topcards_command(self, ctx):
+        """Leaderboard ranked by OVR — shows actual stat cards 5 at a time."""
         view = OVRCardLeaderboardView(ctx, self.bot)
         await view.load_rankings()
 
