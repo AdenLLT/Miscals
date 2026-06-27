@@ -149,8 +149,11 @@ async def generate_stats_card(role, avatar_url, flag_url, main_ovr, bat_ovr, bow
 async def scan_card_cache(bot):
     """
     Scan the card-cache channel and return a dict:
-        { user_id (int): {"message_id": int, "ovr": int, "url": str} }
-    Messages must match the format:  CARD_CACHE uid:<id> ovr:<ovr>
+        { user_id (int): {"message_id": int, "ovr": int, "url": str, "version": int} }
+
+    Supported message formats:
+        CARD_CACHE uid:<id> ovr:<ovr>          ← legacy, treated as version 1
+        CARD_CACHE uid:<id> ovr:<ovr> (N)      ← versioned; highest N wins per uid
     """
     guild = bot.get_guild(CARD_CACHE_GUILD_ID)
     if not guild:
@@ -160,25 +163,36 @@ async def scan_card_cache(bot):
         return {}
 
     cache = {}
-    pattern = re.compile(r"CARD_CACHE uid:(\d+) ovr:(\d+)")
+    pattern = re.compile(r"CARD_CACHE uid:(\d+) ovr:(\d+)(?: \((\d+)\))?")
     async for msg in channel.history(limit=None):
         m = pattern.search(msg.content)
         if m and msg.attachments:
-            uid = int(m.group(1))
-            ovr = int(m.group(2))
-            cache[uid] = {
-                "message_id": msg.id,
-                "ovr": ovr,
-                "url": msg.attachments[0].url,
-            }
+            uid     = int(m.group(1))
+            ovr     = int(m.group(2))
+            version = int(m.group(3)) if m.group(3) else 1
+            existing = cache.get(uid)
+            if existing is None or version > existing["version"]:
+                cache[uid] = {
+                    "message_id": msg.id,
+                    "ovr":        ovr,
+                    "url":        msg.attachments[0].url,
+                    "version":    version,
+                }
     return cache
 
 
-async def post_card_to_cache(bot, user_id, main_ovr, card_bytes, existing_msg_id=None):
+async def post_card_to_cache(bot, user_id, main_ovr, card_bytes, existing_msg_id=None, version=1):
     """
-    Post (or replace) a player card in the cache channel.
-    Deletes the old message if existing_msg_id is provided, then posts a fresh one.
-    Returns the new message object.
+    Post a versioned player card to the cache channel.
+
+    Old messages are never forcibly deleted — Discord blocks deletion of messages
+    older than 14 days.  Instead we always upload a new message with an incremented
+    version number.  scan_card_cache() picks the highest version as the active card.
+
+    Content format:  CARD_CACHE uid:<id> ovr:<ovr> (<version>)
+
+    `existing_msg_id` is accepted for backward-compat but ignored.
+    Pass `version = cached["version"] + 1` when replacing an existing card.
     """
     guild = bot.get_guild(CARD_CACHE_GUILD_ID)
     if not guild:
@@ -187,20 +201,139 @@ async def post_card_to_cache(bot, user_id, main_ovr, card_bytes, existing_msg_id
     if not channel:
         return None
 
-    if existing_msg_id:
-        try:
-            old = await channel.fetch_message(existing_msg_id)
-            await old.delete()
-        except Exception:
-            pass
-
     card_bytes.seek(0)
-    content = f"CARD_CACHE uid:{user_id} ovr:{main_ovr}"
+    content = f"CARD_CACHE uid:{user_id} ovr:{main_ovr} ({version})"
     new_msg = await channel.send(
         content=content,
         file=discord.File(card_bytes, filename=f"card_{user_id}.png"),
     )
     return new_msg
+
+
+async def ensure_card_in_cache(bot, user_id):
+    """
+    Generate and upload a card for `user_id` to the cache channel if one is
+    not already there (or if the OVR has changed).  Safe to call fire-and-forget.
+    Returns the Discord CDN URL of the cached card, or None on failure.
+    """
+    try:
+        card_cache = await scan_card_cache(bot)
+        bat_ovr, bowl_ovr, main_ovr, _ = get_player_ovr(user_id, mode="career")
+        if main_ovr is None:
+            return None
+
+        cached = card_cache.get(user_id)
+        if cached and cached["ovr"] == main_ovr:
+            return cached["url"]
+
+        player_name = get_player_name_by_user_id(user_id)
+        player_data = None
+        if player_name:
+            plist, _ = find_player(player_name)
+            if plist:
+                player_data = plist[0]
+        role = player_data.get('role', 'Batsman') if player_data else 'Batsman'
+
+        try:
+            user = await bot.fetch_user(user_id)
+            avatar_url = str(user.avatar.url) if user.avatar else None
+            username = user.name
+        except Exception:
+            avatar_url = None
+            username = None
+
+        team_name = get_user_team(user_id)
+        flag_url = get_team_flag_url(team_name) if team_name else None
+
+        async with aiohttp.ClientSession() as sess:
+            card_bytes = await generate_stats_card(
+                role, avatar_url, flag_url,
+                main_ovr, bat_ovr or 60, bowl_ovr or 60,
+                username=username, session=sess
+            )
+
+        next_version = (cached["version"] + 1) if cached else 1
+        new_msg = await post_card_to_cache(bot, user_id, main_ovr, card_bytes, version=next_version)
+        if new_msg:
+            return new_msg.attachments[0].url
+    except Exception as e:
+        print(f"[ensure_card_in_cache] uid={user_id}: {e}")
+    return None
+
+
+async def startup_sync_card_cache(bot):
+    """
+    Background task called once on bot startup.
+    Scans all claimed Discord users and uploads a card for any who are missing
+    from the cache channel.  Cards that are already present are left untouched.
+    """
+    try:
+        await asyncio.sleep(5)          # give the bot a moment to finish connecting
+        card_cache = await scan_card_cache(bot)
+
+        conn = sqlite3.connect('players.db')
+        c = conn.cursor()
+        c.execute("SELECT user_id FROM player_representatives")
+        user_ids = [r[0] for r in c.fetchall()]
+        conn.close()
+
+        print(f"[CardCache] Startup sync: {len(user_ids)} claimed users, {len(card_cache)} cached cards")
+
+        for uid in user_ids:
+            try:
+                bat_ovr, bowl_ovr, main_ovr, _ = get_player_ovr(uid, mode="career")
+                if main_ovr is None:
+                    continue
+
+                cached = card_cache.get(uid)
+                if cached and cached["ovr"] == main_ovr:
+                    continue        # already up-to-date, leave it alone
+
+                player_name = get_player_name_by_user_id(uid)
+                player_data = None
+                if player_name:
+                    plist, _ = find_player(player_name)
+                    if plist:
+                        player_data = plist[0]
+                role = player_data.get('role', 'Batsman') if player_data else 'Batsman'
+
+                try:
+                    user = await bot.fetch_user(uid)
+                    avatar_url = str(user.avatar.url) if user.avatar else None
+                    username = user.name
+                except Exception:
+                    avatar_url = None
+                    username = None
+
+                team_name = get_user_team(uid)
+                flag_url = get_team_flag_url(team_name) if team_name else None
+
+                async with aiohttp.ClientSession() as sess:
+                    card_bytes = await generate_stats_card(
+                        role, avatar_url, flag_url,
+                        main_ovr, bat_ovr or 60, bowl_ovr or 60,
+                        username=username, session=sess
+                    )
+
+                next_version = (cached["version"] + 1) if cached else 1
+                new_msg = await post_card_to_cache(bot, uid, main_ovr, card_bytes, version=next_version)
+                if new_msg:
+                    card_cache[uid] = {
+                        "message_id": new_msg.id,
+                        "ovr": main_ovr,
+                        "url": new_msg.attachments[0].url,
+                        "version": next_version,
+                    }
+                    print(f"[CardCache] Uploaded card for uid={uid} v{next_version}")
+
+                await asyncio.sleep(0.5)   # avoid rate-limits
+
+            except Exception as e:
+                print(f"[CardCache] startup_sync uid={uid}: {e}")
+
+        print("[CardCache] Startup sync complete.")
+    except Exception as e:
+        print(f"[CardCache] startup_sync_card_cache failed: {e}")
 
 
 async def fetch_cached_card_image(url, session):
@@ -2514,11 +2647,11 @@ class OVRCardLeaderboardView(View):
                     b = await generate_stats_card(role, avatar_url, flag_url,
                                                   main_ovr, bat_ovr, bowl_ovr,
                                                   username=username, session=sess)
-                    existing_id = cached["message_id"] if cached else None
-                    new_msg = await post_card_to_cache(self.bot, uid, main_ovr, b, existing_msg_id=existing_id)
+                    next_version = (cached["version"] + 1) if cached else 1
+                    new_msg = await post_card_to_cache(self.bot, uid, main_ovr, b, version=next_version)
                     if new_msg:
                         url = new_msg.attachments[0].url
-                        self._card_cache[uid] = {"message_id": new_msg.id, "ovr": main_ovr, "url": url}
+                        self._card_cache[uid] = {"message_id": new_msg.id, "ovr": main_ovr, "url": url, "version": next_version}
                         results.append((uid, main_ovr, url))
                     else:
                         results.append((uid, main_ovr, None))
@@ -3449,13 +3582,33 @@ class CricketStats(commands.Cog):
             footer_text = "International Cricket • All-Time Statistics"
             embed.set_footer(text=footer_text, icon_url=embed.footer.icon_url)
 
-        card_file = await self._build_card_for_user(user_id, ctx)
-        if card_file:
-            file = discord.File(card_file, filename="statscard.png")
-            embed.set_image(url="attachment://statscard.png")
-            await ctx.send(embed=embed, file=file)
-        else:
+        # Check the cache channel first — only regenerate when OVR has changed.
+        bat_ovr, bowl_ovr, main_ovr, _ = get_player_ovr(user_id, mode="career")
+        card_url = None
+        if main_ovr is not None:
+            card_cache = await scan_card_cache(self.bot)
+            cached = card_cache.get(user_id)
+            if cached and cached["ovr"] == main_ovr:
+                card_url = cached["url"]
+            else:
+                card_file = await self._build_card_for_user(user_id, ctx)
+                if card_file:
+                    next_version = (cached["version"] + 1) if cached else 1
+                    new_msg = await post_card_to_cache(self.bot, user_id, main_ovr, card_file, version=next_version)
+                    if new_msg:
+                        card_url = new_msg.attachments[0].url
+
+        if card_url:
+            embed.set_image(url=card_url)
             await ctx.send(embed=embed)
+        else:
+            card_file = await self._build_card_for_user(user_id, ctx)
+            if card_file:
+                file = discord.File(card_file, filename="statscard.png")
+                embed.set_image(url="attachment://statscard.png")
+                await ctx.send(embed=embed, file=file)
+            else:
+                await ctx.send(embed=embed)
 
     async def _build_card_for_user(self, user_id, ctx):
         """Build the stats card for a user and return a BytesIO, or None on failure."""
@@ -3559,15 +3712,16 @@ class CricketStats(commands.Cog):
                         username=username,
                     )
                     cached = card_cache.get(uid)
-                    existing_id = cached["message_id"] if cached else None
-                    new_msg = await post_card_to_cache(self.bot, uid, new_main, card_bytes, existing_msg_id=existing_id)
+                    next_version = (cached["version"] + 1) if cached else 1
+                    new_msg = await post_card_to_cache(self.bot, uid, new_main, card_bytes, version=next_version)
                     if new_msg:
                         card_cache[uid] = {
                             "message_id": new_msg.id,
                             "ovr": new_main,
                             "url": new_msg.attachments[0].url,
+                            "version": next_version,
                         }
-                        print(f"[CardCache] Auto-updated card for uid {uid}: bat {old_bat}->{new_bat}, bowl {old_bowl}->{new_bowl}, main OVR={new_main}")
+                        print(f"[CardCache] Auto-updated card for uid {uid} v{next_version}: bat {old_bat}->{new_bat}, bowl {old_bowl}->{new_bowl}, main OVR={new_main}")
 
                     await asyncio.sleep(0.5)  # gentle rate-limit
 
@@ -3653,13 +3807,14 @@ class CricketStats(commands.Cog):
                     username=username
                 )
 
-                existing_id = cached["message_id"] if cached else None
-                new_msg = await post_card_to_cache(self.bot, uid, main_ovr, card_bytes, existing_msg_id=existing_id)
+                next_version = (cached["version"] + 1) if cached else 1
+                new_msg = await post_card_to_cache(self.bot, uid, main_ovr, card_bytes, version=next_version)
                 if new_msg:
                     card_cache[uid] = {
                         "message_id": new_msg.id,
                         "ovr": main_ovr,
                         "url": new_msg.attachments[0].url,
+                        "version": next_version,
                     }
                     uploaded += 1
                 else:

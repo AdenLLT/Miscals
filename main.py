@@ -1,4 +1,5 @@
 from keep_alive import keep_alive
+from cricket_stats import ensure_card_in_cache, startup_sync_card_cache
 import discord
 import os
 import json
@@ -97,6 +98,8 @@ async def on_ready():
     print(f'{bot.user} has connected to Discord!')
     print(f'Bot is ready! Prefix: .')
     await backup_db_to_channel()
+    # Ensure every claimed user has a card in the cache channel
+    asyncio.get_event_loop().create_task(startup_sync_card_cache(bot))
 
 @bot.after_invoke
 async def after_command_backup(ctx):
@@ -1722,6 +1725,9 @@ async def claim_command(ctx, user: discord.Member, *, player_name: str):
         f"✅ {user.mention} is now representing **{player['name']}** from {team_name}!"
     )
 
+    # Upload a card for the new user to the cache channel
+    asyncio.get_event_loop().create_task(ensure_card_in_cache(bot, user.id))
+
     # Send notification to claims channel
     claims_channel = bot.get_channel(1452037538792476682)
     if claims_channel:
@@ -2045,6 +2051,9 @@ class PlayerSelectView(View):
                   (player['name'], interaction.user.id, interaction.user.name))
         conn.commit()
         conn.close()
+
+        # Upload a card for the new user to the cache channel
+        asyncio.get_event_loop().create_task(ensure_card_in_cache(bot, interaction.user.id))
 
         # Send success message to user
         await interaction.response.send_message(
