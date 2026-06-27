@@ -11,6 +11,13 @@ from discord import app_commands
 from discord.ui import View, Button
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
+# ========== CARD CACHE CONFIG ==========
+CARD_CACHE_GUILD_ID    = 886642304335609937
+CARD_CACHE_CHANNEL_ID  = 886642304792805418
+# Message format posted to the cache channel:
+#   content: "CARD_CACHE uid:<user_id> ovr:<main_ovr>"
+#   attachment: the player card PNG
+
 # ========== HELPER FUNCTIONS ==========
 
 # ========== HELPER FUNCTIONS ==========
@@ -135,6 +142,78 @@ async def generate_stats_card(role, avatar_url, flag_url, main_ovr, bat_ovr, bow
     card.save(output, format="PNG")
     output.seek(0)
     return output
+
+
+# ========== CARD CACHE HELPERS ==========
+
+async def scan_card_cache(bot):
+    """
+    Scan the card-cache channel and return a dict:
+        { user_id (int): {"message_id": int, "ovr": int, "url": str} }
+    Messages must match the format:  CARD_CACHE uid:<id> ovr:<ovr>
+    """
+    guild = bot.get_guild(CARD_CACHE_GUILD_ID)
+    if not guild:
+        return {}
+    channel = guild.get_channel(CARD_CACHE_CHANNEL_ID)
+    if not channel:
+        return {}
+
+    cache = {}
+    pattern = re.compile(r"CARD_CACHE uid:(\d+) ovr:(\d+)")
+    async for msg in channel.history(limit=None):
+        m = pattern.search(msg.content)
+        if m and msg.attachments:
+            uid = int(m.group(1))
+            ovr = int(m.group(2))
+            cache[uid] = {
+                "message_id": msg.id,
+                "ovr": ovr,
+                "url": msg.attachments[0].url,
+            }
+    return cache
+
+
+async def post_card_to_cache(bot, user_id, main_ovr, card_bytes, existing_msg_id=None):
+    """
+    Post (or replace) a player card in the cache channel.
+    Deletes the old message if existing_msg_id is provided, then posts a fresh one.
+    Returns the new message object.
+    """
+    guild = bot.get_guild(CARD_CACHE_GUILD_ID)
+    if not guild:
+        return None
+    channel = guild.get_channel(CARD_CACHE_CHANNEL_ID)
+    if not channel:
+        return None
+
+    if existing_msg_id:
+        try:
+            old = await channel.fetch_message(existing_msg_id)
+            await old.delete()
+        except Exception:
+            pass
+
+    card_bytes.seek(0)
+    content = f"CARD_CACHE uid:{user_id} ovr:{main_ovr}"
+    new_msg = await channel.send(
+        content=content,
+        file=discord.File(card_bytes, filename=f"card_{user_id}.png"),
+    )
+    return new_msg
+
+
+async def fetch_cached_card_image(url, session):
+    """Download a card image from a Discord attachment URL. Returns PIL Image or None."""
+    try:
+        async with session.get(url) as resp:
+            if resp.status == 200:
+                data = await resp.read()
+                return Image.open(io.BytesIO(data)).convert("RGBA")
+    except Exception:
+        pass
+    return None
+
 
 def get_team_flag_url(team_name):
     """Get team flag emoji URL for images"""
@@ -2363,6 +2442,7 @@ class OVRCardLeaderboardView(View):
         self.message = None
         self._ranked = []   # (user_id, main_ovr, bat_ovr, bowl_ovr)
         self._loading = False  # guard against double-clicks while generating
+        self._card_cache = {}  # uid -> {"message_id", "ovr", "url"}
 
     # ── Data ───────────────────────────────────────────────────────────────
     async def load_rankings(self):
@@ -2382,6 +2462,9 @@ class OVRCardLeaderboardView(View):
         ranked.sort(key=lambda x: x[1], reverse=True)
         self._ranked = ranked
 
+        # Pre-load card cache from the dedicated channel
+        self._card_cache = await scan_card_cache(self.bot)
+
     @property
     def total_pages(self):
         return max(1, (len(self._ranked) + self.CARDS_PER_PAGE - 1) // self.CARDS_PER_PAGE)
@@ -2390,131 +2473,98 @@ class OVRCardLeaderboardView(View):
         start = page * self.CARDS_PER_PAGE
         return self._ranked[start:start + self.CARDS_PER_PAGE]
 
-    # ── Image generation ───────────────────────────────────────────────────
-    async def build_page_image(self, page):
+    # ── Card URLs (fetch from cache or generate + cache) ───────────────────
+    async def get_page_card_urls(self, page):
+        """
+        For each player on the page, returns their cached card URL.
+        If the cache is missing or the OVR changed, generates a new card,
+        posts it to the cache channel, and returns the fresh URL.
+        No image bytes are downloaded for display — URLs are used directly.
+        """
         entries = self._page_slice(page)
-        if not entries:
-            return None
-
-        start_rank = page * self.CARDS_PER_PAGE
-
-        # Collect per-card params (pure sync, no I/O)
-        card_params = []
-        for uid, main_ovr, bat_ovr, bowl_ovr in entries:
-            player_name = get_player_name_by_user_id(uid)
-            player_data = None
-            if player_name:
-                plist, _ = find_player(player_name)
-                if plist:
-                    player_data = plist[0]
-            role = player_data.get('role', 'Batsman') if player_data else 'Batsman'
-            member = self.ctx.guild.get_member(uid)
-            avatar_url = str(member.avatar.url) if (member and member.avatar) else None
-            username = member.name if member else None
-            team_name = get_user_team(uid)
-            flag_url = get_team_flag_url(team_name) if team_name else None
-            card_params.append((role, avatar_url, flag_url, main_ovr, bat_ovr, bowl_ovr, username))
-
-        # Generate all cards concurrently with a shared HTTP session
-        async def _gen(sess, role, avatar_url, flag_url, main_ovr, bat_ovr, bowl_ovr, username):
-            try:
-                b = await generate_stats_card(role, avatar_url, flag_url,
-                                              main_ovr, bat_ovr, bowl_ovr,
-                                              username=username, session=sess)
-                b.seek(0)
-                return Image.open(b).convert("RGBA")
-            except Exception as e:
-                print(f"[OVR LB card error] {e}")
-                return None
+        results = []
 
         async with aiohttp.ClientSession() as sess:
-            raw_cards = await asyncio.gather(*[
-                _gen(sess, *p) for p in card_params
-            ])
+            for uid, main_ovr, bat_ovr, bowl_ovr in entries:
+                cached = self._card_cache.get(uid)
+                if cached and cached["ovr"] == main_ovr:
+                    # Card already in cache channel with correct OVR — copy URL directly
+                    results.append((uid, main_ovr, cached["url"]))
+                    continue
 
-        # Layout constants
-        CARD_W, CARD_H = 360, 462
-        GAP = 22
-        TOP_PAD = 90
-        SIDE_PAD = 30
-        BOTTOM_PAD = 30
+                # Generate a new card and upload it to the cache channel
+                try:
+                    player_name = get_player_name_by_user_id(uid)
+                    player_data = None
+                    if player_name:
+                        plist, _ = find_player(player_name)
+                        if plist:
+                            player_data = plist[0]
+                    role = player_data.get('role', 'Batsman') if player_data else 'Batsman'
+                    member = self.ctx.guild.get_member(uid)
+                    avatar_url = str(member.avatar.url) if (member and member.avatar) else None
+                    username = member.name if member else None
+                    team_name = get_user_team(uid)
+                    flag_url = get_team_flag_url(team_name) if team_name else None
 
-        n = len(raw_cards)
-        total_w = SIDE_PAD * 2 + n * CARD_W + (n - 1) * GAP
-        total_h = TOP_PAD + CARD_H + BOTTOM_PAD
+                    b = await generate_stats_card(role, avatar_url, flag_url,
+                                                  main_ovr, bat_ovr, bowl_ovr,
+                                                  username=username, session=sess)
+                    existing_id = cached["message_id"] if cached else None
+                    new_msg = await post_card_to_cache(self.bot, uid, main_ovr, b, existing_msg_id=existing_id)
+                    if new_msg:
+                        url = new_msg.attachments[0].url
+                        self._card_cache[uid] = {"message_id": new_msg.id, "ovr": main_ovr, "url": url}
+                        results.append((uid, main_ovr, url))
+                    else:
+                        results.append((uid, main_ovr, None))
+                except Exception as e:
+                    print(f"[OVR LB card error] uid={uid}: {e}")
+                    results.append((uid, main_ovr, None))
 
-        # Gradient background
-        composite = Image.new("RGBA", (total_w, total_h), (0, 0, 0, 255))
-        draw = ImageDraw.Draw(composite)
-        for y in range(total_h):
-            t = y / total_h
-            r = int(10 + 20 * t)
-            g = int(15 + 35 * t)
-            b = int(50 + 70 * t)
-            draw.rectangle([(0, y), (total_w, y + 1)], fill=(r, g, b, 255))
+        return results
 
-        try:
-            rank_font  = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 48)
-            label_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 30)
-        except Exception:
-            rank_font = label_font = ImageFont.load_default()
-
-        for i, (card_img, (uid, main_ovr, bat_ovr, bowl_ovr)) in enumerate(zip(raw_cards, entries)):
-            card_x = SIDE_PAD + i * (CARD_W + GAP)
-            global_rank = start_rank + i + 1
-            medal_col = self.MEDAL_COLORS[i] if i < len(self.MEDAL_COLORS) else (255, 255, 255)
-
-            # Rank badge
-            rank_txt = f"#{global_rank}"
-            rb = draw.textbbox((0, 0), rank_txt, font=rank_font)
-            rw = rb[2] - rb[0]
-            draw.text((card_x + (CARD_W - rw) // 2, 6), rank_txt, font=rank_font, fill=medal_col)
-
-            # OVR label
-            ovr_txt = f"OVR {main_ovr}"
-            ob = draw.textbbox((0, 0), ovr_txt, font=label_font)
-            ow = ob[2] - ob[0]
-            draw.text((card_x + (CARD_W - ow) // 2, 58), ovr_txt, font=label_font, fill=(255, 255, 255))
-
-            # Paste resized card
-            if card_img is not None:
-                resized = card_img.resize((CARD_W, CARD_H), Image.LANCZOS)
-                composite.paste(resized, (card_x, TOP_PAD), resized)
-
-        out = io.BytesIO()
-        composite.convert("RGB").save(out, format="PNG", quality=95)
-        out.seek(0)
-        return out
-
-    # ── Embed ──────────────────────────────────────────────────────────────
-    async def create_embed(self):
-        entries = self._page_slice(self.current_page)
-        start_rank = self.current_page * self.CARDS_PER_PAGE
+    # ── Embeds (one per card, image = cached Discord CDN URL) ──────────────
+    async def create_embeds(self, page):
+        entries = self._page_slice(page)
+        start_rank = page * self.CARDS_PER_PAGE
         medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
 
-        lines = []
-        for i, (uid, main_ovr, bat_ovr, bowl_ovr) in enumerate(entries):
+        card_urls = await self.get_page_card_urls(page)
+
+        embeds = []
+        for i, ((uid, main_ovr, card_url), (_, __, bat_ovr, bowl_ovr)) in enumerate(
+            zip(card_urls, entries)
+        ):
             global_rank = start_rank + i + 1
             player_name = get_player_name_by_user_id(uid)
             member = self.ctx.guild.get_member(uid)
             username = member.name if member else "Unknown"
             team_name = get_user_team(uid)
             flag = get_team_flag(team_name) if team_name else ""
-            badge = medals[i] if i < len(medals) else f"**#{global_rank}**"
+            badge = medals[i] if i < len(medals) else f"#{global_rank}"
             display = f"{flag} **{player_name}**" if player_name else f"@{username}"
-            lines.append(f"{badge} {display} — OVR **{main_ovr}**")
 
-        embed = discord.Embed(
-            title="⭐ OVR Card Rankings",
-            description=("\n".join(lines) if lines else "No ranked players yet."),
-            color=0x1E90FF
-        )
-        embed.set_image(url="attachment://ovr_leaderboard.png")
-        embed.set_footer(
-            text=f"Page {self.current_page + 1} of {self.total_pages} "
-                 f"• {len(self._ranked)} players ranked • International Statistics (All-Time)"
-        )
-        return embed
+            embed = discord.Embed(
+                title=f"{badge} #{global_rank}  •  OVR {main_ovr}",
+                description=display,
+                color=0x1E90FF,
+            )
+            if card_url:
+                embed.set_image(url=card_url)
+
+            if i == 0:
+                embed.set_author(
+                    name=f"⭐ OVR Card Rankings  •  Page {page + 1}/{self.total_pages}  •  {len(self._ranked)} players"
+                )
+            if i == len(card_urls) - 1:
+                embed.set_footer(text="International Statistics (All-Time)")
+
+            embeds.append(embed)
+
+        return embeds if embeds else [
+            discord.Embed(title="⭐ OVR Card Rankings", description="No ranked players yet.", color=0x1E90FF)
+        ]
 
     # ── Buttons ────────────────────────────────────────────────────────────
     def _refresh_nav(self):
@@ -2554,18 +2604,14 @@ class OVRCardLeaderboardView(View):
     async def _update(self, interaction):
         self._loading = True
         try:
-            embed = await self.create_embed()
-            graphic = await self.build_page_image(self.current_page)
+            embeds = await self.create_embeds(self.current_page)
             self._refresh_nav()
-            if graphic:
-                f = discord.File(graphic, filename="ovr_leaderboard.png")
-                await interaction.followup.edit_message(
-                    message_id=interaction.message.id, embed=embed, attachments=[f], view=self
-                )
-            else:
-                await interaction.followup.edit_message(
-                    message_id=interaction.message.id, embed=embed, attachments=[], view=self
-                )
+            await interaction.followup.edit_message(
+                message_id=interaction.message.id,
+                embeds=embeds,
+                attachments=[],
+                view=self,
+            )
         finally:
             self._loading = False
 
@@ -2803,6 +2849,14 @@ class CricketStats(commands.Cog):
 
         # Now process the stats with the confirmed team scores
         team_stats = {}
+
+        # Snapshot OVRs BEFORE inserting new stats (to detect changes afterward)
+        pre_ovrs = {}
+        for match in matches:
+            uid = int(match[0])
+            bat_ovr, bowl_ovr, _, _ = get_player_ovr(uid, mode="career")
+            pre_ovrs[uid] = (bat_ovr, bowl_ovr)
+
         conn = sqlite3.connect('players.db')
         c = conn.cursor()
 
@@ -2839,6 +2893,9 @@ class CricketStats(commands.Cog):
 
         conn.commit()
         conn.close()
+
+        # Fire-and-forget: update cache channel cards for players whose OVR changed
+        asyncio.ensure_future(self._update_changed_cards(pre_ovrs))
 
         # Use the confirmed team scores
         team1_wickets = team_scores[team1]['wickets']
@@ -3331,15 +3388,9 @@ class CricketStats(commands.Cog):
             await ctx.send("❌ No ranked players yet — players need match data first.")
             return
 
-        embed = await view.create_embed()
-        graphic = await view.build_page_image(0)
+        embeds = await view.create_embeds(0)
         view._refresh_nav()
-
-        if graphic:
-            file = discord.File(graphic, filename="ovr_leaderboard.png")
-            view.message = await ctx.send(embed=embed, file=file, view=view)
-        else:
-            view.message = await ctx.send(embed=embed, view=view)
+        view.message = await ctx.send(embeds=embeds, view=view)
 
     @commands.command(name="statsi", aliases=["si"], help="View Career Statistics")
     async def statsi_command(self, ctx, *, target: str = None):
@@ -3456,6 +3507,166 @@ class CricketStats(commands.Cog):
         except Exception as e:
             print(f"[Card Error] {e}")
             return None
+
+    async def _update_changed_cards(self, pre_ovrs: dict):
+        """
+        Background task: compare each player's OVR before and after stats were added.
+        For any player whose batting OVR or bowling OVR changed, regenerate their card
+        and post the updated version to the card-cache channel.
+        pre_ovrs: { user_id (int): (old_bat_ovr, old_bowl_ovr) }
+        """
+        try:
+            card_cache = await scan_card_cache(self.bot)
+            guild = self.bot.get_guild(CARD_CACHE_GUILD_ID)
+
+            for uid, (old_bat, old_bowl) in pre_ovrs.items():
+                try:
+                    new_bat, new_bowl, new_main, _ = get_player_ovr(uid, mode="career")
+                    if new_main is None:
+                        continue
+                    if new_bat == old_bat and new_bowl == old_bowl:
+                        continue  # OVR unchanged — skip
+
+                    # OVR changed — build and upload a fresh card
+                    player_name = get_player_name_by_user_id(uid)
+                    player_data = None
+                    if player_name:
+                        plist, _ = find_player(player_name)
+                        if plist:
+                            player_data = plist[0]
+                    role = player_data.get('role', 'Batsman') if player_data else 'Batsman'
+
+                    member = guild.get_member(uid) if guild else None
+                    avatar_url = str(member.avatar.url) if (member and member.avatar) else None
+                    username = member.name if member else None
+                    team_name = get_user_team(uid)
+                    flag_url = get_team_flag_url(team_name) if team_name else None
+
+                    card_bytes = await generate_stats_card(
+                        role, avatar_url, flag_url,
+                        new_main, new_bat or 60, new_bowl or 60,
+                        username=username,
+                    )
+                    cached = card_cache.get(uid)
+                    existing_id = cached["message_id"] if cached else None
+                    new_msg = await post_card_to_cache(self.bot, uid, new_main, card_bytes, existing_msg_id=existing_id)
+                    if new_msg:
+                        card_cache[uid] = {
+                            "message_id": new_msg.id,
+                            "ovr": new_main,
+                            "url": new_msg.attachments[0].url,
+                        }
+                        print(f"[CardCache] Auto-updated card for uid {uid}: bat {old_bat}->{new_bat}, bowl {old_bowl}->{new_bowl}, main OVR={new_main}")
+
+                    await asyncio.sleep(0.5)  # gentle rate-limit
+
+                except Exception as e:
+                    print(f"[CardCache] Error updating card for uid {uid}: {e}")
+
+        except Exception as e:
+            print(f"[CardCache] _update_changed_cards failed: {e}")
+
+    @commands.command(name="uploadallcards", aliases=["uac"], help="[ADMIN] Upload all player cards to the cache channel")
+    @commands.has_any_role(1452028308735922339)
+    async def uploadallcards_command(self, ctx):
+        """
+        Generates every claimed player's card and posts it to the card-cache channel
+        (CARD_CACHE_CHANNEL_ID).  Any player whose card is already cached with the
+        correct OVR is skipped.  Players with an outdated OVR get a fresh card.
+        """
+        guild = self.bot.get_guild(CARD_CACHE_GUILD_ID)
+        if not guild:
+            await ctx.send("❌ Cannot find the card-cache server.")
+            return
+        cache_channel = guild.get_channel(CARD_CACHE_CHANNEL_ID)
+        if not cache_channel:
+            await ctx.send("❌ Cannot find the card-cache channel.")
+            return
+
+        status_msg = await ctx.send("⏳ Scanning existing card cache…")
+
+        # Build current cache map
+        card_cache = await scan_card_cache(self.bot)
+
+        # Fetch all claimed players
+        conn = sqlite3.connect('players.db')
+        c = conn.cursor()
+        c.execute("SELECT user_id FROM player_representatives")
+        user_ids = [r[0] for r in c.fetchall()]
+        conn.close()
+
+        total = len(user_ids)
+        uploaded = 0
+        skipped = 0
+        failed = 0
+
+        await status_msg.edit(content=f"⏳ Processing **{total}** players… (0/{total})")
+
+        for i, uid in enumerate(user_ids, 1):
+            try:
+                bat_ovr, bowl_ovr, main_ovr, _ = get_player_ovr(uid, mode="career")
+                if main_ovr is None:
+                    skipped += 1
+                    continue
+
+                # Check if cached card is already up-to-date
+                cached = card_cache.get(uid)
+                if cached and cached["ovr"] == main_ovr:
+                    skipped += 1
+                    if i % 10 == 0:
+                        await status_msg.edit(content=f"⏳ Processing **{total}** players… ({i}/{total})")
+                    continue
+
+                # Build card
+                player_name = get_player_name_by_user_id(uid)
+                player_data = None
+                if player_name:
+                    plist, _ = find_player(player_name)
+                    if plist:
+                        player_data = plist[0]
+                role = player_data.get('role', 'Batsman') if player_data else 'Batsman'
+
+                member = guild.get_member(uid)
+                avatar_url = str(member.avatar.url) if (member and member.avatar) else None
+                username = member.name if member else None
+                team_name = get_user_team(uid)
+                flag_url = get_team_flag_url(team_name) if team_name else None
+
+                card_bytes = await generate_stats_card(
+                    role, avatar_url, flag_url,
+                    main_ovr, bat_ovr or 60, bowl_ovr or 60,
+                    username=username
+                )
+
+                existing_id = cached["message_id"] if cached else None
+                new_msg = await post_card_to_cache(self.bot, uid, main_ovr, card_bytes, existing_msg_id=existing_id)
+                if new_msg:
+                    card_cache[uid] = {
+                        "message_id": new_msg.id,
+                        "ovr": main_ovr,
+                        "url": new_msg.attachments[0].url,
+                    }
+                    uploaded += 1
+                else:
+                    failed += 1
+
+                if i % 5 == 0:
+                    await status_msg.edit(content=f"⏳ Processing **{total}** players… ({i}/{total})")
+
+                await asyncio.sleep(0.5)  # avoid Discord rate-limits
+
+            except Exception as e:
+                print(f"[uploadallcards] Error for uid {uid}: {e}")
+                failed += 1
+
+        await status_msg.edit(
+            content=(
+                f"✅ **Done!** Processed {total} players.\n"
+                f"• 🆕 Uploaded/Updated: **{uploaded}**\n"
+                f"• ⏭️ Skipped (already current): **{skipped}**\n"
+                f"• ❌ Failed: **{failed}**"
+            )
+        )
 
     @commands.command(name="testcard", help="Preview your stats card")
     async def testcard_command(self, ctx):
