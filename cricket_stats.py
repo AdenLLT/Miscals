@@ -13,7 +13,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 # ========== CARD CACHE CONFIG ==========
 CARD_CACHE_GUILD_ID    = 886642304335609937
-CARD_CACHE_CHANNEL_ID  = 886642304792805418
+CARD_CACHE_CHANNEL_ID  = 886676549204582440
 # Message format posted to the cache channel:
 #   content: "CARD_CACHE uid:<user_id> ovr:<main_ovr>"
 #   attachment: the player card PNG
@@ -2501,9 +2501,13 @@ class OVRCardLeaderboardView(View):
                         if plist:
                             player_data = plist[0]
                     role = player_data.get('role', 'Batsman') if player_data else 'Batsman'
-                    member = self.ctx.guild.get_member(uid)
-                    avatar_url = str(member.avatar.url) if (member and member.avatar) else None
-                    username = member.name if member else None
+                    try:
+                        user = await self.bot.fetch_user(uid)
+                        avatar_url = str(user.avatar.url) if user.avatar else None
+                        username = user.name
+                    except Exception:
+                        avatar_url = None
+                        username = None
                     team_name = get_user_team(uid)
                     flag_url = get_team_flag_url(team_name) if team_name else None
 
@@ -2538,8 +2542,11 @@ class OVRCardLeaderboardView(View):
         ):
             global_rank = start_rank + i + 1
             player_name = get_player_name_by_user_id(uid)
-            member = self.ctx.guild.get_member(uid)
-            username = member.name if member else "Unknown"
+            try:
+                user = await self.bot.fetch_user(uid)
+                username = user.name
+            except Exception:
+                username = "Unknown"
             team_name = get_user_team(uid)
             flag = get_team_flag(team_name) if team_name else ""
             badge = medals[i] if i < len(medals) else f"#{global_rank}"
@@ -3536,9 +3543,13 @@ class CricketStats(commands.Cog):
                             player_data = plist[0]
                     role = player_data.get('role', 'Batsman') if player_data else 'Batsman'
 
-                    member = guild.get_member(uid) if guild else None
-                    avatar_url = str(member.avatar.url) if (member and member.avatar) else None
-                    username = member.name if member else None
+                    try:
+                        user = await self.bot.fetch_user(uid)
+                        avatar_url = str(user.avatar.url) if user.avatar else None
+                        username = user.name
+                    except Exception:
+                        avatar_url = None
+                        username = None
                     team_name = get_user_team(uid)
                     flag_url = get_team_flag_url(team_name) if team_name else None
 
@@ -3626,9 +3637,13 @@ class CricketStats(commands.Cog):
                         player_data = plist[0]
                 role = player_data.get('role', 'Batsman') if player_data else 'Batsman'
 
-                member = guild.get_member(uid)
-                avatar_url = str(member.avatar.url) if (member and member.avatar) else None
-                username = member.name if member else None
+                try:
+                    user = await self.bot.fetch_user(uid)
+                    avatar_url = str(user.avatar.url) if user.avatar else None
+                    username = user.name
+                except Exception:
+                    avatar_url = None
+                    username = None
                 team_name = get_user_team(uid)
                 flag_url = get_team_flag_url(team_name) if team_name else None
 
