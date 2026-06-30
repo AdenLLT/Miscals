@@ -80,6 +80,17 @@ bot = commands.Bot(
     help_command=MyHelp()
 )
 
+ALLOWED_GUILD_ID = 1451591563078533292
+ALLOWED_GUILD_OBJ = discord.Object(id=ALLOWED_GUILD_ID)
+
+@bot.check
+async def only_allowed_guild(ctx):
+    return ctx.guild is not None and ctx.guild.id == ALLOWED_GUILD_ID
+
+@bot.tree.interaction_check
+async def only_allowed_guild_slash(interaction: discord.Interaction) -> bool:
+    return interaction.guild_id == ALLOWED_GUILD_ID
+
 @bot.event
 async def on_ready():
     global elite_players
@@ -94,7 +105,7 @@ async def on_ready():
     await bot.load_extension('tournament')
     await bot.load_extension('series')
     await bot.load_extension('playerlife')
-    await bot.tree.sync()
+    await bot.tree.sync(guild=ALLOWED_GUILD_OBJ)
     print(f'{bot.user} has connected to Discord!')
     print(f'Bot is ready! Prefix: .')
     await backup_db_to_channel()
