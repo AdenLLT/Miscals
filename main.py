@@ -5654,6 +5654,52 @@ async def fetchonline(ctx):
 
     await ctx.send(embed=embed)
 
+@bot.command(name="allunc", help="[OWNER] DM all members with the unclaimed role")
+async def allunc_command(ctx):
+    OWNER_ID = 765965975761715241
+    TARGET_ROLE_ID = 1461764869282857010
+
+    if ctx.author.id != OWNER_ID:
+        return
+
+    role = ctx.guild.get_role(TARGET_ROLE_ID)
+    if not role:
+        await ctx.send("❌ Could not find the target role.")
+        return
+
+    members = [m for m in role.members if not m.bot]
+    if not members:
+        await ctx.send("❌ No members found with that role.")
+        return
+
+    status_msg = await ctx.send(f"⏳ Sending DMs to **{len(members)}** members…")
+
+    embed = discord.Embed(
+        title="Join FIRST EVER ODI WC with 30 TEAMS! ⭐",
+        description=(
+            "**SAY -rep in https://discord.com/channels/1451591563078533292/1452997837330714704 "
+            "to REPRESENT A PLAYER AND GET STARTED!**\n\n"
+            "Or captain a nation"
+        ),
+        color=0xFFD700
+    )
+    embed.set_image(url="https://i.ibb.co/Fb3fz5Ld/LET-S-PLAY-13.png")
+
+    sent = 0
+    failed = 0
+    for member in members:
+        try:
+            await member.send(embed=embed)
+            sent += 1
+            await asyncio.sleep(1.0)
+        except Exception:
+            failed += 1
+
+    await status_msg.edit(
+        content=f"✅ Done! Sent: **{sent}** | Failed (DMs closed): **{failed}**"
+    )
+
+
 token = os.getenv('TOKEN')
 if token:
     keep_alive()

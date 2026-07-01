@@ -47,10 +47,12 @@ async def generate_stats_card(role, avatar_url, flag_url, main_ovr, bat_ovr, bow
     try:
         font_ovr_main = ImageFont.truetype("ovrfont.otf", 240)
         font_ovr_big = ImageFont.truetype("ovrfont.otf", 210)
-        # Dynamic username font: shrink by 5px per character over 16
-        base_username_size = 75
-        if username and len(username) > 16:
-            base_username_size = max(40, base_username_size - (len(username) - 16) * 5)
+        # Dynamic username font: smaller for 16+ chars
+        if username and len(username) >= 16:
+            # Start at 55 for exactly 16 chars, shrink 4px per extra char
+            base_username_size = max(36, 55 - (len(username) - 16) * 4)
+        else:
+            base_username_size = 75
         font_username = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", base_username_size)
     except Exception:
         font_ovr_main = ImageFont.load_default()

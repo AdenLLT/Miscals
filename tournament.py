@@ -4450,5 +4450,100 @@ class Tournament(commands.Cog):
         await ctx.send(embed=embed, file=file)
 
 
+    @commands.command(name="editptsi", help="[ADMIN] Edit a series_teams value for a team in a specific series")
+    @commands.has_permissions(administrator=True)
+    async def editptsi_command(self, ctx, *, args: str = None):
+        """
+        Edit any field in series_teams for a specific series+team.
+        Usage: -editptsi <series_name> | <team_name> | <field> | <value>
+        Fields: wins, losses, matches_played, nrr
+        Example: -editptsi ODI WC 2025 | India | wins | 5
+        """
+        if not args:
+            await ctx.send(
+                "**Usage:** `-editptsi <series_name> | <team_name> | <field> | <value>`\n"
+                "**Fields:** `wins`, `losses`, `matches_played`, `nrr`\n"
+                "**Example:** `-editptsi ODI WC 2025 | India | wins | 5`"
+            )
+            return
+
+        parts = [p.strip() for p in args.split("|")]
+        if len(parts) != 4:
+            await ctx.send("❌ Please separate the 4 values with `|`.\n"
+                           "**Usage:** `-editptsi <series_name> | <team_name> | <field> | <value>`")
+            return
+
+        series_name, team_name, field, raw_value = parts
+        field = field.lower()
+
+        allowed_fields = {"wins", "losses", "matches_played", "nrr"}
+        if field not in allowed_fields:
+            await ctx.send(f"❌ Invalid field `{field}`. Allowed: `wins`, `losses`, `matches_played`, `nrr`")
+            return
+
+        try:
+            value = float(raw_value) if field == "nrr" else int(raw_value)
+        except ValueError:
+            await ctx.send(f"❌ Invalid value `{raw_value}` for field `{field}`.")
+            return
+
+        conn = sqlite3.connect('players.db')
+        c = conn.cursor()
+
+        # Find matching series
+        c.execute("SELECT id, name FROM series WHERE LOWER(name) LIKE ?", (f"%{series_name.lower()}%",))
+        series_rows = c.fetchall()
+        if not series_rows:
+            conn.close()
+            await ctx.send(f"❌ No series found matching **{series_name}**.")
+            return
+        if len(series_rows) > 1:
+            names = "\n".join(f"• {r[1]}" for r in series_rows)
+            conn.close()
+            await ctx.send(f"❌ Multiple series matched. Be more specific:\n{names}")
+            return
+
+        series_id, series_display = series_rows[0]
+
+        # Find matching team row
+        c.execute(
+            "SELECT id, team_name FROM series_teams WHERE series_id = ? AND LOWER(team_name) LIKE ?",
+            (series_id, f"%{team_name.lower()}%")
+        )
+        team_rows = c.fetchall()
+        if not team_rows:
+            conn.close()
+            await ctx.send(f"❌ No team matching **{team_name}** found in series **{series_display}**.")
+            return
+        if len(team_rows) > 1:
+            names = "\n".join(f"• {r[1]}" for r in team_rows)
+            conn.close()
+            await ctx.send(f"❌ Multiple teams matched. Be more specific:\n{names}")
+            return
+
+        row_id, team_display = team_rows[0]
+
+        # Fetch old value for confirmation
+        c.execute(f"SELECT {field} FROM series_teams WHERE id = ?", (row_id,))
+        old_value = c.fetchone()[0]
+
+        # Apply update
+        c.execute(f"UPDATE series_teams SET {field} = ? WHERE id = ?", (value, row_id))
+        conn.commit()
+        conn.close()
+
+        embed = discord.Embed(
+            title="✅ Series Team Updated",
+            color=0x00CC66
+        )
+        embed.add_field(name="Series", value=series_display, inline=True)
+        embed.add_field(name="Team", value=team_display, inline=True)
+        embed.add_field(name="Field", value=field, inline=True)
+        embed.add_field(name="Old Value", value=str(old_value), inline=True)
+        embed.add_field(name="New Value", value=str(value), inline=True)
+        embed.set_footer(text=f"Edited by {ctx.author.name}")
+        await ctx.send(embed=embed)
+
+
 async def setup(bot):
     await bot.add_cog(Tournament(bot))
