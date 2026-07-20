@@ -18,7 +18,7 @@ from datetime import datetime, timedelta
 import os
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_MODEL   = "openai/gpt-oss-20b:free"
-POSTS_PER_PAGE = 4
+POSTS_PER_PAGE = 3
 
 # ============================================================
 # DATABASE INIT
@@ -716,6 +716,8 @@ def call_openrouter_sync(prompt: str) -> str:
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read().decode('utf-8'))
             text = data['choices'][0]['message']['content']
+            if text is None:
+                raise RuntimeError("Model returned null content — retrying")
             print(f"[OPENROUTER] OK — {len(text)} chars")
             return text
     except urllib.error.HTTPError as e:
@@ -862,7 +864,7 @@ Language rule: {lang_instruction}
 {tourney_block}
 
 === STRICT RULES ===
-1. Generate EXACTLY 4 posts, each completely different from the others on this page.
+1. Generate EXACTLY 3 posts, each completely different from the others on this page.
 2. EVERY post MUST mention at least one real player from the list above BY NAME, including their Discord handle in parentheses — e.g. "Virat Kohli (@virat99)".
 3. Use the REAL stats when talking about players — mention actual run counts, strike rates, economy, wickets, impact points, highest scores, ducks, etc. Make it feel like fans genuinely follow the leaderboard (-lb) and points table (-pts).
 4. Follow the page theme closely. If it says TOXIC, be genuinely savage and roast players with their real bad stats.
