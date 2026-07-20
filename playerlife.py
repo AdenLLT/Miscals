@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 # ============================================================
 import os
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
-OPENROUTER_MODEL   = "meta-llama/llama-3.1-8b-instruct:free"
+OPENROUTER_MODEL   = "deepseek/deepseek-chat:free"
 POSTS_PER_PAGE = 4
 
 # ============================================================
