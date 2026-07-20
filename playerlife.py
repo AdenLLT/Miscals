@@ -12,10 +12,11 @@ from discord.ui import View, Button, Select
 from datetime import datetime, timedelta
 
 # ============================================================
-# GEMINI AI CONFIG
+# PUTER AI CONFIG
 # ============================================================
-GEMINI_API_KEY = "AIzaSyCqTGO6jFDIkzp1ofUqRYXc9sVKpVCJ0es"
-GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+import os
+PUTER_API_URL = "https://api.puter.com/drivers/call"
+PUTER_MODEL   = "google/gemini-2.0-flash"   # change to any model in the Puter docs
 POSTS_PER_PAGE = 4
 
 # ============================================================
@@ -688,41 +689,70 @@ def _get_fallback_posts(language_filter: str) -> list:
     return posts
 
 
-def call_gemini_sync(prompt: str) -> str:
+def call_puter_sync(prompt: str) -> str:
     """
-    Call Gemini REST API once. On 429 raises RuntimeError("RATE_LIMITED")
-    immediately so the async caller can handle the wait without blocking.
+    Call Puter's AI REST API (https://api.puter.com/drivers/call).
+    Uses PUTER_TOKEN env var for auth.  On 429 raises RuntimeError("RATE_LIMITED").
     """
+    puter_token = os.environ.get("PUTER_TOKEN", "")
+
+    # Split "provider/model-name" into driver + model
+    if "/" in PUTER_MODEL:
+        driver, model_name = PUTER_MODEL.split("/", 1)
+    else:
+        driver, model_name = "openai", PUTER_MODEL
+
     payload = json.dumps({
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 1.0, "maxOutputTokens": 3000}
+        "interface": "puter-chat-completion",
+        "driver": driver,
+        "test_mode": False,
+        "call": {
+            "method": "complete",
+            "args": {
+                "messages": [{"role": "user", "content": prompt}],
+                "model": model_name,
+                "temperature": 1.0,
+                "max_tokens": 3000
+            }
+        }
     }).encode('utf-8')
-    req = urllib.request.Request(
-        GEMINI_URL,
-        data=payload,
-        headers={"Content-Type": "application/json"},
-        method="POST"
-    )
+
+    headers = {"Content-Type": "application/json"}
+    if puter_token:
+        headers["Authorization"] = f"Bearer {puter_token}"
+
+    req = urllib.request.Request(PUTER_API_URL, data=payload, headers=headers, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read().decode('utf-8'))
-            text = data['candidates'][0]['content']['parts'][0]['text']
-            print(f"[GEMINI] HTTP 200 OK — response length: {len(text)} chars")
+            result = data.get("result", {})
+            msg    = result.get("message", {})
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                # Claude / some models return an array of content parts
+                text = "".join(p.get("text", "") for p in content if p.get("type") == "text")
+            else:
+                text = str(content)
+            print(f"[PUTER] OK — {len(text)} chars")
             return text
     except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode('utf-8', errors='replace')[:300]
+        except Exception:
+            pass
+        print(f"[PUTER] HTTP {e.code}: {body}")
         if e.code == 429:
-            print(f"[GEMINI] HTTP 429 Too Many Requests — raising RATE_LIMITED")
             raise RuntimeError("RATE_LIMITED")
-        print(f"[GEMINI] HTTP {e.code} error")
-        raise RuntimeError(f"Gemini API error: HTTP {e.code}")
+        raise RuntimeError(f"Puter API error: HTTP {e.code} — {body}")
     except Exception as e:
-        print(f"[GEMINI] Exception: {type(e).__name__}: {e}")
-        raise RuntimeError(f"Gemini API error: {e}")
+        print(f"[PUTER] Exception: {type(e).__name__}: {e}")
+        raise RuntimeError(f"Puter API error: {e}")
 
 
-async def call_gemini(prompt: str) -> str:
+async def call_puter(prompt: str) -> str:
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, call_gemini_sync, prompt)
+    return await loop.run_in_executor(None, call_puter_sync, prompt)
 
 
 def build_feed_prompt(player_data: dict, language_filter: str, page: int,
@@ -882,7 +912,7 @@ async def get_feed_page(language_filter: str, page: int, bot=None) -> tuple:
     prompt = build_feed_prompt(player_data, language_filter, page, tourney_name, standings)
 
     try:
-        raw = await call_gemini(prompt)
+        raw = await call_puter(prompt)
         raw = raw.strip()
         if raw.startswith('```'):
             parts = raw.split('```')
@@ -1639,7 +1669,7 @@ class PlayerLife(commands.Cog):
             for attempt in range(1, MAX_RETRIES + 1):
                 try:
                     print(f"[FEED GEN] → Calling Gemini (attempt {attempt}/{MAX_RETRIES})...")
-                    raw = await call_gemini(prompt)
+                    raw = await call_puter(prompt)
                     raw = raw.strip()
                     if raw.startswith('```'):
                         parts = raw.split('```')
