@@ -880,6 +880,7 @@ Return ONLY a valid JSON array (no markdown, no explanation):
     "handle": "@fan_username",
     "player_name": "Shaheen Shah Afridi",
     "player_discord": "crxxed",
+    "player_team": "Pakistan",
     "content": "the post body — 2-3 sentences, emojis, hashtags, specific stats. Do NOT repeat the player name or handle inside content, those are separate fields.",
     "likes": 123,
     "comments": 45,
@@ -955,21 +956,19 @@ async def get_feed_page(language_filter: str, page: int, bot=None) -> tuple:
         # Clean common model mistakes: trailing commas before ] or }
         raw = re.sub(r',\s*([}\]])', r'\1', raw)
         posts = json.loads(raw)
-        # Inject player emoji for each post using player_emojis.json
+        # Inject player emoji for each post — search guilds by emoji name (same
+        # approach as get_player_emoji in main.py, no ID lookup needed)
         if bot:
-            try:
-                with open('player_emojis.json', 'r') as _ef:
-                    _emoji_map = json.load(_ef)
-                for _p in posts:
-                    _pname = _p.get('player_name', '')
-                    _eid = _emoji_map.get(_pname)
-                    if _eid:
-                        _emoji_obj = bot.get_emoji(int(_eid))
-                        _p['player_emoji'] = str(_emoji_obj) if _emoji_obj else ''
-                    else:
-                        _p['player_emoji'] = ''
-            except Exception:
-                pass
+            for _p in posts:
+                _pname = _p.get('player_name', '')
+                _ename = ''.join(c if c.isalnum() or c == '_' else '_' for c in _pname)[:32]
+                _found = ''
+                for _g in bot.guilds:
+                    _eo = discord.utils.get(_g.emojis, name=_ename)
+                    if _eo:
+                        _found = str(_eo)
+                        break
+                _p['player_emoji'] = _found
         save_feed_to_cache(today, language_filter, page, posts)
         return posts, False
     except RuntimeError as e:
@@ -1002,7 +1001,8 @@ def build_feed_embed(posts: list, page: int, language_filter: str, is_loading: b
         likes        = post.get('likes', 0)
         comments     = post.get('comments', 0)
         time_ago     = post.get('time', 'recently')
-        lang_tag     = "🇮🇳" if post.get('language') == 'hinglish' else "🇬🇧"
+        player_team  = post.get('player_team', '')
+        lang_tag     = get_team_flag(player_team) if player_team else ("🇮🇳" if post.get('language') == 'hinglish' else "🇬🇧")
         # Bold any remaining (@handle) mentions inside content
         content = re.sub(r'\(@(\w+)\)', r'(@**\1**)', content)
         # Player attribution line
