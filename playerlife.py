@@ -701,7 +701,7 @@ def call_openrouter_sync(prompt: str) -> str:
         "model": OPENROUTER_MODEL,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 1.0,
-        "max_tokens": 1200
+        "max_tokens": 2000
     }).encode('utf-8')
 
     headers = {
@@ -897,12 +897,13 @@ async def get_feed_page(language_filter: str, page: int, bot=None) -> tuple:
     try:
         raw = await call_openrouter(prompt)
         raw = raw.strip()
-        if raw.startswith('```'):
-            parts = raw.split('```')
-            raw = parts[1] if len(parts) > 1 else raw
-            if raw.startswith('json'):
-                raw = raw[4:]
-        raw = raw.strip()
+        # Extract the JSON array — find outermost [ ... ]
+        start = raw.find('[')
+        end = raw.rfind(']')
+        if start != -1 and end != -1 and end > start:
+            raw = raw[start:end + 1]
+        # Clean common model mistakes: trailing commas before ] or }
+        raw = re.sub(r',\s*([}\]])', r'\1', raw)
         posts = json.loads(raw)
         save_feed_to_cache(today, language_filter, page, posts)
         return posts, False
