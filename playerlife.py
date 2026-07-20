@@ -800,6 +800,14 @@ def call_openrouter_sync(prompt: str) -> str:
             try:
                 with urllib.request.urlopen(req, timeout=120) as resp:
                     data = json.loads(resp.read().decode('utf-8'))
+                    # Proxy may return 200 with an error body instead of an HTTP error code
+                    if 'choices' not in data:
+                        err_msg = (data.get('error') or data.get('message') or str(data))
+                        if isinstance(err_msg, dict):
+                            err_msg = err_msg.get('message', str(err_msg))
+                        print(f"[OPENROUTER] Key …{key[-6:]} attempt {attempt}: no choices — {str(err_msg)[:200]}")
+                        _time.sleep(3)
+                        continue
                     text = data['choices'][0]['message']['content']
                     if text is None:
                         print(f"[OPENROUTER] Key …{key[-6:]} attempt {attempt}: null content, retrying...")
@@ -860,65 +868,160 @@ def _repair_truncated_json(raw: str) -> str:
     return truncated
 
 
-# ── Background feed pre-generation ──────────────────────────────────────────
-_bg_state = {'date': '', 'next_page': 0}
+# ── CricketGram auto-post config ─────────────────────────────────────────────
+CRICKETGRAM_CHANNEL_ID = 1528790960908013610
+
+TEAM_FLAG_URLS = {
+    'india':         'https://flagcdn.com/w160/in.png',
+    'pakistan':      'https://flagcdn.com/w160/pk.png',
+    'australia':     'https://flagcdn.com/w160/au.png',
+    'england':       'https://flagcdn.com/w160/gb-eng.png',
+    'south africa':  'https://flagcdn.com/w160/za.png',
+    'new zealand':   'https://flagcdn.com/w160/nz.png',
+    'sri lanka':     'https://flagcdn.com/w160/lk.png',
+    'bangladesh':    'https://flagcdn.com/w160/bd.png',
+    'afghanistan':   'https://flagcdn.com/w160/af.png',
+    'zimbabwe':      'https://flagcdn.com/w160/zw.png',
+    'ireland':       'https://flagcdn.com/w160/ie.png',
+    'netherlands':   'https://flagcdn.com/w160/nl.png',
+    'scotland':      'https://flagcdn.com/w160/gb-sct.png',
+    'uae':           'https://flagcdn.com/w160/ae.png',
+    'kenya':         'https://flagcdn.com/w160/ke.png',
+    'canada':        'https://flagcdn.com/w160/ca.png',
+    'usa':           'https://flagcdn.com/w160/us.png',
+    'united states': 'https://flagcdn.com/w160/us.png',
+    'namibia':       'https://flagcdn.com/w160/na.png',
+    'nepal':         'https://flagcdn.com/w160/np.png',
+    'oman':          'https://flagcdn.com/w160/om.png',
+    'uganda':        'https://flagcdn.com/w160/ug.png',
+    'papua new guinea': 'https://flagcdn.com/w160/pg.png',
+}
+
+def _team_flag_url(team: str) -> str:
+    return TEAM_FLAG_URLS.get(team.lower().strip(), '')
+
+def _get_player_uid_map() -> dict:
+    """Returns {player_name: user_id} from the DB."""
+    try:
+        conn = sqlite3.connect('players.db')
+        c = conn.cursor()
+        c.execute("SELECT player_name, user_id FROM player_representatives WHERE player_name IS NOT NULL")
+        result = {row[0]: row[1] for row in c.fetchall()}
+        conn.close()
+        return result
+    except Exception:
+        return {}
+
+
+async def _build_cricketgram_embed(post: dict, uid_map: dict, bot) -> discord.Embed:
+    """Build a Discord embed for one CricketGram auto-post."""
+    title       = post.get('title', 'CricketGram')
+    handle      = post.get('handle', '@fan')
+    player_name = post.get('player_name', '')
+    player_disc = post.get('player_discord', '').lstrip('@')
+    player_team = post.get('player_team', '')
+    content     = post.get('content', '')
+    likes       = post.get('likes', 0)
+    cmts        = post.get('comments', 0)
+    time_ago    = post.get('time', 'recently')
+
+    is_team_post = not player_disc  # no discord handle = team-focused post
+
+    embed = discord.Embed(title=title, description=content, color=0xE1306C)
+
+    # Author icon: random image
+    embed.set_author(name=handle, icon_url=f"https://picsum.photos/seed/{random.randint(1, 9999)}/64/64")
+
+    # Thumbnail: player's Discord pfp (player posts) or team flag (team posts)
+    thumbnail_url = None
+    if is_team_post:
+        team_for_flag = player_team or player_name
+        thumbnail_url = _team_flag_url(team_for_flag) or None
+    else:
+        uid = uid_map.get(player_name)
+        if uid and bot:
+            try:
+                user = bot.get_user(int(uid)) or await bot.fetch_user(int(uid))
+                if user:
+                    thumbnail_url = str(user.display_avatar.url)
+            except Exception:
+                pass
+
+    if thumbnail_url:
+        embed.set_thumbnail(url=thumbnail_url)
+
+    embed.set_footer(text=f"❤️ {likes:,}  💬 {cmts}  ·  {time_ago}")
+    return embed
+
+async def _post_cricketgram_batch(bot, page: int):
+    """Generate 1 post via one API call and send it to the channel."""
+    channel = bot.get_channel(CRICKETGRAM_CHANNEL_ID)
+    if not channel:
+        print(f"[BG_FEED] Channel {CRICKETGRAM_CHANNEL_ID} not found — skipping")
+        return
+
+    player_data = get_feed_player_data(bot=bot)
+    tourney_name, standings = get_tournament_context()
+    if not player_data:
+        simple_players = get_cricket_players()
+        player_data = {p: {'discord': f'@{p.lower().split()[0]}fan', 'team': 'Unknown',
+                           'matches': 0, 'runs': 0, 'wickets': 0, 'strike_rate': 0.0,
+                           'economy': 0.0, 'average': 0.0, 'highest': 0, 'best_bowling': '0/0',
+                           'centuries': 0, 'fifties': 0, 'impact': 0}
+                       for p in simple_players}
+
+    prompt = build_feed_prompt(player_data, 'all', page, tourney_name, standings)
+    raw = await call_openrouter(prompt)
+    raw = raw.strip()
+    s = raw.find('['); e = raw.rfind(']')
+    if s != -1 and e != -1 and e > s:
+        raw = raw[s:e + 1]
+    raw = re.sub(r',\s*([}\]])', r'\1', raw)
+    try:
+        posts = json.loads(raw)
+    except json.JSONDecodeError:
+        raw = _repair_truncated_json(raw)
+        posts = json.loads(raw)
+
+    uid_map = _get_player_uid_map()
+    sent = 0
+    for post in posts:
+        try:
+            embed = await _build_cricketgram_embed(post, uid_map, bot)
+            await channel.send(embed=embed)
+            await asyncio.sleep(1)
+            sent += 1
+        except Exception as ex:
+            print(f"[BG_FEED] Failed to send post: {ex}")
+
+    print(f"[BG_FEED] Batch {page} — sent {sent}/{len(posts)} posts to channel")
+
 
 async def background_feed_generator(bot):
     """
-    On each new UTC day:
-      • Generates up to STARTUP_PAGES pages on first run.
-      • Then every BATCH_INTERVAL seconds generates BATCH_PAGES more.
-      • Skips generation entirely when all API keys are rate-limited,
-        and waits until the earliest reset time before resuming.
-      • Pages already in cache are skipped automatically (0 API calls).
-    Budget: with 1 key = 50 req/day. Tweak constants to match your key count.
+    Every 5 minutes: one API call → 1 post → sent to CRICKETGRAM_CHANNEL_ID.
+    Automatically pauses when API keys are rate-limited and resumes after reset.
     """
-    global _bg_state
-    STARTUP_PAGES  = 25   # pages on day-start
-    BATCH_PAGES    = 8    # pages per batch
-    BATCH_INTERVAL = 3600 # seconds between batches (1 hour)
-    PAGE_DELAY     = 5    # seconds between pages within a batch
-
-    # Small initial delay so the bot finishes its startup sequence first
-    await asyncio.sleep(15)
+    _page = 0
+    await asyncio.sleep(5)  # brief pause for bot to finish connecting
+    print("[BG_FEED] Bot online — sending first CricketGram post now...")
 
     while True:
-        today = datetime.utcnow().strftime('%Y-%m-%d')
-
-        if _bg_state['date'] != today:
-            _bg_state['date'] = today
-            _bg_state['next_page'] = 0
-            print(f"[BG_FEED] New day {today} — startup batch ({STARTUP_PAGES} pages)")
-
-        # If all keys are rate-limited, sleep until the earliest reset
         if all_keys_limited():
             now = _time.time()
             earliest_reset = min(_OR_KEY_LIMITED_UNTIL.get(k, now) for k in _OR_KEYS)
             wait = max(60, earliest_reset - now + 5)
-            print(f"[BG_FEED] All keys rate-limited — sleeping {int(wait//60)}m until reset.")
+            print(f"[BG_FEED] All keys rate-limited — sleeping {int(wait//60)}m")
             await asyncio.sleep(wait)
             continue
 
-        batch = STARTUP_PAGES if _bg_state['next_page'] == 0 else BATCH_PAGES
+        try:
+            await _post_cricketgram_batch(bot, _page)
+            _page += 1
+        except Exception as e:
+            print(f"[BG_FEED] Batch {_page} failed: {e}")
 
-        for _ in range(batch):
-            if all_keys_limited():
-                print("[BG_FEED] All keys exhausted mid-batch — pausing batch.")
-                break
-            page = _bg_state['next_page']
-            try:
-                await get_feed_page('all', page, bot=bot)
-                _bg_state['next_page'] += 1
-                print(f"[BG_FEED] Page {page} cached ✓")
-            except Exception as e:
-                print(f"[BG_FEED] Page {page} failed: {e}")
-                if 'RATE_LIMITED' in str(e):
-                    print("[BG_FEED] Rate limit hit — pausing batch.")
-                    break
-            await asyncio.sleep(PAGE_DELAY)
-
-        print(f"[BG_FEED] Batch done. Total pages cached today: {_bg_state['next_page']}")
-        await asyncio.sleep(BATCH_INTERVAL)
+        await asyncio.sleep(300)  # 5 minutes
 
 
 def start_feed_background_gen(bot):
@@ -940,14 +1043,14 @@ def build_feed_prompt(player_data: dict, language_filter: str, page: int,
 
     # Page themes — each page has a DIFFERENT personality/content angle
     PAGE_THEMES = [
-        "general fan reactions, player praise, match excitement",
-        "TOXIC DRAMA PAGE — every single post must be salty, savage, brutal trash-talk about specific players and their bad stats. Include specific numbers (e.g. 'scored 4 off 18 balls lmao', '0 wickets in 3 matches', 'economy 14.2 bruh'). Roast players, call them overrated, mock their performances. Pure drama and toxicity. Fans fighting in comments. Be brutal and funny.",
-        "leaderboard/stats obsession — posts referencing who tops the runs/wickets/economy/impact leaderboard (-lb), who's underperforming vs their stats, heated debates about rankings",
-        "predictions, hot takes, controversial opinions about who will win the tournament, who should be dropped",
-        "funny/meme-style posts, wholesome moments, player banter, fan celebrations mixed with light roasting",
-        "tactical analysis mixed with drama — posts about team strategies, why certain teams are winning or losing in the tournament table (-pts)",
-        "TOXIC DRAMA PAGE 2 — even MORE savage than page 2. Flame wars between rival fans, personal attacks on players' consistency, drag their economy rates and ducks through the mud. 'bhai yeh century nahi maar sakta kabhi', 'highest score 7 runs 💀💀', 'bench player energy fr'. Maximum toxicity.",
-        "heartfelt appreciation posts mixed with subtle shade at rivals, trophy talk, NRR anxiety posts",
+        "general fan reactions, player praise, match excitement — mix of player and team posts",
+        "TOXIC DRAMA — salty, savage trash-talk about specific players and their bad stats. Include real numbers ('scored 4 off 18 balls lmao', '0 wickets in 3 matches', 'economy 14.2 bruh'). Roast players, call them overrated. Be brutal and funny.",
+        "ODI WORLD CUP special — fans hyping or dreading their team's WC chances, knockout predictions, who deserves a spot, WC squad debates. All posts must include #ODIWC. Mix player and team-focused posts.",
+        "team rivalry posts — fans of different teams arguing, trash-talking rival nations, defending their team's tournament record. Posts can be fully about a team without mentioning a specific player.",
+        "leaderboard/stats obsession — posts about who tops the runs/wickets/economy/impact leaderboard (-lb), who's underperforming, heated ranking debates",
+        "ODI WORLD CUP predictions and drama — who will win the WC, shock early exits, dark horse teams, clutch players. #ODIWC must appear. Some posts team-focused, some player-focused.",
+        "TOXIC DRAMA 2 — even more savage. Flame wars between rival fans, personal attacks on players' consistency. 'bhai yeh century nahi maar sakta kabhi', 'bench player energy fr'. Maximum toxicity.",
+        "heartfelt team pride and player appreciation mixed with shade at rivals — trophy talk, NRR anxiety, tournament points table (-pts) reactions",
     ]
     theme = PAGE_THEMES[page % len(PAGE_THEMES)]
 
@@ -1003,30 +1106,33 @@ Language rule: {lang_instruction}
 {tourney_block}
 
 === STRICT RULES ===
-1. Generate EXACTLY 3 posts, each completely different from the others on this page.
-2. EVERY post MUST mention at least one real player from the list above BY NAME, including their Discord handle in parentheses — e.g. "Virat Kohli (@virat99)".
-3. Use the REAL stats when talking about players — mention actual run counts, strike rates, economy, wickets, impact points, highest scores, ducks, etc. Make it feel like fans genuinely follow the leaderboard (-lb) and points table (-pts).
-4. Follow the page theme closely. If it says TOXIC, be genuinely savage and roast players with their real bad stats.
-5. Every page must feel DIFFERENT. Do not repeat styles or topics across pages.
-6. Posts can reference: match results, leaderboard standings (-lb), impact points, economy rates, batting averages, tournament points table (-pts), NRR, player consistency or lack thereof, who topped the -lb this week, etc.
-7. Language must match the rule — if Hinglish, use Roman script Hindi words naturally.
-8. Handles should be creative cricket fan usernames, not the players' own names.
+1. Generate EXACTLY 1 post. Put your full creativity into it — make it vivid, specific, and interesting.
+2. The post can be about a specific player (use their real name + Discord handle) OR purely team-focused (no specific player).
+3. For player posts: use REAL stats — actual run counts, strike rates, economy, wickets, impact points, highest scores, etc.
+4. For team posts: talk about the team's overall form, tournament points, NRR, squad depth, rivalries with other teams.
+5. If the theme mentions ODI WORLD CUP, the post MUST include #ODIWC as a hashtag.
+6. Follow the page theme closely. If it says TOXIC, be genuinely savage with real bad stats.
+7. Keep emojis natural and minimal — 1-3 per post max. Do not spam emojis.
+8. Language must match the rule — if Hinglish, use Roman script Hindi words naturally.
+9. Handle should be a creative cricket fan username, not the player's own name.
 
 === JSON SCHEMA ===
-Return ONLY a valid JSON array (no markdown, no explanation):
+Return ONLY a valid JSON array with exactly 1 object (no markdown, no explanation):
 [
   {{
+    "title": "short punchy post title — 5-10 words, no emojis",
     "handle": "@fan_username",
     "player_name": "Shaheen Shah Afridi",
     "player_discord": "crxxed",
     "player_team": "Pakistan",
-    "content": "the post body — 2-3 sentences, emojis, hashtags, specific stats. Do NOT repeat the player name or handle inside content, those are separate fields.",
+    "content": "post body — 2-3 sentences, 1-3 emojis max, hashtags where relevant, specific stats.",
     "likes": 123,
     "comments": 45,
     "time": "2h ago",
     "language": "english"
   }}
-]"""
+]
+Note: for team-focused posts where no specific player is mentioned, set player_name to the team name, player_discord to "" and player_team to that team."""
 
     return prompt
 
@@ -1298,17 +1404,15 @@ class CheckPostView(View):
             value=f"❤️ **{d['likes']:,}** likes{viral_tag}{fan_line}  •  💬 **{len(self.comments)}** comments",
             inline=False
         )
-        sentiment_icons = {'hype': '🔥', 'hate': '💀', 'neutral': '💬', 'funny': '😂', 'question': '🤔'}
         start = self.page * COMMENTS_PER_PAGE
         page_comments = self.comments[start:start + COMMENTS_PER_PAGE]
         if page_comments:
             lines = []
             for c in page_comments:
-                icon = sentiment_icons.get(c['sentiment'], '💬')
-                lines.append(f"{icon} **@{c['commenter_handle']}:** {c['comment_text']}  ❤️ {c['comment_likes']}")
+                lines.append(f"**@{c['commenter_handle']}:** {c['comment_text']}")
             embed.add_field(
-                name=f"💬 Comments — Page {self.page+1}/{self.max_page+1}",
-                value="\n".join(lines),
+                name=f"Comments — Page {self.page+1}/{self.max_page+1}",
+                value="\n\n".join(lines),
                 inline=False
             )
         else:
@@ -1839,7 +1943,6 @@ class PlayerLife(commands.Cog):
     # SOCIAL MEDIA
     # ==================================================
 
-    @commands.command(name="feed", aliases=["cricketfeed", "cf"], help="Open the AI-powered CricketGram fan feed")
     async def feed_command(self, ctx, language: str = "all"):
         """Open the live AI-generated cricket fan feed.
         Usage: -feed | -feed english | -feed hinglish
@@ -1869,8 +1972,6 @@ class PlayerLife(commands.Cog):
         view._update_buttons()
         await msg.edit(embed=embed, view=view)
 
-    @commands.command(name="genposttoday", aliases=["gpt", "generatefeed"], help="[ADMIN] Pre-generate CricketGram feed pages — 1 call every 10 mins")
-    @commands.has_permissions(administrator=True)
     async def genposttoday(self, ctx, pages: int = 8):
         """
         Pre-generate all feed pages for today, one API call every 10 minutes.
@@ -2074,8 +2175,6 @@ class PlayerLife(commands.Cog):
         )
         final_embed.set_footer(text="Run -genposttoday again tomorrow for fresh posts")
         await status_msg.edit(embed=final_embed)
-    @commands.command(name="cleartodayfeed", aliases=["ctf"], help="[ADMIN] Clear today's cached feed so it regenerates fresh")
-    @commands.has_permissions(administrator=True)
     async def cleartodayfeed(self, ctx):
         """Wipe today's feed cache so -genposttoday can start fresh."""
         today = datetime.utcnow().strftime('%Y-%m-%d')
@@ -2333,10 +2432,10 @@ Generate exactly 12 comments from different fan perspectives:
 - 4 hype/supportive (excited, praising, fanboying)
 - 2 hate/toxic (jealous, roasting, salty)
 - 3 neutral/analytical (debating, comparing stats, thoughtful)
-- 2 funny/meme (jokes, cricket puns, emoji-heavy)
+- 2 funny/meme (jokes, cricket puns, light humour)
 - 1 question (asking something about the post)
 
-Rules: each comment references the post content somehow, uses cricket slang + emojis, max 90 chars each. Creative usernames only.
+Rules: each comment references the post content, uses natural cricket slang, max 90 chars each. Keep emojis minimal — 0-2 per comment. No emoji at the start of a comment. Creative usernames only.
 
 Return ONLY valid JSON array, no markdown:
 [
