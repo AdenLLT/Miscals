@@ -12,11 +12,11 @@ from discord.ui import View, Button, Select
 from datetime import datetime, timedelta
 
 # ============================================================
-# PUTER AI CONFIG
+# OPENROUTER AI CONFIG
 # ============================================================
 import os
-PUTER_API_URL = "https://api.puter.com/drivers/call"
-PUTER_MODEL   = "google/gemini-2.0-flash"   # change to any model in the Puter docs
+OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_MODEL   = "openrouter/auto:free"
 POSTS_PER_PAGE = 4
 
 # ============================================================
@@ -689,51 +689,33 @@ def _get_fallback_posts(language_filter: str) -> list:
     return posts
 
 
-def call_puter_sync(prompt: str) -> str:
+def call_openrouter_sync(prompt: str) -> str:
     """
-    Call Puter's AI REST API (https://api.puter.com/drivers/call).
-    Uses PUTER_TOKEN env var for auth.  On 429 raises RuntimeError("RATE_LIMITED").
+    Call OpenRouter's OpenAI-compatible API.
+    Uses OPENROUTER_API_KEY env var. On 429 raises RuntimeError("RATE_LIMITED").
     """
-    puter_token = os.environ.get("PUTER_TOKEN", "")
-
-    # Split "provider/model-name" into driver + model
-    if "/" in PUTER_MODEL:
-        driver, model_name = PUTER_MODEL.split("/", 1)
-    else:
-        driver, model_name = "openai", PUTER_MODEL
+    api_key = os.environ.get("OPENROUTER_API_KEY", "")
 
     payload = json.dumps({
-        "interface": "puter-chat-completion",
-        "driver": driver,
-        "test_mode": False,
-        "call": {
-            "method": "complete",
-            "args": {
-                "messages": [{"role": "user", "content": prompt}],
-                "model": model_name,
-                "temperature": 1.0,
-                "max_tokens": 3000
-            }
-        }
+        "model": OPENROUTER_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 1.0,
+        "max_tokens": 3000
     }).encode('utf-8')
 
-    headers = {"Content-Type": "application/json"}
-    if puter_token:
-        headers["Authorization"] = f"Bearer {puter_token}"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+        "HTTP-Referer": "https://discord-cricket-bot.replit.app",
+        "X-Title": "Cricket Discord Bot"
+    }
 
-    req = urllib.request.Request(PUTER_API_URL, data=payload, headers=headers, method="POST")
+    req = urllib.request.Request(OPENROUTER_API_URL, data=payload, headers=headers, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read().decode('utf-8'))
-            result = data.get("result", {})
-            msg    = result.get("message", {})
-            content = msg.get("content", "")
-            if isinstance(content, list):
-                # Claude / some models return an array of content parts
-                text = "".join(p.get("text", "") for p in content if p.get("type") == "text")
-            else:
-                text = str(content)
-            print(f"[PUTER] OK — {len(text)} chars")
+            text = data['choices'][0]['message']['content']
+            print(f"[OPENROUTER] OK — {len(text)} chars")
             return text
     except urllib.error.HTTPError as e:
         body = ""
@@ -741,18 +723,18 @@ def call_puter_sync(prompt: str) -> str:
             body = e.read().decode('utf-8', errors='replace')[:300]
         except Exception:
             pass
-        print(f"[PUTER] HTTP {e.code}: {body}")
+        print(f"[OPENROUTER] HTTP {e.code}: {body}")
         if e.code == 429:
             raise RuntimeError("RATE_LIMITED")
-        raise RuntimeError(f"Puter API error: HTTP {e.code} — {body}")
+        raise RuntimeError(f"OpenRouter API error: HTTP {e.code} — {body}")
     except Exception as e:
-        print(f"[PUTER] Exception: {type(e).__name__}: {e}")
-        raise RuntimeError(f"Puter API error: {e}")
+        print(f"[OPENROUTER] Exception: {type(e).__name__}: {e}")
+        raise RuntimeError(f"OpenRouter API error: {e}")
 
 
-async def call_puter(prompt: str) -> str:
+async def call_openrouter(prompt: str) -> str:
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, call_puter_sync, prompt)
+    return await loop.run_in_executor(None, call_openrouter_sync, prompt)
 
 
 def build_feed_prompt(player_data: dict, language_filter: str, page: int,
@@ -912,7 +894,7 @@ async def get_feed_page(language_filter: str, page: int, bot=None) -> tuple:
     prompt = build_feed_prompt(player_data, language_filter, page, tourney_name, standings)
 
     try:
-        raw = await call_puter(prompt)
+        raw = await call_openrouter(prompt)
         raw = raw.strip()
         if raw.startswith('```'):
             parts = raw.split('```')
@@ -1669,7 +1651,7 @@ class PlayerLife(commands.Cog):
             for attempt in range(1, MAX_RETRIES + 1):
                 try:
                     print(f"[FEED GEN] → Calling Gemini (attempt {attempt}/{MAX_RETRIES})...")
-                    raw = await call_puter(prompt)
+                    raw = await call_openrouter(prompt)
                     raw = raw.strip()
                     if raw.startswith('```'):
                         parts = raw.split('```')
