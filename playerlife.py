@@ -927,10 +927,21 @@ async def _build_cricketgram_embed(post: dict, uid_map: dict, bot) -> discord.Em
 
     is_team_post = not player_disc  # no discord handle = team-focused post
 
+    # Look up the player's actual custom emoji from bot guilds
+    player_emoji_str = ''
+    if not is_team_post and player_name and bot:
+        _ename = ''.join(c if c.isalnum() or c == '_' else '_' for c in player_name)[:32]
+        for _g in bot.guilds:
+            _eo = discord.utils.get(_g.emojis, name=_ename)
+            if _eo:
+                player_emoji_str = str(_eo)
+                break
+
     # Append player signature for player posts
     if not is_team_post and player_name and player_disc:
         flag = get_team_flag(player_team)
-        content = f"{content}\n\n━ 🏏 {player_name} (@{player_disc}) {flag}"
+        _emoji_part = player_emoji_str if player_emoji_str else '🏏'
+        content = f"{content}\n\n**━ {_emoji_part} {player_name} (__@{player_disc}__) {flag}**"
 
     embed = discord.Embed(title=title, description=content, color=0xE1306C)
 
@@ -1032,6 +1043,181 @@ async def background_feed_generator(bot):
 def start_feed_background_gen(bot):
     """Call from on_ready after the playerlife cog is loaded."""
     asyncio.get_event_loop().create_task(background_feed_generator(bot))
+
+
+# ─────────────────────────────────────────────────────────────
+# FAN DISCUSSION — webhook-based chat in dedicated channel
+# ─────────────────────────────────────────────────────────────
+DISCUSSION_CHANNEL_ID = 1528839693897044159
+_discussion_webhook = None
+
+_FAN_NAMES = [
+    "cricket_soul", "sixhitter_vibes", "stump_mic_fan", "yorker_king",
+    "desi_cricket_bhai", "ipl_fanatic", "test_purist", "boundary_bandit",
+    "powerplay_pete", "googly_master", "cricket_nerd", "match_analyst",
+    "t20_king_fan", "odi_specialist", "pace_fan", "spinners_rule",
+    "cricket_banter", "thegoat_debates", "wicket_watcher", "crease_keeper",
+    "sixer_sanjay", "cover_drive_fan", "bowledhim_bro", "runrate_ranger",
+    "pitch_report", "duck_out", "over_the_top", "no_ball_bro",
+    "drs_review_fan", "freehit_king", "lofted_drive", "sweep_shot_stan",
+]
+
+
+async def _get_discussion_webhook(bot):
+    """Fetch or create the single persistent webhook for the discussion channel."""
+    global _discussion_webhook
+    if _discussion_webhook:
+        return _discussion_webhook
+    channel = bot.get_channel(DISCUSSION_CHANNEL_ID)
+    if not channel:
+        return None
+    try:
+        webhooks = await channel.webhooks()
+        for wh in webhooks:
+            if wh.name == "CricketGram Discussion":
+                _discussion_webhook = wh
+                return _discussion_webhook
+        _discussion_webhook = await channel.create_webhook(name="CricketGram Discussion")
+        return _discussion_webhook
+    except Exception as e:
+        print(f"[DISCUSSION] Webhook setup error: {e}")
+        return None
+
+
+async def _generate_discussion_msg(player_data: dict, history: list) -> dict:
+    """Ask AI for one fan discussion message. Returns dict with message + reply info."""
+    # Build player reference block (name, discord, emoji, team, stats)
+    player_lines = []
+    for pname, pd in list(player_data.items())[:20]:
+        disc = pd.get('discord', '')
+        team = pd.get('team', 'Unknown')
+        em   = pd.get('emoji', '')
+        runs = pd.get('runs', 0)
+        wkts = pd.get('wickets', 0)
+        # Format: emoji PlayerName (@handle) — Team, Xr Yw
+        if em:
+            player_lines.append(f"  {em} **{pname}** ({disc}) — {team}, {runs}r/{wkts}w")
+        else:
+            player_lines.append(f"  **{pname}** ({disc}) — {team}, {runs}r/{wkts}w")
+    player_block = "\n".join(player_lines) or "  (no claimed players yet)"
+
+    # Recent history for context
+    hist_lines = "\n".join(
+        f"  {h['username']}: {h['message']}" for h in history[-6:]
+    )
+    hist_block = f"Recent chat:\n{hist_lines}" if hist_lines else ""
+
+    # Decide if this message is a reply
+    is_reply = bool(history) and random.random() < 0.40
+    reply_target = None
+    if is_reply:
+        pool = history[-4:] if len(history) >= 4 else history
+        reply_target = random.choice(pool)
+
+    reply_instruction = (
+        f'You are REPLYING to @{reply_target["username"]} who said: "{reply_target["message"]}"'
+        if reply_target else
+        "Start a fresh thought or continue the discussion naturally."
+    )
+
+    prompt = f"""You are a passionate cricket fan chatting in a Discord cricket server.
+
+=== CLAIMED PLAYERS (use this format when mentioning them) ===
+{player_block}
+
+{hist_block}
+
+TASK: Write ONE Discord chat message (1-3 sentences, max 140 chars total).
+{reply_instruction}
+
+Rules:
+- Casual, natural Discord tone — abbreviations, slang, banter OK
+- Cricket-focused: stats, match opinions, predictions, player debates
+- When mentioning a claimed player above, ALWAYS write them as:
+  {{their_emoji}} **{{PlayerName}} ({{@discord_handle}})**
+- 0-2 emojis max; no emoji at the very start of the message
+- No quotation marks wrapping your message
+- Be opinionated and specific
+
+Return ONLY a JSON object, no markdown:
+{{"message": "your message here", "is_reply": {"true" if is_reply else "false"}, "reply_to_username": "{reply_target['username'] if reply_target else ''}"}}"""
+
+    raw = await call_openrouter(prompt, max_tokens=250)
+    raw = raw.strip()
+    s = raw.find('{'); e = raw.rfind('}')
+    if s != -1 and e != -1:
+        raw = raw[s:e + 1]
+    raw = re.sub(r',\s*([}\]])', r'\1', raw)
+    return json.loads(raw)
+
+
+async def background_fan_discussion(bot):
+    """Send AI-generated fan chat via webhook every 30 seconds."""
+    await asyncio.sleep(15)  # let bot fully connect first
+    print("[DISCUSSION] Fan discussion task started.")
+
+    _history: list = []  # {"username": str, "message": str}
+
+    while True:
+        try:
+            webhook = await _get_discussion_webhook(bot)
+            if not webhook:
+                await asyncio.sleep(30)
+                continue
+
+            player_data = get_feed_player_data(bot=bot)
+
+            # Inject emoji strings for each player
+            for pname in list(player_data.keys()):
+                _en = ''.join(c if c.isalnum() or c == '_' else '_' for c in pname)[:32]
+                _ef = ''
+                for _g in bot.guilds:
+                    _eo = discord.utils.get(_g.emojis, name=_en)
+                    if _eo:
+                        _ef = str(_eo)
+                        break
+                player_data[pname]['emoji'] = _ef
+
+            result = await _generate_discussion_msg(player_data, _history)
+            message_text = result.get('message', '').strip()
+            if not message_text:
+                await asyncio.sleep(30)
+                continue
+
+            is_reply       = result.get('is_reply', False)
+            reply_username = result.get('reply_to_username', '').strip('@').strip()
+
+            # Format: plain message, or reply block
+            if is_reply and reply_username:
+                final_content = f"**REPLY TO: @{reply_username}**\n{message_text}"
+            else:
+                final_content = message_text
+
+            # Random identity
+            username   = random.choice(_FAN_NAMES) + str(random.randint(1, 9999))
+            avatar_url = f"https://picsum.photos/seed/{random.randint(1, 99999)}/128/128"
+
+            await webhook.send(
+                content=final_content,
+                username=username,
+                avatar_url=avatar_url,
+            )
+
+            _history.append({"username": username, "message": message_text})
+            if len(_history) > 25:
+                _history.pop(0)
+
+            print(f"[DISCUSSION] Sent as @{username} (reply={is_reply})")
+
+        except Exception as exc:
+            print(f"[DISCUSSION] Error: {exc}")
+
+        await asyncio.sleep(30)
+
+
+def start_fan_discussion(bot):
+    """Call from on_ready to launch the fan discussion loop."""
+    asyncio.get_event_loop().create_task(background_fan_discussion(bot))
 
 
 def build_feed_prompt(player_data: dict, language_filter: str, page: int,
@@ -2426,6 +2612,31 @@ class PlayerLife(commands.Cog):
 
     async def _generate_post_comments(self, post_id, player_name, content, social, life):
         """Generate AI fan comments for a custom post and store them in the DB."""
+        # Detect if the post is a question so fans actually answer it
+        stripped = content.strip()
+        _q_words = ('who ', 'what ', 'which ', 'where ', 'when ', 'why ', 'how ',
+                    'is ', 'are ', 'do ', 'does ', 'can ', 'could ', 'would ', 'should ')
+        is_question = stripped.endswith('?') or stripped.lower().startswith(_q_words)
+
+        if is_question:
+            comment_structure = """\
+- 2 direct answers to the question asked (give a clear opinion/answer — name a player, fact, or take a side)
+- 1 agreement or follow-up that builds on an answer
+- 1 disagreement or different opinion challenging the answers
+- 1 funny reply or cricket meme response to the question
+- 1 neutral analytical take that backs an answer with a stat"""
+            extra_rule = ("IMPORTANT: The post is a QUESTION — every comment MUST actually respond to what "
+                          "was asked. Fans should give real answers and debate them. Do NOT just praise the "
+                          "player or ignore the question.")
+        else:
+            comment_structure = """\
+- 2 hype/supportive (excited, praising, fanboying)
+- 1 hate/toxic (jealous, roasting, salty)
+- 1 neutral/analytical (debating, comparing, thoughtful)
+- 1 funny/meme (joke, cricket pun, light humour)
+- 1 question (asking something sparked by the post)"""
+            extra_rule = "Each comment must directly reference the post content — no generic cricket chat."
+
         prompt = f"""You are generating realistic fan comments on a cricket player's CricketGram post.
 
 Player: {player_name}
@@ -2434,13 +2645,10 @@ Reputation: {life['reputation']}/100
 Post content: "{content}"
 
 Generate exactly 6 comments from different fan perspectives:
-- 2 hype/supportive (excited, praising, fanboying)
-- 1 hate/toxic (jealous, roasting, salty)
-- 1 neutral/analytical (debating, comparing, thoughtful)
-- 1 funny/meme (joke, cricket pun, light humour)
-- 1 question (asking something about the post)
+{comment_structure}
 
-Rules: each comment references the post content, uses natural cricket slang, max 80 chars each. Keep emojis minimal — 0-2 per comment. No emoji at the start of a comment. Creative usernames only.
+{extra_rule}
+Rules: max 80 chars each, natural cricket slang, 0-2 emojis per comment, no emoji at the start. Creative usernames only.
 
 Return ONLY valid JSON array, no markdown:
 [
