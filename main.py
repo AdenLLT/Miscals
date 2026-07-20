@@ -112,6 +112,9 @@ async def on_ready():
     await backup_db_to_channel()
     # Ensure every claimed user has a card in the cache channel
     asyncio.get_event_loop().create_task(startup_sync_card_cache(bot))
+    # Start background feed pre-generation (100 posts on startup, 30/hr after)
+    from playerlife import start_feed_background_gen
+    start_feed_background_gen(bot)
 
 @bot.after_invoke
 async def after_command_backup(ctx):

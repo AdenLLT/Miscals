@@ -738,6 +738,53 @@ async def call_openrouter(prompt: str) -> str:
     return await loop.run_in_executor(None, call_openrouter_sync, prompt)
 
 
+# ── Background feed pre-generation ──────────────────────────────────────────
+_bg_state = {'date': '', 'next_page': 0}
+
+async def background_feed_generator(bot):
+    """
+    On each new UTC day:
+      • Immediately generates 25 pages (100 posts) for the 'all' feed.
+      • Then every hour generates 8 more pages (~30 posts).
+    All results are cached so user page-turns are instant.
+    """
+    global _bg_state
+    STARTUP_PAGES = 25   # 100 posts on day-start
+    HOURLY_PAGES  = 8    # ~30 posts every hour after
+    PAGE_DELAY    = 5    # seconds between API calls to avoid rate-limits
+
+    # Small initial delay so the bot finishes its startup sequence first
+    await asyncio.sleep(10)
+
+    while True:
+        today = datetime.utcnow().strftime('%Y-%m-%d')
+
+        if _bg_state['date'] != today:
+            _bg_state['date'] = today
+            _bg_state['next_page'] = 0
+            print(f"[BG_FEED] New day {today} — generating startup batch ({STARTUP_PAGES} pages)")
+
+        batch = STARTUP_PAGES if _bg_state['next_page'] == 0 else HOURLY_PAGES
+
+        for _ in range(batch):
+            page = _bg_state['next_page']
+            try:
+                await get_feed_page('all', page, bot=bot)
+                _bg_state['next_page'] += 1
+                print(f"[BG_FEED] Page {page} cached ✓")
+            except Exception as e:
+                print(f"[BG_FEED] Page {page} failed: {e}")
+            await asyncio.sleep(PAGE_DELAY)
+
+        print(f"[BG_FEED] Batch done. Total pages cached today: {_bg_state['next_page']}")
+        await asyncio.sleep(3600)  # wait 1 hour before next batch
+
+
+def start_feed_background_gen(bot):
+    """Call from on_ready after the playerlife cog is loaded."""
+    asyncio.get_event_loop().create_task(background_feed_generator(bot))
+
+
 def build_feed_prompt(player_data: dict, language_filter: str, page: int,
                       tourney_name: str = None, standings: list = None) -> str:
     """
@@ -829,8 +876,9 @@ Return ONLY a valid JSON array (no markdown, no explanation):
 [
   {{
     "handle": "@fan_username",
-    "bio": "short fan bio 1 line",
-    "content": "post content (1-3 sentences, emojis, hashtags, player name with (@discordhandle))",
+    "player_name": "Shaheen Shah Afridi",
+    "player_discord": "crxxed",
+    "content": "the post body — 2-3 sentences, emojis, hashtags, specific stats. Do NOT repeat the player name or handle inside content, those are separate fields.",
     "likes": 123,
     "comments": 45,
     "time": "2h ago",
@@ -905,6 +953,21 @@ async def get_feed_page(language_filter: str, page: int, bot=None) -> tuple:
         # Clean common model mistakes: trailing commas before ] or }
         raw = re.sub(r',\s*([}\]])', r'\1', raw)
         posts = json.loads(raw)
+        # Inject player emoji for each post using player_emojis.json
+        if bot:
+            try:
+                with open('player_emojis.json', 'r') as _ef:
+                    _emoji_map = json.load(_ef)
+                for _p in posts:
+                    _pname = _p.get('player_name', '')
+                    _eid = _emoji_map.get(_pname)
+                    if _eid:
+                        _emoji_obj = bot.get_emoji(int(_eid))
+                        _p['player_emoji'] = str(_emoji_obj) if _emoji_obj else ''
+                    else:
+                        _p['player_emoji'] = ''
+            except Exception:
+                pass
         save_feed_to_cache(today, language_filter, page, posts)
         return posts, False
     except RuntimeError as e:
@@ -929,25 +992,30 @@ def build_feed_embed(posts: list, page: int, language_filter: str, is_loading: b
         embed.description = "Could not load feed. Try again!"
         return embed
     for post in posts:
-        handle = post.get('handle', '@unknown')
-        bio = post.get('bio', '')
-        content = post.get('content', '')
-        likes = post.get('likes', 0)
-        comments = post.get('comments', 0)
-        time_ago = post.get('time', 'recently')
-        lang_tag = "🇮🇳" if post.get('language') == 'hinglish' else "🇬🇧"
-        # Bold the username part inside (@handle) mentions in the post content
+        handle       = post.get('handle', '@unknown')
+        player_name  = post.get('player_name', '')
+        player_disc  = post.get('player_discord', '').lstrip('@')
+        emoji_str    = post.get('player_emoji', '')
+        content      = post.get('content', '')
+        likes        = post.get('likes', 0)
+        comments     = post.get('comments', 0)
+        time_ago     = post.get('time', 'recently')
+        lang_tag     = "🇮🇳" if post.get('language') == 'hinglish' else "🇬🇧"
+        # Bold any remaining (@handle) mentions inside content
         content = re.sub(r'\(@(\w+)\)', r'(@**\1**)', content)
-        # Underline the post title (handle • time header)
-        field_name = f"{lang_tag} __{handle}__  •  {time_ago}"
-        field_value = f"*{bio}*\n{content}\n❤️ **{likes:,}**  💬 **{comments}**"
-        embed.add_field(name=field_name, value=field_value, inline=False)
+        # Player attribution line
+        if player_name and player_disc:
+            player_line = f"━━ {emoji_str} **{player_name} (__@{player_disc}__):** {content}".strip()
+        else:
+            player_line = f"━━ {content}"
+        field_value = f"*{lang_tag} {handle}  •  {time_ago}*\n{player_line}\n❤️ **{likes:,}**  💬 **{comments}**"
+        embed.add_field(name='\u200b', value=field_value, inline=False)
     today_str = datetime.utcnow().strftime('%B %d, %Y')
     if is_fallback:
         embed.set_footer(text=f"⚠️ AI rate-limited — showing sample posts | Retry with 🔄 | {today_str}")
         embed.color = 0xFF8C00  # Orange tint to signal fallback
     else:
-        embed.set_footer(text=f"📅 {today_str} | Refreshes daily at midnight UTC | Gemini AI")
+        embed.set_footer(text=f"📅 {today_str} | Refreshes daily at midnight UTC | OpenRouter AI")
     return embed
 
 # ============================================================
