@@ -5379,7 +5379,7 @@ async def dom_command(interaction: discord.Interaction, text: str, user: discord
         draw.text((player_name_x, player_name_y), player_name, font=current_font, fill=text_color)
 
         # ========================================
-        # Draw Username (NO OUTLINE)
+        # Draw Username (NO OUTLINE) YUP
         # ========================================
         username_text = f"@{user.name}"
         username_x = LAYOUT['username_x']
