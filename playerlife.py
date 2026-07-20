@@ -4,6 +4,7 @@ import json
 import random
 import asyncio
 import math
+import re
 import urllib.request
 import urllib.error
 from discord.ext import commands
@@ -700,7 +701,7 @@ def call_openrouter_sync(prompt: str) -> str:
         "model": OPENROUTER_MODEL,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 1.0,
-        "max_tokens": 3000
+        "max_tokens": 1200
     }).encode('utf-8')
 
     headers = {
@@ -934,7 +935,10 @@ def build_feed_embed(posts: list, page: int, language_filter: str, is_loading: b
         comments = post.get('comments', 0)
         time_ago = post.get('time', 'recently')
         lang_tag = "🇮🇳" if post.get('language') == 'hinglish' else "🇬🇧"
-        field_name = f"{lang_tag} {handle}  •  {time_ago}"
+        # Bold the username part inside (@handle) mentions in the post content
+        content = re.sub(r'\(@(\w+)\)', r'(@**\1**)', content)
+        # Underline the post title (handle • time header)
+        field_name = f"{lang_tag} __{handle}__  •  {time_ago}"
         field_value = f"*{bio}*\n{content}\n❤️ **{likes:,}**  💬 **{comments}**"
         embed.add_field(name=field_name, value=field_value, inline=False)
     today_str = datetime.utcnow().strftime('%B %d, %Y')
@@ -1141,6 +1145,8 @@ class FeedView(View):
         try:
             posts, is_fallback = await get_feed_page(self.language_filter, self.page, bot=self.bot)
             embed = build_feed_embed(posts, self.page, self.language_filter, is_fallback=is_fallback)
+            # Pre-generate the next page in the background so it's cached when user hits Next
+            asyncio.create_task(get_feed_page(self.language_filter, self.page + 1, bot=self.bot))
         except Exception as e:
             embed = discord.Embed(
                 title="📱 CricketGram Fan Feed",
