@@ -132,6 +132,12 @@ def init_playerlife_db():
                   comment_likes INTEGER DEFAULT 0,
                   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
 
+    # Add fan_gain column to social_posts if not present (safe migration)
+    try:
+        c.execute("ALTER TABLE social_posts ADD COLUMN fan_gain INTEGER DEFAULT 0")
+    except Exception:
+        pass
+
     conn.commit()
     conn.close()
 
@@ -701,18 +707,11 @@ def _get_fallback_posts(language_filter: str) -> list:
 
 def call_openrouter_sync(prompt: str) -> str:
     """
-    Call OpenRouter's OpenAI-compatible API.
+    Call OpenRouter's OpenAI-compatible API with up to 3 retries on null content.
     Uses OPENROUTER_API_KEY env var. On 429 raises RuntimeError("RATE_LIMITED").
     """
+    import time
     api_key = os.environ.get("OPENROUTER_API_KEY", "")
-
-    payload = json.dumps({
-        "model": OPENROUTER_MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 1.0,
-        "max_tokens": 2000
-    }).encode('utf-8')
-
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",
@@ -720,28 +719,43 @@ def call_openrouter_sync(prompt: str) -> str:
         "X-Title": "Cricket Discord Bot"
     }
 
-    req = urllib.request.Request(OPENROUTER_API_URL, data=payload, headers=headers, method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read().decode('utf-8'))
-            text = data['choices'][0]['message']['content']
-            if text is None:
-                raise RuntimeError("Model returned null content — retrying")
-            print(f"[OPENROUTER] OK — {len(text)} chars")
-            return text
-    except urllib.error.HTTPError as e:
-        body = ""
+    for attempt in range(1, 4):
+        payload = json.dumps({
+            "model": OPENROUTER_MODEL,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 1.0,
+            "max_tokens": 2000
+        }).encode('utf-8')
+        req = urllib.request.Request(OPENROUTER_API_URL, data=payload, headers=headers, method="POST")
         try:
-            body = e.read().decode('utf-8', errors='replace')[:300]
-        except Exception:
-            pass
-        print(f"[OPENROUTER] HTTP {e.code}: {body}")
-        if e.code == 429:
-            raise RuntimeError("RATE_LIMITED")
-        raise RuntimeError(f"OpenRouter API error: HTTP {e.code} — {body}")
-    except Exception as e:
-        print(f"[OPENROUTER] Exception: {type(e).__name__}: {e}")
-        raise RuntimeError(f"OpenRouter API error: {e}")
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read().decode('utf-8'))
+                text = data['choices'][0]['message']['content']
+                if text is None:
+                    print(f"[OPENROUTER] Attempt {attempt}: null content, retrying...")
+                    time.sleep(2)
+                    continue
+                print(f"[OPENROUTER] OK (attempt {attempt}) — {len(text)} chars")
+                return text
+        except urllib.error.HTTPError as e:
+            body = ""
+            try:
+                body = e.read().decode('utf-8', errors='replace')[:300]
+            except Exception:
+                pass
+            print(f"[OPENROUTER] HTTP {e.code}: {body}")
+            if e.code == 429:
+                raise RuntimeError("RATE_LIMITED")
+            raise RuntimeError(f"OpenRouter API error: HTTP {e.code} — {body}")
+        except RuntimeError:
+            raise
+        except Exception as e:
+            print(f"[OPENROUTER] Exception (attempt {attempt}): {type(e).__name__}: {e}")
+            if attempt < 3:
+                time.sleep(2)
+            else:
+                raise RuntimeError(f"OpenRouter API error: {e}")
+    raise RuntimeError("Model returned null content after 3 attempts")
 
 
 async def call_openrouter(prompt: str) -> str:
@@ -1176,9 +1190,10 @@ class CheckPostView(View):
             description=f'*"{d["content"]}"*',
             color=0xFF6600 if d['went_viral'] else 0xE1306C
         )
+        fan_line = f"  •  👥 **+{d['fan_gain']:,}** followers" if d.get('fan_gain') else ""
         embed.add_field(
             name="📊 Performance",
-            value=f"❤️ **{d['likes']:,}** likes{viral_tag}  •  💬 **{len(self.comments)}** comments",
+            value=f"❤️ **{d['likes']:,}** likes{viral_tag}{fan_line}  •  💬 **{len(self.comments)}** comments",
             inline=False
         )
         sentiment_icons = {'hype': '🔥', 'hate': '💀', 'neutral': '💬', 'funny': '😂', 'question': '🤔'}
@@ -2067,7 +2082,7 @@ class PlayerLife(commands.Cog):
             color=0xE1306C
         )
         embed.set_thumbnail(url=ctx.author.display_avatar.url)
-        embed.set_footer(text="Max 280 characters • AI fans will comment on your post automatically")
+        embed.set_footer(text="Max 280 characters • People will comment on your post automatically")
         view = PostButtonView(self, ctx)
         await ctx.send(embed=embed, view=view)
 
@@ -2162,8 +2177,8 @@ class PlayerLife(commands.Cog):
         conn = sqlite3.connect('players.db')
         c = conn.cursor()
         c.execute(
-            "INSERT INTO social_posts (user_id, post_type, content, likes, went_viral) VALUES (?,?,?,?,?)",
-            (user_id, 'custom', content, likes, 1 if went_viral else 0)
+            "INSERT INTO social_posts (user_id, post_type, content, likes, went_viral, fan_gain) VALUES (?,?,?,?,?,?)",
+            (user_id, 'custom', content, likes, 1 if went_viral else 0, fan_gain)
         )
         post_id = c.lastrowid
         conn.commit()
@@ -2266,13 +2281,13 @@ Return ONLY valid JSON array, no markdown:
         except Exception as e:
             print(f"[COMMENTS] Failed to generate for post {post_id}: {e}")
 
-    @commands.command(name="checkpost", aliases=["cp"], help="Check your latest custom post's comments")
+    @commands.command(name="checkpost", aliases=["check"], help="Check your latest custom post's comments")
     async def checkpost_command(self, ctx):
         ensure_life(ctx.author.id)
         conn = sqlite3.connect('players.db')
         c = conn.cursor()
         c.execute(
-            "SELECT id, content, likes, went_viral FROM social_posts "
+            "SELECT id, content, likes, went_viral, COALESCE(fan_gain, 0) FROM social_posts "
             "WHERE user_id = ? AND post_type = 'custom' ORDER BY posted_at DESC LIMIT 1",
             (ctx.author.id,)
         )
@@ -2281,7 +2296,7 @@ Return ONLY valid JSON array, no markdown:
             conn.close()
             await ctx.send("📭 You haven't made any custom posts yet! Use **-post** to share something.")
             return
-        post_id, content, likes, went_viral = post_row
+        post_id, content, likes, went_viral, fan_gain = post_row
         c.execute(
             "SELECT commenter_handle, comment_text, sentiment, comment_likes "
             "FROM post_comments WHERE post_id = ? ORDER BY comment_likes DESC",
@@ -2303,6 +2318,7 @@ Return ONLY valid JSON array, no markdown:
             'player_name': player_name,
             'content': content,
             'likes': likes,
+            'fan_gain': fan_gain,
             'went_viral': bool(went_viral)
         }
         view = CheckPostView(post_data, comments, ctx.author.id)
