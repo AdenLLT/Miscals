@@ -18,6 +18,11 @@ from datetime import datetime, timedelta
 import os
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_MODEL   = "openai/gpt-oss-20b:free"
+
+_OPENROUTER_KEY = os.environ.get("OPENROUTER_API_KEY", "").strip()
+if not _OPENROUTER_KEY:
+    print("[OPENROUTER] WARNING: OPENROUTER_API_KEY environment variable is not set! "
+          "All AI calls will fail with 401. Set it in your Koyeb / host environment variables.")
 POSTS_PER_PAGE = 3
 
 # ============================================================
@@ -711,7 +716,9 @@ def call_openrouter_sync(prompt: str) -> str:
     Uses OPENROUTER_API_KEY env var. On 429 raises RuntimeError("RATE_LIMITED").
     """
     import time
-    api_key = os.environ.get("OPENROUTER_API_KEY", "")
+    api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("OPENROUTER_API_KEY is not set. Add it to your environment variables on Koyeb.")
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",
@@ -1210,7 +1217,7 @@ class CheckPostView(View):
                 inline=False
             )
         else:
-            embed.add_field(name="💬 Comments", value="⏳ AI fans are still reading... try again shortly!", inline=False)
+            embed.add_field(name="💬 Comments", value="⏳ Fans are still reading... try again shortly!", inline=False)
         embed.set_footer(text=f"Sorted by likes • {len(self.comments)} total comments")
         return embed
 
@@ -2215,7 +2222,7 @@ class PlayerLife(commands.Cog):
         )
         embed.add_field(
             name="💬 Comments",
-            value="⏳ AI fans are reading your post...\nCheck with **-checkpost** in ~15 seconds!",
+            value="⏳ Fans are reading your post...\nCheck with **-checkpost** in ~15 seconds!",
             inline=True
         )
         embed.set_author(name=f"{player_name} on CricketGram", icon_url=interaction.user.display_avatar.url)
@@ -2306,7 +2313,7 @@ Return ONLY valid JSON array, no markdown:
         conn.close()
 
         if not comments_raw:
-            await ctx.send("⏳ AI fans are still reading your post! Try **-checkpost** again in a few seconds.")
+            await ctx.send("⏳ Fans are still reading your post! Try **-checkpost** again in a few seconds.")
             return
 
         player_name = get_player_name(ctx.author.id) or ctx.author.display_name
