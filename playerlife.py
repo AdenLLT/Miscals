@@ -16,14 +16,70 @@ from datetime import datetime, timedelta
 # OPENROUTER AI CONFIG
 # ============================================================
 import os
-OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+import time as _time
+OPENROUTER_API_URL = "https://router.bynara.id/v1/chat/completions"
 OPENROUTER_MODEL   = "openai/gpt-oss-20b:free"
-
-_OPENROUTER_KEY = os.environ.get("OPENROUTER_API_KEY", "").strip()
-if not _OPENROUTER_KEY:
-    print("[OPENROUTER] WARNING: OPENROUTER_API_KEY environment variable is not set! "
-          "All AI calls will fail with 401. Set it in your Koyeb / host environment variables.")
 POSTS_PER_PAGE = 3
+
+# ── Multi-key rotation ────────────────────────────────────────────────────────
+# Supports:
+#   • OPENROUTER_API_KEY          — one key, or comma-separated list of keys
+#   • OPENROUTER_API_KEY_2 … _9  — additional keys from separate accounts
+# Each free OpenRouter account gets 50 requests/day.
+# When a key hits 429 the bot automatically skips it until midnight UTC.
+def _load_or_keys():
+    keys = []
+    for raw in os.environ.get("OPENROUTER_API_KEY", "").split(","):
+        k = raw.strip()
+        if k:
+            keys.append(k)
+    for i in range(2, 10):
+        k = os.environ.get(f"OPENROUTER_API_KEY_{i}", "").strip()
+        if k:
+            keys.append(k)
+    return keys
+
+_OR_KEYS: list = _load_or_keys()
+_OR_KEY_LIMITED_UNTIL: dict = {}   # key -> unix timestamp when limit resets
+
+if not _OR_KEYS:
+    print("[OPENROUTER] WARNING: No API keys found! Set OPENROUTER_API_KEY (or _2, _3 …) "
+          "in your Koyeb / host environment variables. All AI calls will fail.")
+else:
+    print(f"[OPENROUTER] Loaded {len(_OR_KEYS)} API key(s). Rotating on 429.")
+
+def _or_get_active_key():
+    """Return the first key that isn't currently rate-limited, or None."""
+    now = _time.time()
+    for key in _OR_KEYS:
+        if now >= _OR_KEY_LIMITED_UNTIL.get(key, 0):
+            return key
+    return None
+
+def _or_mark_limited(key: str, reset_ms=None):
+    """Mark a key as rate-limited until its reset time (or next midnight UTC)."""
+    if reset_ms:
+        try:
+            reset_at = int(reset_ms) / 1000
+        except (TypeError, ValueError):
+            reset_at = None
+    else:
+        reset_at = None
+    if not reset_at:
+        from datetime import datetime, timedelta
+        tomorrow = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        reset_at = tomorrow.timestamp()
+    _OR_KEY_LIMITED_UNTIL[key] = reset_at
+    from datetime import datetime
+    print(f"[OPENROUTER] Key …{key[-6:]} rate-limited until "
+          f"{datetime.utcfromtimestamp(reset_at).strftime('%H:%M UTC')} "
+          f"({len([k for k in _OR_KEYS if _time.time() < _OR_KEY_LIMITED_UNTIL.get(k,0)])} of {len(_OR_KEYS)} keys now limited)")
+
+def all_keys_limited() -> bool:
+    """True when every key is currently rate-limited."""
+    now = _time.time()
+    return all(now < _OR_KEY_LIMITED_UNTIL.get(k, 0) for k in _OR_KEYS)
+# ─────────────────────────────────────────────────────────────────────────────
 
 # ============================================================
 # DATABASE INIT
@@ -712,57 +768,77 @@ def _get_fallback_posts(language_filter: str) -> list:
 
 def call_openrouter_sync(prompt: str) -> str:
     """
-    Call OpenRouter's OpenAI-compatible API with up to 3 retries on null content.
-    Uses OPENROUTER_API_KEY env var. On 429 raises RuntimeError("RATE_LIMITED").
+    Call OpenRouter with automatic key rotation on 429.
+    Tries every non-limited key in _OR_KEYS; raises RuntimeError("RATE_LIMITED")
+    only when all keys are exhausted for today.
     """
-    import time
-    api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
-    if not api_key:
-        raise RuntimeError("OPENROUTER_API_KEY is not set. Add it to your environment variables on Koyeb.")
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}",
-        "HTTP-Referer": "https://discord-cricket-bot.replit.app",
-        "X-Title": "Cricket Discord Bot"
-    }
+    if not _OR_KEYS:
+        raise RuntimeError("OPENROUTER_API_KEY is not set. Add it to your Koyeb environment variables.")
 
-    for attempt in range(1, 4):
-        payload = json.dumps({
-            "model": OPENROUTER_MODEL,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 1.0,
-            "max_tokens": 2000
-        }).encode('utf-8')
-        req = urllib.request.Request(OPENROUTER_API_URL, data=payload, headers=headers, method="POST")
-        try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                data = json.loads(resp.read().decode('utf-8'))
-                text = data['choices'][0]['message']['content']
-                if text is None:
-                    print(f"[OPENROUTER] Attempt {attempt}: null content, retrying...")
-                    time.sleep(2)
-                    continue
-                print(f"[OPENROUTER] OK (attempt {attempt}) — {len(text)} chars")
-                return text
-        except urllib.error.HTTPError as e:
-            body = ""
+    payload_str = json.dumps({
+        "model": OPENROUTER_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 1.0,
+        "max_tokens": 2000
+    })
+
+    for key in _OR_KEYS:
+        # Skip keys already rate-limited today
+        if _time.time() < _OR_KEY_LIMITED_UNTIL.get(key, 0):
+            continue
+
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {key}",
+            "HTTP-Referer": "https://discord-cricket-bot.replit.app",
+            "X-Title": "Cricket Discord Bot"
+        }
+
+        for attempt in range(1, 4):
+            payload = payload_str.encode('utf-8')
+            req = urllib.request.Request(OPENROUTER_API_URL, data=payload, headers=headers, method="POST")
             try:
-                body = e.read().decode('utf-8', errors='replace')[:300]
-            except Exception:
-                pass
-            print(f"[OPENROUTER] HTTP {e.code}: {body}")
-            if e.code == 429:
-                raise RuntimeError("RATE_LIMITED")
-            raise RuntimeError(f"OpenRouter API error: HTTP {e.code} — {body}")
-        except RuntimeError:
-            raise
-        except Exception as e:
-            print(f"[OPENROUTER] Exception (attempt {attempt}): {type(e).__name__}: {e}")
-            if attempt < 3:
-                time.sleep(2)
-            else:
-                raise RuntimeError(f"OpenRouter API error: {e}")
-    raise RuntimeError("Model returned null content after 3 attempts")
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    data = json.loads(resp.read().decode('utf-8'))
+                    text = data['choices'][0]['message']['content']
+                    if text is None:
+                        print(f"[OPENROUTER] Key …{key[-6:]} attempt {attempt}: null content, retrying...")
+                        _time.sleep(2)
+                        continue
+                    print(f"[OPENROUTER] OK key …{key[-6:]} (attempt {attempt}) — {len(text)} chars")
+                    return text
+            except urllib.error.HTTPError as e:
+                body = ""
+                try:
+                    body = e.read().decode('utf-8', errors='replace')[:400]
+                except Exception:
+                    pass
+                print(f"[OPENROUTER] HTTP {e.code} key …{key[-6:]}: {body}")
+                if e.code == 429:
+                    # Parse reset timestamp from the error body if available
+                    reset_ms = None
+                    try:
+                        err_data = json.loads(body)
+                        reset_ms = (err_data.get('error', {})
+                                    .get('metadata', {})
+                                    .get('headers', {})
+                                    .get('X-RateLimit-Reset'))
+                    except Exception:
+                        pass
+                    _or_mark_limited(key, reset_ms)
+                    break  # stop retrying this key, move to next
+                raise RuntimeError(f"OpenRouter API error: HTTP {e.code} — {body}")
+            except RuntimeError:
+                raise
+            except Exception as e:
+                print(f"[OPENROUTER] Exception key …{key[-6:]} (attempt {attempt}): {type(e).__name__}: {e}")
+                if attempt < 3:
+                    _time.sleep(2)
+                else:
+                    raise RuntimeError(f"OpenRouter API error: {e}")
+        # inner loop ended without returning — key was 429'd, try next
+
+    raise RuntimeError("RATE_LIMITED")  # all keys exhausted
 
 
 async def call_openrouter(prompt: str) -> str:
@@ -790,17 +866,21 @@ _bg_state = {'date': '', 'next_page': 0}
 async def background_feed_generator(bot):
     """
     On each new UTC day:
-      • Immediately generates 25 pages (100 posts) for the 'all' feed.
-      • Then every hour generates 8 more pages (~30 posts).
-    All results are cached so user page-turns are instant.
+      • Generates up to STARTUP_PAGES pages on first run.
+      • Then every BATCH_INTERVAL seconds generates BATCH_PAGES more.
+      • Skips generation entirely when all API keys are rate-limited,
+        and waits until the earliest reset time before resuming.
+      • Pages already in cache are skipped automatically (0 API calls).
+    Budget: with 1 key = 50 req/day. Tweak constants to match your key count.
     """
     global _bg_state
-    STARTUP_PAGES = 25   # 100 posts on day-start
-    HOURLY_PAGES  = 8    # ~30 posts every hour after
-    PAGE_DELAY    = 5    # seconds between API calls to avoid rate-limits
+    STARTUP_PAGES  = 25   # pages on day-start
+    BATCH_PAGES    = 8    # pages per batch
+    BATCH_INTERVAL = 3600 # seconds between batches (1 hour)
+    PAGE_DELAY     = 5    # seconds between pages within a batch
 
     # Small initial delay so the bot finishes its startup sequence first
-    await asyncio.sleep(10)
+    await asyncio.sleep(15)
 
     while True:
         today = datetime.utcnow().strftime('%Y-%m-%d')
@@ -808,11 +888,23 @@ async def background_feed_generator(bot):
         if _bg_state['date'] != today:
             _bg_state['date'] = today
             _bg_state['next_page'] = 0
-            print(f"[BG_FEED] New day {today} — generating startup batch ({STARTUP_PAGES} pages)")
+            print(f"[BG_FEED] New day {today} — startup batch ({STARTUP_PAGES} pages)")
 
-        batch = STARTUP_PAGES if _bg_state['next_page'] == 0 else HOURLY_PAGES
+        # If all keys are rate-limited, sleep until the earliest reset
+        if all_keys_limited():
+            now = _time.time()
+            earliest_reset = min(_OR_KEY_LIMITED_UNTIL.get(k, now) for k in _OR_KEYS)
+            wait = max(60, earliest_reset - now + 5)
+            print(f"[BG_FEED] All keys rate-limited — sleeping {int(wait//60)}m until reset.")
+            await asyncio.sleep(wait)
+            continue
+
+        batch = STARTUP_PAGES if _bg_state['next_page'] == 0 else BATCH_PAGES
 
         for _ in range(batch):
+            if all_keys_limited():
+                print("[BG_FEED] All keys exhausted mid-batch — pausing batch.")
+                break
             page = _bg_state['next_page']
             try:
                 await get_feed_page('all', page, bot=bot)
@@ -820,10 +912,13 @@ async def background_feed_generator(bot):
                 print(f"[BG_FEED] Page {page} cached ✓")
             except Exception as e:
                 print(f"[BG_FEED] Page {page} failed: {e}")
+                if 'RATE_LIMITED' in str(e):
+                    print("[BG_FEED] Rate limit hit — pausing batch.")
+                    break
             await asyncio.sleep(PAGE_DELAY)
 
         print(f"[BG_FEED] Batch done. Total pages cached today: {_bg_state['next_page']}")
-        await asyncio.sleep(3600)  # wait 1 hour before next batch
+        await asyncio.sleep(BATCH_INTERVAL)
 
 
 def start_feed_background_gen(bot):
@@ -2077,10 +2172,6 @@ class PlayerLife(commands.Cog):
     async def post_command(self, ctx):
         ensure_life(ctx.author.id)
         life = get_life(ctx.author.id)
-        can, mins = cooldown_check(life["last_social"], 30)
-        if not can:
-            await ctx.send(f"⏳ You just posted! Wait **{mins} more minutes** before posting again.")
-            return
         social = get_social(ctx.author.id)
         player_name = get_player_name(ctx.author.id) or ctx.author.display_name
         embed = discord.Embed(
