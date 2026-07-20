@@ -1051,6 +1051,19 @@ def start_feed_background_gen(bot):
 DISCUSSION_CHANNEL_ID = 1528839693897044159
 _discussion_webhook = None
 
+# Shared history — written by background loop AND on_message listener
+_discussion_history: list = []   # {"username": str, "message": str, "is_user": bool}
+_user_topic_pending: bool  = False  # flag: a real user just posted, prioritise their topic
+
+def inject_user_message(display_name: str, message: str):
+    """Called from on_message when a real user posts in the discussion channel."""
+    global _user_topic_pending
+    _discussion_history.append({"username": display_name, "message": message, "is_user": True})
+    if len(_discussion_history) > 25:
+        _discussion_history.pop(0)
+    _user_topic_pending = True
+    print(f"[DISCUSSION] User topic injected from @{display_name}: {message[:60]}")
+
 _FAN_NAMES = [
     "cricket_soul", "sixhitter_vibes", "stump_mic_fan", "yorker_king",
     "desi_cricket_bhai", "ipl_fanatic", "test_purist", "boundary_bandit",
@@ -1084,9 +1097,9 @@ async def _get_discussion_webhook(bot):
         return None
 
 
-async def _generate_discussion_msg(player_data: dict, history: list) -> dict:
+async def _generate_discussion_msg(player_data: dict, history: list, user_topic_active: bool) -> dict:
     """Ask AI for one fan discussion message. Returns dict with message + reply info."""
-    # Build player reference block (name, discord, emoji, team, stats)
+    # Build player reference block
     player_lines = []
     for pname, pd in list(player_data.items())[:20]:
         disc = pd.get('discord', '')
@@ -1094,50 +1107,68 @@ async def _generate_discussion_msg(player_data: dict, history: list) -> dict:
         em   = pd.get('emoji', '')
         runs = pd.get('runs', 0)
         wkts = pd.get('wickets', 0)
-        # Format: emoji PlayerName (@handle) — Team, Xr Yw
         if em:
             player_lines.append(f"  {em} **{pname}** ({disc}) — {team}, {runs}r/{wkts}w")
         else:
             player_lines.append(f"  **{pname}** ({disc}) — {team}, {runs}r/{wkts}w")
     player_block = "\n".join(player_lines) or "  (no claimed players yet)"
 
-    # Recent history for context
-    hist_lines = "\n".join(
-        f"  {h['username']}: {h['message']}" for h in history[-6:]
-    )
-    hist_block = f"Recent chat:\n{hist_lines}" if hist_lines else ""
+    # Build history block — highlight real user messages
+    hist_parts = []
+    user_msgs  = []
+    for h in history[-8:]:
+        prefix = "🔵 [REAL USER] " if h.get('is_user') else ""
+        hist_parts.append(f"  {prefix}{h['username']}: {h['message']}")
+        if h.get('is_user'):
+            user_msgs.append(h)
+    hist_block = ("Recent chat:\n" + "\n".join(hist_parts)) if hist_parts else ""
 
-    # Decide if this message is a reply
-    is_reply = bool(history) and random.random() < 0.40
+    # Topic drift instruction when a real user has posted
+    if user_topic_active and user_msgs:
+        latest_user = user_msgs[-1]
+        topic_instruction = (
+            f'⚠️ PRIORITY: A REAL USER (@{latest_user["username"]}) just said: '
+            f'"{latest_user["message"]}" — your message MUST engage with their topic. '
+            f'React to it, answer it, agree/disagree with it, or expand on it.'
+        )
+    else:
+        topic_instruction = ""
+
+    # Reply logic — prefer replying to the real user when topic is active
+    is_reply = bool(history) and random.random() < 0.45
     reply_target = None
     if is_reply:
-        pool = history[-4:] if len(history) >= 4 else history
-        reply_target = random.choice(pool)
+        if user_topic_active and user_msgs:
+            reply_target = user_msgs[-1]  # always reply to real user first
+        else:
+            pool = history[-4:] if len(history) >= 4 else history
+            reply_target = random.choice(pool)
 
     reply_instruction = (
         f'You are REPLYING to @{reply_target["username"]} who said: "{reply_target["message"]}"'
         if reply_target else
-        "Start a fresh thought or continue the discussion naturally."
+        "Continue the discussion naturally."
     )
 
     prompt = f"""You are a passionate cricket fan chatting in a Discord cricket server.
 
-=== CLAIMED PLAYERS (use this format when mentioning them) ===
+=== CLAIMED PLAYERS (use this exact format when mentioning them) ===
 {player_block}
 
 {hist_block}
 
-TASK: Write ONE Discord chat message (1-3 sentences, max 140 chars total).
+{topic_instruction}
+
+TASK: Write ONE Discord chat message (1-3 sentences, max 150 chars total).
 {reply_instruction}
 
 Rules:
-- Casual, natural Discord tone — abbreviations, slang, banter OK
-- Cricket-focused: stats, match opinions, predictions, player debates
-- When mentioning a claimed player above, ALWAYS write them as:
-  {{their_emoji}} **{{PlayerName}} ({{@discord_handle}})**
-- 0-2 emojis max; no emoji at the very start of the message
-- No quotation marks wrapping your message
-- Be opinionated and specific
+- Casual Discord tone — abbreviations, slang, banter welcome
+- Cricket-focused: stats, opinions, predictions, banter, debates
+- When mentioning a claimed player, write: {{emoji}} **{{PlayerName}} ({{@discord}})** 
+- 0-2 emojis max; no emoji at the very start
+- No surrounding quotation marks
+- Be specific and opinionated
 
 Return ONLY a JSON object, no markdown:
 {{"message": "your message here", "is_reply": {"true" if is_reply else "false"}, "reply_to_username": "{reply_target['username'] if reply_target else ''}"}}"""
@@ -1152,67 +1183,74 @@ Return ONLY a JSON object, no markdown:
 
 
 async def background_fan_discussion(bot):
-    """Send AI-generated fan chat via webhook every 30 seconds."""
+    """Send AI-generated fan chat via webhook every 8 seconds."""
+    global _user_topic_pending
     await asyncio.sleep(15)  # let bot fully connect first
     print("[DISCUSSION] Fan discussion task started.")
 
-    _history: list = []  # {"username": str, "message": str}
+    # Cache player data + emojis, refresh every 5 minutes
+    _player_cache: dict = {}
+    _cache_ts: float = 0.0
 
     while True:
         try:
             webhook = await _get_discussion_webhook(bot)
             if not webhook:
-                await asyncio.sleep(30)
+                await asyncio.sleep(8)
                 continue
 
-            player_data = get_feed_player_data(bot=bot)
+            # Refresh player data every 5 min
+            import time as _t
+            now = _t.time()
+            if now - _cache_ts > 300 or not _player_cache:
+                _player_cache = get_feed_player_data(bot=bot)
+                for pname in list(_player_cache.keys()):
+                    _en = ''.join(c if c.isalnum() or c == '_' else '_' for c in pname)[:32]
+                    _ef = ''
+                    for _g in bot.guilds:
+                        _eo = discord.utils.get(_g.emojis, name=_en)
+                        if _eo:
+                            _ef = str(_eo)
+                            break
+                    _player_cache[pname]['emoji'] = _ef
+                _cache_ts = now
 
-            # Inject emoji strings for each player
-            for pname in list(player_data.keys()):
-                _en = ''.join(c if c.isalnum() or c == '_' else '_' for c in pname)[:32]
-                _ef = ''
-                for _g in bot.guilds:
-                    _eo = discord.utils.get(_g.emojis, name=_en)
-                    if _eo:
-                        _ef = str(_eo)
-                        break
-                player_data[pname]['emoji'] = _ef
+            topic_active = _user_topic_pending
+            result = await _generate_discussion_msg(_player_cache, _discussion_history, topic_active)
 
-            result = await _generate_discussion_msg(player_data, _history)
             message_text = result.get('message', '').strip()
             if not message_text:
-                await asyncio.sleep(30)
+                await asyncio.sleep(8)
                 continue
 
             is_reply       = result.get('is_reply', False)
             reply_username = result.get('reply_to_username', '').strip('@').strip()
 
-            # Format: plain message, or reply block
-            if is_reply and reply_username:
-                final_content = f"**REPLY TO: @{reply_username}**\n{message_text}"
-            else:
-                final_content = message_text
+            final_content = (
+                f"**REPLY TO: @{reply_username}**\n{message_text}"
+                if is_reply and reply_username else
+                message_text
+            )
 
-            # Random identity
             username   = random.choice(_FAN_NAMES) + str(random.randint(1, 9999))
             avatar_url = f"https://picsum.photos/seed/{random.randint(1, 99999)}/128/128"
 
-            await webhook.send(
-                content=final_content,
-                username=username,
-                avatar_url=avatar_url,
-            )
+            await webhook.send(content=final_content, username=username, avatar_url=avatar_url)
 
-            _history.append({"username": username, "message": message_text})
-            if len(_history) > 25:
-                _history.pop(0)
+            _discussion_history.append({"username": username, "message": message_text, "is_user": False})
+            if len(_discussion_history) > 25:
+                _discussion_history.pop(0)
 
-            print(f"[DISCUSSION] Sent as @{username} (reply={is_reply})")
+            # Clear the user-topic flag after the first fan response addresses it
+            if topic_active:
+                _user_topic_pending = False
+
+            print(f"[DISCUSSION] Sent as @{username} (reply={is_reply}, user_topic={topic_active})")
 
         except Exception as exc:
             print(f"[DISCUSSION] Error: {exc}")
 
-        await asyncio.sleep(30)
+        await asyncio.sleep(8)
 
 
 def start_fan_discussion(bot):

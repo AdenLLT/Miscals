@@ -637,6 +637,18 @@ async def on_command_error(ctx, error):
     await ctx.send(f"❌ Error: {error}")
 
 @bot.listen('on_message')
+async def handle_discussion_channel(message):
+    """Inject real user messages into the fan discussion so fans drift to their topic."""
+    if message.author.bot:
+        return
+    if getattr(message.channel, 'id', None) == 1528839693897044159:
+        try:
+            from playerlife import inject_user_message
+            inject_user_message(message.author.display_name, message.content or '')
+        except Exception:
+            pass
+
+@bot.listen('on_message')
 async def log_dm_messages(message):
     if message.author.bot:
         return
@@ -5379,7 +5391,7 @@ async def dom_command(interaction: discord.Interaction, text: str, user: discord
         draw.text((player_name_x, player_name_y), player_name, font=current_font, fill=text_color)
 
         # ========================================
-        # Draw Username (NO OUTLINE) YUP
+        # Draw Username (NO OUTLINE)
         # ========================================
         username_text = f"@{user.name}"
         username_x = LAYOUT['username_x']
