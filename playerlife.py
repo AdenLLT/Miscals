@@ -766,7 +766,7 @@ def _get_fallback_posts(language_filter: str) -> list:
     return posts
 
 
-def call_openrouter_sync(prompt: str) -> str:
+def call_openrouter_sync(prompt: str, max_tokens: int = 2000) -> str:
     """
     Call OpenRouter with automatic key rotation on 429.
     Tries every non-limited key in _OR_KEYS; raises RuntimeError("RATE_LIMITED")
@@ -779,7 +779,7 @@ def call_openrouter_sync(prompt: str) -> str:
         "model": OPENROUTER_MODEL,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 1.0,
-        "max_tokens": 2000
+        "max_tokens": max_tokens
     })
 
     for key in _OR_KEYS:
@@ -849,9 +849,9 @@ def call_openrouter_sync(prompt: str) -> str:
     raise RuntimeError("RATE_LIMITED")  # all keys exhausted
 
 
-async def call_openrouter(prompt: str) -> str:
+async def call_openrouter(prompt: str, max_tokens: int = 2000) -> str:
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, call_openrouter_sync, prompt)
+    return await loop.run_in_executor(None, call_openrouter_sync, prompt, max_tokens)
 
 
 def _repair_truncated_json(raw: str) -> str:
@@ -926,6 +926,11 @@ async def _build_cricketgram_embed(post: dict, uid_map: dict, bot) -> discord.Em
     time_ago    = post.get('time', 'recently')
 
     is_team_post = not player_disc  # no discord handle = team-focused post
+
+    # Append player signature for player posts
+    if not is_team_post and player_name and player_disc:
+        flag = get_team_flag(player_team)
+        content = f"{content}\n\n━ 🏏 {player_name} (@{player_disc}) {flag}"
 
     embed = discord.Embed(title=title, description=content, color=0xE1306C)
 
@@ -1021,7 +1026,7 @@ async def background_feed_generator(bot):
         except Exception as e:
             print(f"[BG_FEED] Batch {_page} failed: {e}")
 
-        await asyncio.sleep(300)  # 5 minutes
+        await asyncio.sleep(90)  # 90 seconds
 
 
 def start_feed_background_gen(bot):
@@ -2428,14 +2433,14 @@ Followers: {social['followers']:,}
 Reputation: {life['reputation']}/100
 Post content: "{content}"
 
-Generate exactly 12 comments from different fan perspectives:
-- 4 hype/supportive (excited, praising, fanboying)
-- 2 hate/toxic (jealous, roasting, salty)
-- 3 neutral/analytical (debating, comparing stats, thoughtful)
-- 2 funny/meme (jokes, cricket puns, light humour)
+Generate exactly 6 comments from different fan perspectives:
+- 2 hype/supportive (excited, praising, fanboying)
+- 1 hate/toxic (jealous, roasting, salty)
+- 1 neutral/analytical (debating, comparing, thoughtful)
+- 1 funny/meme (joke, cricket pun, light humour)
 - 1 question (asking something about the post)
 
-Rules: each comment references the post content, uses natural cricket slang, max 90 chars each. Keep emojis minimal — 0-2 per comment. No emoji at the start of a comment. Creative usernames only.
+Rules: each comment references the post content, uses natural cricket slang, max 80 chars each. Keep emojis minimal — 0-2 per comment. No emoji at the start of a comment. Creative usernames only.
 
 Return ONLY valid JSON array, no markdown:
 [
@@ -2447,7 +2452,7 @@ Return ONLY valid JSON array, no markdown:
   }}
 ]"""
         try:
-            raw = await call_openrouter(prompt)
+            raw = await call_openrouter(prompt, max_tokens=700)
             raw = raw.strip()
             start = raw.find('[')
             end   = raw.rfind(']')
