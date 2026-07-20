@@ -18,7 +18,7 @@ from datetime import datetime, timedelta
 import os
 import time as _time
 OPENROUTER_API_URL = "https://router.bynara.id/v1/chat/completions"
-OPENROUTER_MODEL   = "openai/gpt-oss-20b:free"
+OPENROUTER_MODEL   = "glm-5.2-free"
 POSTS_PER_PAGE = 3
 
 # ── Multi-key rotation ────────────────────────────────────────────────────────
