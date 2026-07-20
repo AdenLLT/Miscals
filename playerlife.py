@@ -123,6 +123,15 @@ def init_playerlife_db():
                   posts_json TEXT,
                   generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
 
+    c.execute('''CREATE TABLE IF NOT EXISTS post_comments
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  post_id INTEGER,
+                  commenter_handle TEXT,
+                  comment_text TEXT,
+                  sentiment TEXT,
+                  comment_likes INTEGER DEFAULT 0,
+                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+
     conn.commit()
     conn.close()
 
@@ -740,6 +749,20 @@ async def call_openrouter(prompt: str) -> str:
     return await loop.run_in_executor(None, call_openrouter_sync, prompt)
 
 
+def _repair_truncated_json(raw: str) -> str:
+    """Rescue a truncated JSON array by keeping only complete objects."""
+    last_brace = raw.rfind('}')
+    if last_brace == -1:
+        raise ValueError("No complete JSON object found in response")
+    truncated = raw[:last_brace + 1].strip()
+    truncated = re.sub(r',\s*$', '', truncated)
+    if not truncated.startswith('['):
+        truncated = '[' + truncated
+    if not truncated.endswith(']'):
+        truncated += ']'
+    return truncated
+
+
 # ── Background feed pre-generation ──────────────────────────────────────────
 _bg_state = {'date': '', 'next_page': 0}
 
@@ -955,7 +978,12 @@ async def get_feed_page(language_filter: str, page: int, bot=None) -> tuple:
             raw = raw[start:end + 1]
         # Clean common model mistakes: trailing commas before ] or }
         raw = re.sub(r',\s*([}\]])', r'\1', raw)
-        posts = json.loads(raw)
+        try:
+            posts = json.loads(raw)
+        except json.JSONDecodeError:
+            print(f"[FEED] JSON parse failed, attempting repair...")
+            raw = _repair_truncated_json(raw)
+            posts = json.loads(raw)
         # Inject player emoji for each post — search guilds by emoji name (same
         # approach as get_player_emoji in main.py, no ID lookup needed)
         if bot:
@@ -986,8 +1014,8 @@ def build_feed_embed(posts: list, page: int, language_filter: str, is_loading: b
         color=0xE1306C
     )
     if is_loading:
-        embed.description = "⏳ *Generating AI fan posts... please wait a moment...*"
-        embed.set_footer(text="Powered by Gemini AI | Refreshes daily")
+        embed.description = "⏳ *Loading Page...*"
+        embed.set_footer(text="Powered by TFHEx | Refreshes daily")
         return embed
     if not posts:
         embed.description = "Could not load feed. Try again!"
@@ -1086,6 +1114,109 @@ class SocialPostTypeView(View):
             await interaction.response.edit_message(view=self)
             await self.cog._do_post(interaction, post_key)
         return callback
+
+class PostModal(discord.ui.Modal, title="📱 CricketGram — Share Your Thoughts"):
+    post_content = discord.ui.TextInput(
+        label="What's on your mind?",
+        style=discord.TextStyle.paragraph,
+        placeholder="Talk cricket, flex your stats, call out rivals, anything... 🏏",
+        max_length=280,
+        required=True
+    )
+
+    def __init__(self, cog, ctx):
+        super().__init__()
+        self.cog = cog
+        self.ctx = ctx
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(thinking=True)
+        await self.cog._process_custom_post(interaction, str(self.post_content))
+
+
+class PostButtonView(View):
+    def __init__(self, cog, ctx):
+        super().__init__(timeout=60)
+        self.cog = cog
+        self.ctx = ctx
+        btn = Button(label="✏️ Write Post", style=discord.ButtonStyle.primary, emoji="📱")
+        btn.callback = self._open_modal
+        self.add_item(btn)
+
+    async def _open_modal(self, interaction: discord.Interaction):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("❌ This isn't your post panel!", ephemeral=True)
+            return
+        await interaction.response.send_modal(PostModal(self.cog, self.ctx))
+
+
+COMMENTS_PER_PAGE = 5
+
+class CheckPostView(View):
+    def __init__(self, post_data, comments, user_id):
+        super().__init__(timeout=120)
+        self.post_data = post_data
+        self.comments = comments
+        self.user_id = user_id
+        self.page = 0
+        self.max_page = max(0, (len(comments) - 1) // COMMENTS_PER_PAGE)
+
+        self.prev_btn = Button(label="◀ Prev", style=discord.ButtonStyle.secondary, disabled=True)
+        self.next_btn = Button(label="Next ▶", style=discord.ButtonStyle.secondary, disabled=self.max_page == 0)
+        self.prev_btn.callback = self._prev
+        self.next_btn.callback = self._next
+        self.add_item(self.prev_btn)
+        self.add_item(self.next_btn)
+
+    def build_embed(self):
+        d = self.post_data
+        viral_tag = "  🔥 **VIRAL**" if d['went_viral'] else ""
+        embed = discord.Embed(
+            title=f"📱 {d['player_name']}'s Post",
+            description=f'*"{d["content"]}"*',
+            color=0xFF6600 if d['went_viral'] else 0xE1306C
+        )
+        embed.add_field(
+            name="📊 Performance",
+            value=f"❤️ **{d['likes']:,}** likes{viral_tag}  •  💬 **{len(self.comments)}** comments",
+            inline=False
+        )
+        sentiment_icons = {'hype': '🔥', 'hate': '💀', 'neutral': '💬', 'funny': '😂', 'question': '🤔'}
+        start = self.page * COMMENTS_PER_PAGE
+        page_comments = self.comments[start:start + COMMENTS_PER_PAGE]
+        if page_comments:
+            lines = []
+            for c in page_comments:
+                icon = sentiment_icons.get(c['sentiment'], '💬')
+                lines.append(f"{icon} **@{c['commenter_handle']}:** {c['comment_text']}  ❤️ {c['comment_likes']}")
+            embed.add_field(
+                name=f"💬 Comments — Page {self.page+1}/{self.max_page+1}",
+                value="\n".join(lines),
+                inline=False
+            )
+        else:
+            embed.add_field(name="💬 Comments", value="⏳ AI fans are still reading... try again shortly!", inline=False)
+        embed.set_footer(text=f"Sorted by likes • {len(self.comments)} total comments")
+        return embed
+
+    async def _prev(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("Not your post!", ephemeral=True)
+            return
+        self.page = max(0, self.page - 1)
+        self.prev_btn.disabled = self.page == 0
+        self.next_btn.disabled = self.page >= self.max_page
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def _next(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("Not your post!", ephemeral=True)
+            return
+        self.page = min(self.max_page, self.page + 1)
+        self.prev_btn.disabled = self.page == 0
+        self.next_btn.disabled = self.page >= self.max_page
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
 
 class BuyCarView(View):
     def __init__(self, ctx, cog):
@@ -1920,21 +2051,24 @@ class PlayerLife(commands.Cog):
         if not tips: tips.append("🚀 You're doing great! Keep posting!")
         return "\n".join(tips)
 
-    @commands.command(name="post", aliases=["p"], help="Post content on social media")
+    @commands.command(name="post", aliases=["p"], help="Share a custom post on CricketGram")
     async def post_command(self, ctx):
         ensure_life(ctx.author.id)
         life = get_life(ctx.author.id)
-        can, mins = cooldown_check(life["last_social"], 1)
+        can, mins = cooldown_check(life["last_social"], 30)
         if not can:
-            await ctx.send(f"⏳ You just posted! Wait **{mins} more minutes** before your next post.")
+            await ctx.send(f"⏳ You just posted! Wait **{mins} more minutes** before posting again.")
             return
-
-        embed = discord.Embed(title="📱 What do you want to post?", 
-                              description="Choose your content type for CricketGram:", color=0xE1306C)
-        for key, data in POST_TYPES.items():
-            embed.add_field(name=data["name"], value=f"Fans: +{data['followers_gain'][0]}-{data['followers_gain'][1]}", inline=True)
-
-        view = SocialPostTypeView(ctx, self)
+        social = get_social(ctx.author.id)
+        player_name = get_player_name(ctx.author.id) or ctx.author.display_name
+        embed = discord.Embed(
+            title="📱 New CricketGram Post",
+            description=f"**{player_name}** — {social['followers']:,} followers\n\nClick below to write your post!",
+            color=0xE1306C
+        )
+        embed.set_thumbnail(url=ctx.author.display_avatar.url)
+        embed.set_footer(text="Max 280 characters • AI fans will comment on your post automatically")
+        view = PostButtonView(self, ctx)
         await ctx.send(embed=embed, view=view)
 
     async def _do_post(self, interaction, post_key):
@@ -2004,6 +2138,175 @@ class PlayerLife(commands.Cog):
         embed.set_author(name=f"{player_name} on CricketGram", icon_url=interaction.user.display_avatar.url)
         embed.set_footer(text=f"Total Followers: {new_followers:,} | Total Posts: {new_posts}")
         await interaction.channel.send(embed=embed)
+
+    async def _process_custom_post(self, interaction: discord.Interaction, content: str):
+        """Handle a custom post submitted via modal."""
+        user_id = interaction.user.id
+        ensure_life(user_id)
+        social = get_social(user_id)
+        life   = get_life(user_id)
+        player_name = get_player_name(user_id) or interaction.user.display_name
+
+        # Likes & viral
+        base_likes  = random.randint(200, 3000)
+        follower_mult = 1 + (social['followers'] / 50000) * 0.5
+        likes = int(base_likes * follower_mult)
+        went_viral = random.random() < 0.10
+        viral_mult = random.randint(5, 20) if went_viral else 1
+        likes *= viral_mult
+        fan_gain = random.randint(50, 600)
+        if went_viral:
+            fan_gain *= random.randint(5, 15)
+
+        # Save post
+        conn = sqlite3.connect('players.db')
+        c = conn.cursor()
+        c.execute(
+            "INSERT INTO social_posts (user_id, post_type, content, likes, went_viral) VALUES (?,?,?,?,?)",
+            (user_id, 'custom', content, likes, 1 if went_viral else 0)
+        )
+        post_id = c.lastrowid
+        conn.commit()
+        conn.close()
+
+        # Update stats
+        update_social(user_id,
+                      followers=social['followers'] + fan_gain,
+                      posts=social['posts'] + 1,
+                      viral_posts=social['viral_posts'] + (1 if went_viral else 0),
+                      total_likes=social['total_likes'] + likes,
+                      last_post=datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'))
+        update_life(user_id,
+                    fans=life['fans'] + fan_gain,
+                    last_social=datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'))
+
+        # Kick off AI comment generation in background (non-blocking)
+        asyncio.get_event_loop().create_task(
+            self._generate_post_comments(post_id, player_name, content, social, life)
+        )
+
+        color = 0xFF6600 if went_viral else 0xE1306C
+        embed = discord.Embed(
+            title="🔥 VIRAL POST! 🔥" if went_viral else "📸 Post Published!",
+            description=f'*"{content}"*',
+            color=color
+        )
+        if went_viral:
+            embed.description += "\n\n**🚨 YOUR POST WENT VIRAL! THE INTERNET IS TALKING!**"
+        embed.add_field(
+            name="📊 Performance",
+            value=f"❤️ **{likes:,}** likes\n👥 **+{fan_gain:,}** followers\n📱 **{social['followers']+fan_gain:,}** total",
+            inline=True
+        )
+        embed.add_field(
+            name="💬 Comments",
+            value="⏳ AI fans are reading your post...\nCheck with **-checkpost** in ~15 seconds!",
+            inline=True
+        )
+        embed.set_author(name=f"{player_name} on CricketGram", icon_url=interaction.user.display_avatar.url)
+        embed.set_footer(text="Use -checkpost to see all fan comments")
+        await interaction.followup.send(embed=embed)
+
+    async def _generate_post_comments(self, post_id, player_name, content, social, life):
+        """Generate AI fan comments for a custom post and store them in the DB."""
+        prompt = f"""You are generating realistic fan comments on a cricket player's CricketGram post.
+
+Player: {player_name}
+Followers: {social['followers']:,}
+Reputation: {life['reputation']}/100
+Post content: "{content}"
+
+Generate exactly 12 comments from different fan perspectives:
+- 4 hype/supportive (excited, praising, fanboying)
+- 2 hate/toxic (jealous, roasting, salty)
+- 3 neutral/analytical (debating, comparing stats, thoughtful)
+- 2 funny/meme (jokes, cricket puns, emoji-heavy)
+- 1 question (asking something about the post)
+
+Rules: each comment references the post content somehow, uses cricket slang + emojis, max 90 chars each. Creative usernames only.
+
+Return ONLY valid JSON array, no markdown:
+[
+  {{
+    "handle": "fan_username",
+    "comment_text": "comment here",
+    "sentiment": "hype",
+    "likes": 42
+  }}
+]"""
+        try:
+            raw = await call_openrouter(prompt)
+            raw = raw.strip()
+            start = raw.find('[')
+            end   = raw.rfind(']')
+            if start != -1 and end != -1 and end > start:
+                raw = raw[start:end + 1]
+            raw = re.sub(r',\s*([}\]])', r'\1', raw)
+            try:
+                comments = json.loads(raw)
+            except json.JSONDecodeError:
+                raw = _repair_truncated_json(raw)
+                comments = json.loads(raw)
+
+            conn = sqlite3.connect('players.db')
+            c = conn.cursor()
+            for cm in comments:
+                c.execute(
+                    "INSERT INTO post_comments (post_id, commenter_handle, comment_text, sentiment, comment_likes) VALUES (?,?,?,?,?)",
+                    (post_id,
+                     cm.get('handle', 'fan'),
+                     cm.get('comment_text', ''),
+                     cm.get('sentiment', 'neutral'),
+                     cm.get('likes', 0))
+                )
+            c.execute("UPDATE social_posts SET comments = ? WHERE id = ?", (len(comments), post_id))
+            conn.commit()
+            conn.close()
+            print(f"[COMMENTS] {len(comments)} comments saved for post {post_id}")
+        except Exception as e:
+            print(f"[COMMENTS] Failed to generate for post {post_id}: {e}")
+
+    @commands.command(name="checkpost", aliases=["cp"], help="Check your latest custom post's comments")
+    async def checkpost_command(self, ctx):
+        ensure_life(ctx.author.id)
+        conn = sqlite3.connect('players.db')
+        c = conn.cursor()
+        c.execute(
+            "SELECT id, content, likes, went_viral FROM social_posts "
+            "WHERE user_id = ? AND post_type = 'custom' ORDER BY posted_at DESC LIMIT 1",
+            (ctx.author.id,)
+        )
+        post_row = c.fetchone()
+        if not post_row:
+            conn.close()
+            await ctx.send("📭 You haven't made any custom posts yet! Use **-post** to share something.")
+            return
+        post_id, content, likes, went_viral = post_row
+        c.execute(
+            "SELECT commenter_handle, comment_text, sentiment, comment_likes "
+            "FROM post_comments WHERE post_id = ? ORDER BY comment_likes DESC",
+            (post_id,)
+        )
+        comments_raw = c.fetchall()
+        conn.close()
+
+        if not comments_raw:
+            await ctx.send("⏳ AI fans are still reading your post! Try **-checkpost** again in a few seconds.")
+            return
+
+        player_name = get_player_name(ctx.author.id) or ctx.author.display_name
+        comments = [
+            {'commenter_handle': r[0], 'comment_text': r[1], 'sentiment': r[2], 'comment_likes': r[3]}
+            for r in comments_raw
+        ]
+        post_data = {
+            'player_name': player_name,
+            'content': content,
+            'likes': likes,
+            'went_viral': bool(went_viral)
+        }
+        view = CheckPostView(post_data, comments, ctx.author.id)
+        await ctx.send(embed=view.build_embed(), view=view)
 
     @commands.command(name="setbio", help="Set your social media bio")
     async def setbio_command(self, ctx, *, bio: str):
