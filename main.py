@@ -98,6 +98,7 @@ async def on_ready():
     init_db()
     init_fantasy_db()
     init_nicknames_db()
+    _init_embeds_table()
     elite_players = load_elite_players()
     # Load the stats cog
     await bot.load_extension('cricket_stats')
@@ -5738,8 +5739,6 @@ def _init_embeds_table():
     )''')
     conn.commit()
     conn.close()
-
-_init_embeds_table()
 
 
 # ── DB helpers ────────────────────────────────────────────────
