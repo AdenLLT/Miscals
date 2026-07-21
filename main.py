@@ -119,8 +119,16 @@ async def on_ready():
     start_feed_background_gen(bot)
     start_fan_discussion(bot)
 
+_last_backup_ts: float = 0.0
+
 @bot.after_invoke
 async def after_command_backup(ctx):
+    global _last_backup_ts
+    import time as _t
+    now = _t.time()
+    if now - _last_backup_ts < 300:   # at most once every 5 minutes
+        return
+    _last_backup_ts = now
     await backup_db_to_channel()
 
 class PlayerSelectionView(discord.ui.View):
@@ -5869,8 +5877,9 @@ class ConfirmDMSendView(discord.ui.View):
         row = _em_get(self.embed_id)
         if not row:
             return await interaction.response.send_message("❌ Embed not found.", ephemeral=True)
-        embed  = _em_build(row)
+        embed   = _em_build(row)
         members = [m for m in self.guild.members if not m.bot]
+        channel = interaction.channel
         await interaction.response.edit_message(
             content=f"⏳ Sending to **{len(members)}** members…", embed=None, view=None
         )
@@ -5882,8 +5891,11 @@ class ConfirmDMSendView(discord.ui.View):
                 await asyncio.sleep(0.8)
             except Exception:
                 failed += 1
-        await interaction.edit_original_response(
-            content=f"✅ Done! Sent: **{sent}** | Failed (DMs closed): **{failed}**"
+        # Use channel.send instead of edit_original_response —
+        # the interaction token expires after 15 min and the DM loop
+        # can easily exceed that for large servers.
+        await channel.send(
+            f"✅ Done! Sent: **{sent}** | Failed (DMs closed): **{failed}**"
         )
         self.stop()
 

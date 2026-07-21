@@ -13,7 +13,7 @@ from discord.ui import View, Button, Select
 from datetime import datetime, timedelta
 
 # ============================================================
-# OPENROUTER AI CONFIG STARTS HERE!!
+# OPENROUTER AI CONFIG STARTS HERE
 # ============================================================
 import os
 import time as _time
@@ -997,7 +997,11 @@ async def _post_cricketgram_batch(bot, page: int):
         posts = json.loads(raw)
     except json.JSONDecodeError:
         raw = _repair_truncated_json(raw)
-        posts = json.loads(raw)
+        try:
+            posts = json.loads(raw)
+        except json.JSONDecodeError:
+            print(f"[BG_FEED] Skipping batch — unparseable JSON from API")
+            return
 
     uid_map = _get_player_uid_map()
     sent = 0
@@ -1196,7 +1200,7 @@ async def background_fan_discussion(bot):
         try:
             webhook = await _get_discussion_webhook(bot)
             if not webhook:
-                await asyncio.sleep(8)
+                await asyncio.sleep(15)
                 continue
 
             # Refresh player data every 5 min
@@ -1220,7 +1224,7 @@ async def background_fan_discussion(bot):
 
             message_text = result.get('message', '').strip()
             if not message_text:
-                await asyncio.sleep(8)
+                await asyncio.sleep(15)
                 continue
 
             is_reply       = result.get('is_reply', False)
@@ -1250,7 +1254,7 @@ async def background_fan_discussion(bot):
         except Exception as exc:
             print(f"[DISCUSSION] Error: {exc}")
 
-        await asyncio.sleep(8)
+        await asyncio.sleep(15)
 
 
 def start_fan_discussion(bot):
@@ -1581,7 +1585,10 @@ class PostModal(discord.ui.Modal, title="📱 CricketGram — Share Your Thought
         self.ctx = ctx
 
     async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(thinking=True)
+        try:
+            await interaction.response.defer(thinking=True)
+        except discord.errors.NotFound:
+            return
         await self.cog._process_custom_post(interaction, str(self.post_content))
 
 
@@ -1596,9 +1603,15 @@ class PostButtonView(View):
 
     async def _open_modal(self, interaction: discord.Interaction):
         if interaction.user.id != self.ctx.author.id:
-            await interaction.response.send_message("❌ This isn't your post panel!", ephemeral=True)
+            try:
+                await interaction.response.send_message("❌ This isn't your post panel!", ephemeral=True)
+            except discord.errors.NotFound:
+                pass
             return
-        await interaction.response.send_modal(PostModal(self.cog, self.ctx))
+        try:
+            await interaction.response.send_modal(PostModal(self.cog, self.ctx))
+        except discord.errors.NotFound:
+            pass
 
 
 COMMENTS_PER_PAGE = 5
