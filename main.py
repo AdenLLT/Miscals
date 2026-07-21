@@ -5718,6 +5718,330 @@ async def allunc_command(ctx):
     )
 
 
+# ══════════════════════════════════════════════════════════════
+# EMBED MANAGER  (owner-only: 765965975761715241)
+# ══════════════════════════════════════════════════════════════
+_EMBED_OWNER_ID = 765965975761715241
+
+def _init_embeds_table():
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS user_embeds (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id     INTEGER NOT NULL,
+        title       TEXT    DEFAULT '',
+        description TEXT    DEFAULT '',
+        image_url   TEXT    DEFAULT '',
+        color       INTEGER DEFAULT 5814143,
+        footer      TEXT    DEFAULT '',
+        created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )''')
+    conn.commit()
+    conn.close()
+
+_init_embeds_table()
+
+
+# ── DB helpers ────────────────────────────────────────────────
+def _em_save(user_id, title, description, image_url, color, footer):
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute(
+        "INSERT INTO user_embeds (user_id,title,description,image_url,color,footer) "
+        "VALUES (?,?,?,?,?,?)",
+        (user_id, title, description, image_url, color, footer)
+    )
+    conn.commit()
+    eid = c.lastrowid
+    conn.close()
+    return eid
+
+def _em_list(user_id):
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute(
+        "SELECT id,title,description,image_url,color,footer,created_at "
+        "FROM user_embeds WHERE user_id=? ORDER BY created_at DESC",
+        (user_id,)
+    )
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+def _em_get(embed_id):
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute(
+        "SELECT id,title,description,image_url,color,footer "
+        "FROM user_embeds WHERE id=?",
+        (embed_id,)
+    )
+    row = c.fetchone()
+    conn.close()
+    return row
+
+def _em_update(embed_id, title, description, image_url, color, footer):
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute(
+        "UPDATE user_embeds SET title=?,description=?,image_url=?,color=?,footer=? "
+        "WHERE id=?",
+        (title, description, image_url, color, footer, embed_id)
+    )
+    conn.commit()
+    conn.close()
+
+def _em_build(row) -> discord.Embed:
+    """Turn a DB row (id,title,desc,image,color,footer) into a discord.Embed."""
+    _, title, description, image_url, color, footer = row
+    embed = discord.Embed(color=color or 0x58B9FF)
+    if title:       embed.title       = title
+    if description: embed.description = description
+    if image_url:   embed.set_image(url=image_url)
+    if footer:      embed.set_footer(text=footer)
+    return embed
+
+
+# ── Modify modal (5 fields: title / description / image / color / footer) ──
+class EmbedModifyModal(discord.ui.Modal, title="✏️ Modify Embed"):
+    m_title = discord.ui.TextInput(
+        label="Title", required=False, max_length=256,
+        placeholder="Leave blank to have no title"
+    )
+    m_description = discord.ui.TextInput(
+        label="Description", required=False,
+        style=discord.TextStyle.paragraph, max_length=4000,
+        placeholder="Main body of the embed"
+    )
+    m_image = discord.ui.TextInput(
+        label="Image URL", required=False, max_length=512,
+        placeholder="https://… (leave blank to remove)"
+    )
+    m_color = discord.ui.TextInput(
+        label="Color (hex, e.g. #FF5733)", required=False, max_length=7,
+        placeholder="#58B9FF"
+    )
+    m_footer = discord.ui.TextInput(
+        label="Footer text", required=False, max_length=2048,
+        placeholder="Leave blank to remove footer"
+    )
+
+    def __init__(self, embed_id: int, row):
+        super().__init__()
+        self.embed_id = embed_id
+        _, title, desc, img, color, footer = row
+        if title:   self.m_title.default       = title
+        if desc:    self.m_description.default  = desc
+        if img:     self.m_image.default        = img
+        if color:   self.m_color.default        = f"#{color:06X}"
+        if footer:  self.m_footer.default       = footer
+
+    async def on_submit(self, interaction: discord.Interaction):
+        title       = self.m_title.value.strip()
+        description = self.m_description.value.strip()
+        image_url   = self.m_image.value.strip()
+        footer      = self.m_footer.value.strip()
+        raw_color   = self.m_color.value.strip().lstrip('#')
+        try:
+            color = int(raw_color, 16) if raw_color else 0x58B9FF
+        except ValueError:
+            color = 0x58B9FF
+
+        _em_update(self.embed_id, title, description, image_url, color, footer)
+        new_row   = _em_get(self.embed_id)
+        new_embed = _em_build(new_row)
+        new_embed.set_author(name=f"✅ Embed #{self.embed_id} updated — preview:")
+        view = EmbedActionView(self.embed_id, interaction.user.id)
+        await interaction.response.send_message(embed=new_embed, view=view)
+
+
+# ── Confirm-before-DM view ────────────────────────────────────
+class ConfirmDMSendView(discord.ui.View):
+    def __init__(self, embed_id: int, owner_id: int, guild: discord.Guild):
+        super().__init__(timeout=60)
+        self.embed_id = embed_id
+        self.owner_id = owner_id
+        self.guild    = guild
+
+    @discord.ui.button(label="✅ Yes, send to everyone", style=discord.ButtonStyle.danger)
+    async def confirm_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.owner_id:
+            return await interaction.response.send_message("❌ Not your button.", ephemeral=True)
+        row = _em_get(self.embed_id)
+        if not row:
+            return await interaction.response.send_message("❌ Embed not found.", ephemeral=True)
+        embed  = _em_build(row)
+        members = [m for m in self.guild.members if not m.bot]
+        await interaction.response.edit_message(
+            content=f"⏳ Sending to **{len(members)}** members…", embed=None, view=None
+        )
+        sent = failed = 0
+        for member in members:
+            try:
+                await member.send(embed=embed)
+                sent += 1
+                await asyncio.sleep(0.8)
+            except Exception:
+                failed += 1
+        await interaction.edit_original_response(
+            content=f"✅ Done! Sent: **{sent}** | Failed (DMs closed): **{failed}**"
+        )
+        self.stop()
+
+    @discord.ui.button(label="✖ Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.owner_id:
+            return await interaction.response.send_message("❌ Not your button.", ephemeral=True)
+        await interaction.response.edit_message(content="❌ Cancelled.", embed=None, view=None)
+        self.stop()
+
+
+# ── Action view shown under every embed preview ───────────────
+class EmbedActionView(discord.ui.View):
+    def __init__(self, embed_id: int, owner_id: int):
+        super().__init__(timeout=300)
+        self.embed_id = embed_id
+        self.owner_id = owner_id
+
+    @discord.ui.button(label="✏️ Modify", style=discord.ButtonStyle.primary)
+    async def modify_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.owner_id:
+            return await interaction.response.send_message("❌ Not your button.", ephemeral=True)
+        row = _em_get(self.embed_id)
+        if not row:
+            return await interaction.response.send_message("❌ Embed not found.", ephemeral=True)
+        await interaction.response.send_modal(EmbedModifyModal(self.embed_id, row))
+
+    @discord.ui.button(label="📨 Send to All DMs", style=discord.ButtonStyle.danger)
+    async def send_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.owner_id:
+            return await interaction.response.send_message("❌ Not your button.", ephemeral=True)
+        members = [m for m in interaction.guild.members if not m.bot]
+        view    = ConfirmDMSendView(self.embed_id, self.owner_id, interaction.guild)
+        await interaction.response.send_message(
+            content=(
+                f"⚠️ This will DM **{len(members)}** members in **{interaction.guild.name}**.\n"
+                f"Are you sure you want to send this embed to everyone?"
+            ),
+            view=view
+        )
+
+
+# ── -myembeds Select ──────────────────────────────────────────
+class MyEmbedsSelect(discord.ui.Select):
+    def __init__(self, owner_id: int, rows):
+        self.owner_id = owner_id
+        options = []
+        for r in rows[:25]:
+            eid, title, desc, *_ = r
+            label   = (title or "Untitled embed")[:100]
+            preview = (desc  or "")[:50]
+            options.append(discord.SelectOption(
+                label       = label,
+                description = (preview + "…") if len(desc or "") > 50 else (preview or "No description"),
+                value       = str(eid),
+            ))
+        super().__init__(placeholder="📋 Pick an embed to preview…", options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.owner_id:
+            return await interaction.response.send_message("❌ Not your menu.", ephemeral=True)
+        embed_id = int(self.values[0])
+        row = _em_get(embed_id)
+        if not row:
+            return await interaction.response.send_message("❌ Embed not found.", ephemeral=True)
+        embed = _em_build(row)
+        embed.set_author(name=f"Embed #{embed_id}")
+        await interaction.response.send_message(
+            embed=embed, view=EmbedActionView(embed_id, self.owner_id)
+        )
+
+class MyEmbedsView(discord.ui.View):
+    def __init__(self, owner_id: int, rows):
+        super().__init__(timeout=120)
+        self.add_item(MyEmbedsSelect(owner_id, rows))
+
+
+# ── Commands ──────────────────────────────────────────────────
+@bot.command(name="convertembed")
+async def convertembed_command(ctx):
+    """Reply to any message to convert it into a stored embed."""
+    if ctx.author.id != _EMBED_OWNER_ID:
+        return
+
+    if not ctx.message.reference:
+        return await ctx.send("❌ **Reply** to a message to convert it into an embed.")
+
+    try:
+        ref = await ctx.channel.fetch_message(ctx.message.reference.message_id)
+    except Exception:
+        return await ctx.send("❌ Could not fetch the referenced message.")
+
+    # Pull content from the referenced message
+    description = ref.content or ""
+    image_url   = ""
+    title       = ""
+    footer      = ""
+
+    # Image from attachments
+    for att in ref.attachments:
+        if att.content_type and att.content_type.startswith("image/"):
+            image_url = att.url
+            break
+
+    # If the message itself had embeds, prefer those fields
+    if ref.embeds:
+        first = ref.embeds[0]
+        if first.title:                      title       = first.title
+        if first.description:                description = first.description
+        if first.footer and first.footer.text: footer    = first.footer.text
+        # Image from embed if not already found in attachments
+        if not image_url:
+            if first.image and first.image.url:
+                image_url = first.image.url
+            elif first.thumbnail and first.thumbnail.url:
+                image_url = first.thumbnail.url
+
+    color = 0x58B9FF
+    eid   = _em_save(ctx.author.id, title, description, image_url, color, footer)
+
+    preview = _em_build((eid, title, description, image_url, color, footer))
+    preview.set_author(name=f"✅ Saved as Embed #{eid}  •  use -myembeds to find it later")
+    await ctx.send(embed=preview, view=EmbedActionView(eid, ctx.author.id))
+
+
+@bot.command(name="myembeds")
+async def myembeds_command(ctx):
+    """View, modify, and send your saved embeds."""
+    if ctx.author.id != _EMBED_OWNER_ID:
+        return
+
+    rows = _em_list(ctx.author.id)
+    if not rows:
+        return await ctx.send(
+            "📭 No saved embeds yet. Use **-convertembed** by replying to any message."
+        )
+
+    list_embed = discord.Embed(
+        title       = "📋 Your Saved Embeds",
+        description = f"**{len(rows)}** embed(s). Pick one from the dropdown to preview it.",
+        color       = 0x58B9FF,
+    )
+    for r in rows[:10]:
+        eid, title, desc, img, color, footer, created = r
+        snippet = (desc[:80] + "…") if desc and len(desc) > 80 else (desc or "*(no description)*")
+        list_embed.add_field(
+            name  = f"#{eid} — {title or 'Untitled'}",
+            value = snippet,
+            inline= False,
+        )
+    if len(rows) > 10:
+        list_embed.set_footer(text=f"Showing first 10 of {len(rows)}. All {len(rows)} are in the dropdown.")
+
+    await ctx.send(embed=list_embed, view=MyEmbedsView(ctx.author.id, rows))
+
+
+# ══════════════════════════════════════════════════════════════
 token = os.getenv('TOKEN')
 if token:
     keep_alive()
