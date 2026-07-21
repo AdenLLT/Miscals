@@ -13,7 +13,7 @@ from discord.ui import View, Button, Select
 from datetime import datetime, timedelta
 
 # ============================================================
-# OPENROUTER AI CONFIG STARTS HERE
+# OPENROUTER AI CONFIG STARTS HERE!!
 # ============================================================
 import os
 import time as _time
