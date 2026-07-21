@@ -83,6 +83,28 @@ bot = commands.Bot(
 ALLOWED_GUILD_ID = 1451591563078533292
 ALLOWED_GUILD_OBJ = discord.Object(id=ALLOWED_GUILD_ID)
 
+STAFF_ROLE_ID = 1452028308735922339
+
+def is_staff_or_admin():
+    """Passes if the user has administrator permission OR the staff role."""
+    async def predicate(ctx):
+        if ctx.author.guild_permissions.administrator:
+            return True
+        if any(r.id == STAFF_ROLE_ID for r in ctx.author.roles):
+            return True
+        raise commands.MissingPermissions(['administrator'])
+    return commands.check(predicate)
+
+def is_staff_or_admin_slash():
+    """app_commands check: passes if user has administrator permission OR the staff role."""
+    async def predicate(interaction: discord.Interaction) -> bool:
+        if interaction.user.guild_permissions.administrator:
+            return True
+        if any(r.id == STAFF_ROLE_ID for r in interaction.user.roles):
+            return True
+        raise app_commands.MissingPermissions(['administrator'])
+    return app_commands.check(predicate)
+
 @bot.check
 async def only_allowed_guild(ctx):
     return ctx.guild is not None and ctx.guild.id == ALLOWED_GUILD_ID
@@ -394,7 +416,7 @@ async def create_fantasy11(interaction: discord.Interaction):
 # Add the reset command for admins:
 
 @bot.command(name="resetfantasysquads", aliases=["rfs"], help="[ADMIN] Reset all fantasy teams")
-@commands.has_permissions(administrator=True)
+@is_staff_or_admin()
 async def resetfantasysquads_command(ctx):
     """Reset all fantasy teams and points"""
 
@@ -536,7 +558,7 @@ async def fantasy_leaderboard_command(ctx):
     message="The message content to send",
     image="Optional image to attach"
 )
-@app_commands.checks.has_permissions(administrator=True)
+@is_staff_or_admin_slash()
 async def sendmsg(interaction: discord.Interaction, message: str, image: Optional[discord.Attachment] = None):
     # Hide the slash command response (ephemeral)
     await interaction.response.send_message("✅ Message sent!", ephemeral=True)
@@ -549,7 +571,7 @@ async def sendmsg(interaction: discord.Interaction, message: str, image: Optiona
         await interaction.channel.send(content=message)
 
 @bot.command(name="dm", help="[ADMIN] Send a DM to a user from the bot")
-@commands.has_permissions(administrator=True)
+@is_staff_or_admin()
 async def dm_user(ctx, member: discord.Member, *, message: str):
     """Send a direct message to a user as the bot"""
     try:
@@ -580,7 +602,7 @@ TEAM_ROLE_IDS = {
 }
 
 @bot.command(name="dmteam", help="[ADMIN] DM everyone on a team")
-@commands.has_permissions(administrator=True)
+@is_staff_or_admin()
 async def dmteam(ctx, team_name: str, *, message: str):
     """Send a DM to every player on the given team"""
     role_id = TEAM_ROLE_IDS.get(team_name.lower())
@@ -673,7 +695,7 @@ async def log_dm_messages(message):
         conn.close()
 
 @bot.command(name="dmfetch", help="[ADMIN] Fetch last 5 DMs a user sent to the bot")
-@commands.has_permissions(administrator=True)
+@is_staff_or_admin()
 async def dmfetch(ctx, member: discord.Member):
     conn = sqlite3.connect('players.db')
     c = conn.cursor()
@@ -1710,7 +1732,7 @@ async def view_command(ctx, *, name: str):
             await ctx.send(embed=embed)
 
 @bot.command(name="claim", aliases=["c"], help="[ADMIN] Add a representative to a player")
-@commands.has_permissions(administrator=True)
+@is_staff_or_admin()
 async def claim_command(ctx, user: discord.Member, *, player_name: str):
     players, team_names = find_player(player_name)
 
@@ -1801,7 +1823,7 @@ async def claim_command(ctx, user: discord.Member, *, player_name: str):
         await claims_channel.send(embed=embed)
 
 @bot.command(name="unclaim", aliases=["uc"], help="[ADMIN] Remove a player's representative")
-@commands.has_permissions(administrator=True)
+@is_staff_or_admin()
 async def unclaim_command(ctx, *, player_name: str):
     players, team_names = find_player(player_name)
 
@@ -2277,7 +2299,7 @@ async def unrepresent_command(ctx):
     ), view=None)
 
 @bot.command(name="resetmanualstats", help="[ADMIN] Manually reset stats for a user or 'all' who changed players recently")
-@commands.has_permissions(administrator=True)
+@is_staff_or_admin()
 async def resetmanualstats_command(ctx, target: str):
     """Manually reset stats of a user or all users if they unrepped and switched in the last 5 days"""
     conn = sqlite3.connect('players.db')
@@ -2562,7 +2584,7 @@ def get_player_emoji(player_name, bot=None):
 
 # Add command to trigger emoji upload
 @bot.command(name="uploademojis", aliases=["ue"])
-@commands.has_permissions(administrator=True)
+@is_staff_or_admin()
 async def upload_emojis_command(ctx):
     """[ADMIN] Upload player emojis to designated servers"""
     await ctx.send("🔄 Starting emoji upload process... This will take several minutes.")
@@ -2831,7 +2853,7 @@ async def viewteam_command(ctx, *, team_name: str):
 
 # Command to check emoji status
 @bot.command(name="checkemojis", aliases=["ce"])
-@commands.has_permissions(administrator=True)
+@is_staff_or_admin()
 async def check_emojis_command(ctx):
     """[ADMIN] Check how many emojis are uploaded"""
     player_emojis = load_emoji_mappings()
@@ -2866,7 +2888,7 @@ async def check_emojis_command(ctx):
 
 # Debug command to test emoji retrieval
 @bot.command(name="testemoji", aliases=["te"])
-@commands.has_permissions(administrator=True)
+@is_staff_or_admin()
 async def test_emoji_command(ctx, *, player_name: str):
     """[ADMIN] Test emoji retrieval for a specific player"""
     emoji = get_player_emoji(player_name, bot)
@@ -2914,7 +2936,7 @@ async def test_emoji_command(ctx, *, player_name: str):
 
 # Command to list all emojis in emoji servers
 @bot.command(name="listemojis", aliases=["le"])
-@commands.has_permissions(administrator=True)
+@is_staff_or_admin()
 async def list_emojis_command(ctx, server_index: int = 0):
     """[ADMIN] List all emojis in a specific emoji server"""
     emoji_guilds = get_emoji_guilds(bot)
@@ -2976,7 +2998,7 @@ def get_player_emoji_with_elite(player_name, bot=None):
     return get_player_emoji(player_name, bot)
 
 @bot.command(name="elite", aliases=["e"], help="[ADMIN] Mark players as elite and create auction threads")
-@commands.has_permissions(administrator=True)
+@is_staff_or_admin()
 async def elite_command(ctx, *, players: str):
     """
     Mark players as elite and create auction threads
@@ -3075,7 +3097,7 @@ async def elite_command(ctx, *, players: str):
     await ctx.send(embed=embed)
 
 @bot.command(name="unelite", aliases=["une"], help="[ADMIN] Remove elite status from players")
-@commands.has_permissions(administrator=True)
+@is_staff_or_admin()
 async def unelite_command(ctx, *, players: str):
     """
     Remove elite status from players
@@ -3185,7 +3207,7 @@ async def listelite_command(ctx):
     await ctx.send(embed=embed)
 
 @bot.command(name="removeemojis", aliases=["re"])
-@commands.has_permissions(administrator=True)
+@is_staff_or_admin()
 async def remove_emojis_command(ctx):
     """[ADMIN] Remove all player emojis from designated servers"""
     await ctx.send("🔄 Starting emoji removal process... This may take a few minutes.")
@@ -3257,7 +3279,7 @@ async def remove_emojis_command(ctx):
         print(f"❌ Error during emoji removal: {e}")
 
 @bot.command(name="syncleft", help="[ADMIN] Unclaim players whose representatives have left the server")
-@commands.has_permissions(administrator=True)
+@is_staff_or_admin()
 async def sync_left_command(ctx):
     await ctx.send("🔄 Checking for representatives who left the server...")
 
@@ -3304,7 +3326,7 @@ async def sync_left_command(ctx):
         await ctx.send("✅ All current representatives are still in the server.")
 
 @bot.command(name="setcaptain", aliases=["sc"], help="[ADMIN] Set a player as team captain")
-@commands.has_permissions(administrator=True)
+@is_staff_or_admin()
 async def setcaptain_command(ctx, team_name: str, *, username: str):
     """
     Set a team captain
@@ -3364,7 +3386,7 @@ async def setcaptain_command(ctx, team_name: str, *, username: str):
     await ctx.send(embed=embed)
 
 @bot.command(name="removecaptain", aliases=["rc"], help="[ADMIN] Remove captain from a team")
-@commands.has_permissions(administrator=True)
+@is_staff_or_admin()
 async def removecaptain_command(ctx, *, team_name: str):
     """
     Remove a team's captain
@@ -3441,7 +3463,7 @@ async def captains_command(ctx):
         await ctx.send(embed=embed)
 
 @bot.command(name="fixcaptainstable", aliases=["fct"])
-@commands.has_permissions(administrator=True)
+@is_staff_or_admin()
 async def fix_captains_table(ctx): 
     """[ADMIN] Fix the team_captains table schema"""
     try:
@@ -3466,7 +3488,7 @@ async def fix_captains_table(ctx):
         await ctx.send(f"❌ Error fixing table: {e}")
 
 @bot.command(name="syncplayers", aliases=["sp"], help="[ADMIN] Unclaim players whose representatives have left the server")
-@commands.has_permissions(administrator=True)
+@is_staff_or_admin()
 async def syncplayers_command(ctx):
     await ctx.send("🔄 Checking for representatives who left the server...")
 
@@ -3519,7 +3541,7 @@ async def syncplayers_command(ctx):
         await ctx.send("✅ All current representatives are still in the server.")
 
 @bot.command(name="forceupload", aliases=["fu"], help="[ADMIN] Force upload emoji for a specific player")
-@commands.has_permissions(administrator=True)
+@is_staff_or_admin()
 async def forceupload_command(ctx, *, player_name: str):
     """[ADMIN] Force upload emoji for a specific player"""
 
@@ -3597,7 +3619,7 @@ async def forceupload_command(ctx, *, player_name: str):
         await ctx.send(f"❌ Error uploading emoji: {e}")
 
 @bot.command(name="syncroles", aliases=["sr"], help="[ADMIN] Sync nationality roles for all members")
-@commands.has_permissions(administrator=True)
+@is_staff_or_admin()
 async def syncroles_command(ctx):
     await ctx.send("🔄 Syncing nationality roles...")
 
@@ -3707,7 +3729,7 @@ async def syncroles_command(ctx):
     await ctx.send(embed=embed)
 
 @bot.command(name="playeremojiremove", aliases=["per"], help="[ADMIN] Remove emoji for a specific player")
-@commands.has_permissions(administrator=True)
+@is_staff_or_admin()
 async def playeremojiremove_command(ctx, *, player_name: str):
     """[ADMIN] Remove emoji for a specific player"""
 
@@ -3771,7 +3793,7 @@ async def playeremojiremove_command(ctx, *, player_name: str):
         await ctx.send(f"❌ No emoji found for **{player['name']}** (searched name: `{emoji_name}`)")
 
 @bot.command(name="roleallclaimed", aliases=["rac"], help="[ADMIN] Give all claimed players a specific role")
-@commands.has_permissions(administrator=True)
+@is_staff_or_admin()
 async def roleallclaimed_command(ctx, role: discord.Role):
     """[ADMIN] Give all claimed players a specific role"""
     await ctx.send(f"🔄 Adding {role.mention} to all claimed players...")
@@ -3836,7 +3858,7 @@ async def roleallclaimed_command(ctx, role: discord.Role):
 
 
 @bot.command(name="roleallunclaimed", aliases=["rau"], help="[ADMIN] Give unclaimed role to members who haven't claimed")
-@commands.has_permissions(administrator=True)
+@is_staff_or_admin()
 async def roleallunclaimed_command(ctx):
     """[ADMIN] Give unclaimed role (1461764869282857010) to members with player role (1452028351719014400) who haven't claimed"""
     await ctx.send("🔄 Adding unclaimed role to members who haven't claimed a player...")
@@ -3976,7 +3998,7 @@ async def reply_extract(ctx):
 
 
 @bot.command(name='send')
-@commands.has_permissions(administrator=True)
+@is_staff_or_admin()
 async def send_message(ctx, channel_id: int, *, message: str):
     """
     Send a message to a specific channel (Administrator only)
@@ -4377,7 +4399,7 @@ def update_custom_nickname(user_id, custom_nickname):
     conn.close()
 
 @bot.command(name="syncnicknames", aliases=["sn"], help="[ADMIN] Sync nicknames for all claimed players")
-@commands.has_permissions(administrator=True)
+@is_staff_or_admin()
 async def syncnicknames_command(ctx):
     """Sync nicknames for all claimed players: Reset first, then re-sync with length limits"""
     loading_msg = await ctx.send("🔄 **Phase 1:** Resetting all nicknames to default...")
@@ -4527,7 +4549,7 @@ async def setnickname_command(interaction: discord.Interaction, nickname: str):
         )
 
 @bot.command(name="setbacknicknames", aliases=["sbn"], help="[ADMIN] Restore original nicknames")
-@commands.has_permissions(administrator=True)
+@is_staff_or_admin()
 async def setbacknicknames_command(ctx):
     """Restore original nicknames for all claimed players"""
     loading_msg = await ctx.send("🔄 Restoring original nicknames...")
@@ -4648,7 +4670,7 @@ async def mynickname_command(ctx):
     await ctx.send(embed=embed)
 
 @bot.command(name="playm", help="[ADMIN] Play national anthems in voice channel")
-@commands.has_permissions(administrator=True)
+@is_staff_or_admin()
 async def playm_command(ctx):
     """Play pak.mp3 and ind.mp3 in voice channel with intervals"""
 
@@ -4748,7 +4770,7 @@ async def playm_command(ctx):
 
 # Alternative command if voice doesn't work
 @bot.command(name="checkvoice", help="[ADMIN] Check if voice is supported")
-@commands.has_permissions(administrator=True)
+@is_staff_or_admin()
 async def checkvoice_command(ctx):
     """Check if voice features are available"""
 
@@ -4802,7 +4824,7 @@ async def checkvoice_command(ctx):
     await ctx.send(embed=embed)
 
 @bot.command(name="rulesall", help="[ADMIN] DM rules to all claimed bowlers")
-@commands.has_permissions(administrator=True)
+@is_staff_or_admin()
 async def rulesall_command(ctx):
     """DM rules embed to all claimed bowlers"""
 
@@ -4913,7 +4935,7 @@ async def rulesall_command(ctx):
     await ctx.send(embed=summary_embed)
 
 @bot.command(name="deletereal", aliases=["dr"], help="[ADMIN] Permanently delete a player from all databases")
-@commands.has_permissions(administrator=True)
+@is_staff_or_admin()
 async def deletereal_command(ctx, *, player_name: str):
     """
     Permanently delete a player from all databases
@@ -5111,7 +5133,7 @@ def get_team_color_rgb(team_name):
     text="Achievement text to display",
     user="Discord user to feature"
 )
-@app_commands.checks.has_permissions(administrator=True)
+@is_staff_or_admin_slash()
 async def dom_command(interaction: discord.Interaction, text: str, user: discord.Member):
     """Generate a Player of the Match graphic"""
 
@@ -5509,7 +5531,7 @@ async def dom_error(interaction: discord.Interaction, error):
 commentator_assignments = {}  # Format: {user_id: "Commentator Name"}
 
 @bot.command(name='commentator')
-@commands.has_permissions(administrator=True)
+@is_staff_or_admin()
 async def assign_commentator(ctx, member: discord.Member, *, commentator_name: str):
     """Assign a commentator role to a user"""
     commentator_assignments[member.id] = commentator_name

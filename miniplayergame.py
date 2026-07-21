@@ -11,7 +11,7 @@ from discord.ui import View, Select
 # ──────────────────────────────────────────────────────────────
 EXCLUDED_EMOJI_SERVER = 1451591563078533292
 MAX_SQUAD_SIZE        = 15
-DROP_COOLDOWN_HOURS   = 1
+DROP_COOLDOWN_HOURS   = 0  # No cooldown
 
 
 # ──────────────────────────────────────────────────────────────
@@ -313,7 +313,7 @@ class MiniPlayerGame(commands.Cog):
         init_minigame_db()
 
     # ── -drop ────────────────────────────────────────────────
-    @commands.command(name="drop", help="Drop a random claimed player card into your squad (1-hr cooldown, max 15).")
+    @commands.command(name="drop", help="Drop a random claimed player card into your squad (max 15).")
     async def drop_command(self, ctx):
         user_id = ctx.author.id
 
@@ -329,24 +329,6 @@ class MiniPlayerGame(commands.Cog):
                 color=0xFF4444
             )
             return await ctx.send(embed=embed)
-
-        # Cooldown check
-        last = get_last_drop(user_id)
-        if last:
-            elapsed = datetime.utcnow() - datetime.strptime(last, '%Y-%m-%d %H:%M:%S')
-            cooldown = timedelta(hours=DROP_COOLDOWN_HOURS)
-            if elapsed < cooldown:
-                rem = cooldown - elapsed
-                secs = int(rem.total_seconds())
-                m, s = divmod(secs, 60)
-                h, m = divmod(m, 60)
-                time_str = f"{h}h {m}m {s}s" if h else f"{m}m {s}s"
-                embed = discord.Embed(
-                    title="⏳ Drop Cooldown",
-                    description=f"You can drop again in **{time_str}**.",
-                    color=0xFF8800
-                )
-                return await ctx.send(embed=embed)
 
         # Gather claimed players
         all_claimed = _get_all_claimed()
@@ -403,7 +385,6 @@ class MiniPlayerGame(commands.Cog):
 
         # Persist
         add_to_squad(user_id, picked_name, picked_uid, role, team)
-        set_last_drop(user_id)
 
         new_size = get_squad_size(user_id)
 
