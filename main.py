@@ -2683,9 +2683,8 @@ async def viewteam_command(ctx, *, team_name: str):
     # Get team captain
     captain_name = get_team_captain(team_data['team'])
 
-    # Compute OVR for every player in the squad
-    ovr_sum = 0
-    total_player_count = len(team_data['players'])
+    # Compute OVR for every player in the squad, use top 12 for team OVR
+    all_player_ovrs = []
 
     for player in team_data['players']:
         rep_info = get_representative(player['name'])
@@ -2693,9 +2692,10 @@ async def viewteam_command(ctx, *, team_name: str):
             p_ovr = get_player_ovr_for_vt(rep_info[0], player['role'])
         else:
             p_ovr = None
-        ovr_sum += p_ovr if p_ovr is not None else 60
+        all_player_ovrs.append(p_ovr if p_ovr is not None else 60)
 
-    team_avg_ovr = round(ovr_sum / total_player_count) if total_player_count > 0 else 60
+    top12_ovrs = sorted(all_player_ovrs, reverse=True)[:12]
+    team_avg_ovr = round(sum(top12_ovrs) / len(top12_ovrs)) if top12_ovrs else 60
 
     embed = discord.Embed(
         title=f"{flag} Official {team_data['team']} Squad · {team_avg_ovr} OVR",
@@ -3885,7 +3885,22 @@ async def roleallunclaimed_command(ctx):
 
     added_count = 0
     already_had = 0
+    removed_count = 0
     failed_list = []
+
+    # Collect all guild members with the unclaimed role for removal check
+    all_unclaimed_members = list(unclaimed_role.members)
+
+    # Remove unclaimed role from members who have it BUT have already claimed a player
+    for member in all_unclaimed_members:
+        if member.id in claimed_user_ids:
+            try:
+                await member.remove_roles(unclaimed_role, reason=f"Player claimed; unclaimed role removed by {ctx.author}")
+                removed_count += 1
+            except discord.Forbidden:
+                failed_list.append(f"{member.name} - No permission (remove)")
+            except discord.HTTPException:
+                failed_list.append(f"{member.name} - HTTP error (remove)")
 
     # Iterate through all members with the player role
     for member in player_role.members:
@@ -3902,9 +3917,9 @@ async def roleallunclaimed_command(ctx):
             await member.add_roles(unclaimed_role, reason=f"Unclaimed player role by {ctx.author}")
             added_count += 1
         except discord.Forbidden:
-            failed_list.append(f"{member.name} - No permission")
+            failed_list.append(f"{member.name} - No permission (add)")
         except discord.HTTPException:
-            failed_list.append(f"{member.name} - HTTP error")
+            failed_list.append(f"{member.name} - HTTP error (add)")
 
     # Create summary embed
     embed = discord.Embed(
@@ -3915,6 +3930,7 @@ async def roleallunclaimed_command(ctx):
     summary = f"**Player Role:** {player_role.mention}\n"
     summary += f"**Unclaimed Role:** {unclaimed_role.mention}\n\n"
     summary += f"✅ **Added:** {added_count}\n"
+    summary += f"🗑️ **Removed (claimed players):** {removed_count}\n"
     summary += f"ℹ️ **Already Had:** {already_had}\n"
     summary += f"❌ **Failed:** {len(failed_list)}"
 
@@ -6073,6 +6089,59 @@ async def myembeds_command(ctx):
 
     await ctx.send(embed=list_embed, view=MyEmbedsView(ctx.author.id, rows))
 
+
+# ══════════════════════════════════════════════════════════════
+
+_DMALLROLE_OWNER_ID = 765965975761715241
+
+@bot.command(name="dmallrole", help="[OWNER ONLY] DM all users with a given role")
+async def dmallrole_command(ctx, role_id: int, *, message: str):
+    """DM all members with the specified role. Only usable by user 765965975761715241."""
+    if ctx.author.id != _DMALLROLE_OWNER_ID:
+        return  # Silently ignore unauthorized users
+
+    role = ctx.guild.get_role(role_id)
+    if not role:
+        await ctx.send(f"❌ Role with ID `{role_id}` not found.")
+        return
+
+    await ctx.send(f"📨 Sending DMs to all members with **{role.name}**...")
+
+    sent_count = 0
+    failed_count = 0
+    failed_list = []
+
+    for member in role.members:
+        if member.bot:
+            continue
+        try:
+            await member.send(message)
+            sent_count += 1
+        except discord.Forbidden:
+            failed_count += 1
+            failed_list.append(f"{member.name} - DMs closed")
+        except discord.HTTPException:
+            failed_count += 1
+            failed_list.append(f"{member.name} - HTTP error")
+
+    embed = discord.Embed(
+        title="📨 DM Blast Complete",
+        color=role.color or 0x5865F2
+    )
+    embed.description = (
+        f"**Role:** {role.mention}\n\n"
+        f"✅ **Sent:** {sent_count}\n"
+        f"❌ **Failed:** {failed_count}"
+    )
+    if failed_list:
+        failures = "\n".join([f"• {f}" for f in failed_list[:10]])
+        if len(failed_list) > 10:
+            failures += f"\n...and {len(failed_list) - 10} more."
+        embed.add_field(name="Failed", value=failures, inline=False)
+    embed.set_footer(text=f"Executed by {ctx.author.name}")
+    embed.timestamp = discord.utils.utcnow()
+
+    await ctx.send(embed=embed)
 
 # ══════════════════════════════════════════════════════════════
 token = os.getenv('TOKEN')
