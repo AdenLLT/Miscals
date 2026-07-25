@@ -6094,6 +6094,61 @@ async def myembeds_command(ctx):
 
 _DMALLROLE_OWNER_ID = 765965975761715241
 
+@bot.command(name="doublesync", help="[OWNER ONLY] Remove unclaimed role from members who have a specific role")
+async def doublesync_command(ctx):
+    """Remove unclaimed role (1461764869282857010) from members who also have role 1530242270186704997. Only usable by user 765965975761715241."""
+    if ctx.author.id != _DMALLROLE_OWNER_ID:
+        return
+
+    unclaimed_role = ctx.guild.get_role(1461764869282857010)
+    target_role = ctx.guild.get_role(1530242270186704997)
+
+    if not unclaimed_role:
+        await ctx.send("❌ Unclaimed role (1461764869282857010) not found!")
+        return
+    if not target_role:
+        await ctx.send("❌ Target role (1530242270186704997) not found!")
+        return
+
+    await ctx.send(f"🔄 Removing unclaimed role from members who have **{target_role.name}**...")
+
+    removed_count = 0
+    skipped_count = 0
+    failed_list = []
+
+    for member in target_role.members:
+        if unclaimed_role not in member.roles:
+            skipped_count += 1
+            continue
+        try:
+            await member.remove_roles(unclaimed_role, reason=f"doublesync by {ctx.author}")
+            removed_count += 1
+        except discord.Forbidden:
+            failed_list.append(f"{member.name} - No permission")
+        except discord.HTTPException:
+            failed_list.append(f"{member.name} - HTTP error")
+
+    embed = discord.Embed(
+        title="✅ Double Sync Complete",
+        color=unclaimed_role.color or 0x5865F2
+    )
+    embed.description = (
+        f"**Target Role:** {target_role.mention}\n"
+        f"**Unclaimed Role:** {unclaimed_role.mention}\n\n"
+        f"🗑️ **Removed:** {removed_count}\n"
+        f"ℹ️ **Didn't have unclaimed role:** {skipped_count}\n"
+        f"❌ **Failed:** {len(failed_list)}"
+    )
+    if failed_list:
+        failures = "\n".join([f"• {f}" for f in failed_list[:10]])
+        if len(failed_list) > 10:
+            failures += f"\n...and {len(failed_list) - 10} more."
+        embed.add_field(name="Failed", value=failures, inline=False)
+    embed.set_footer(text=f"Executed by {ctx.author.name}")
+    embed.timestamp = discord.utils.utcnow()
+
+    await ctx.send(embed=embed)
+
 @bot.command(name="dmallrole", help="[OWNER ONLY] DM all users with a given role")
 async def dmallrole_command(ctx, role_id: int, *, message: str):
     """DM all members with the specified role. Only usable by user 765965975761715241."""
