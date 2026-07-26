@@ -18,23 +18,16 @@ from datetime import datetime, timedelta
 import os
 import time as _time
 OPENROUTER_API_URL = "https://router.bynara.id/v1/chat/completions"
-OPENROUTER_MODEL   = "glm-5.2-free"
+OPENROUTER_MODEL   = "laguna-s-2.1"
 POSTS_PER_PAGE = 3
 
-# ── Multi-key rotation ────────────────────────────────────────────────────────
-# Supports:
-#   • OPENROUTER_API_KEY          — one key, or comma-separated list of keys
-#   • OPENROUTER_API_KEY_2 … _9  — additional keys from separate accounts
-# Each free OpenRouter account gets 50 requests/day.
+# ── Key loading ───────────────────────────────────────────────────────────────
+# Uses BYNARA_API_KEY (can be comma-separated for multiple keys).
 # When a key hits 429 the bot automatically skips it until midnight UTC.
 def _load_or_keys():
     keys = []
     for raw in os.environ.get("OPENROUTER_API_KEY", "").split(","):
         k = raw.strip()
-        if k:
-            keys.append(k)
-    for i in range(2, 10):
-        k = os.environ.get(f"OPENROUTER_API_KEY_{i}", "").strip()
         if k:
             keys.append(k)
     return keys
@@ -43,10 +36,9 @@ _OR_KEYS: list = _load_or_keys()
 _OR_KEY_LIMITED_UNTIL: dict = {}   # key -> unix timestamp when limit resets
 
 if not _OR_KEYS:
-    print("[OPENROUTER] WARNING: No API keys found! Set OPENROUTER_API_KEY (or _2, _3 …) "
-          "in your Koyeb / host environment variables. All AI calls will fail.")
+    print("[BYNARA] WARNING: No API keys found! Set BYNARA_API_KEY in your environment variables. All AI calls will fail.")
 else:
-    print(f"[OPENROUTER] Loaded {len(_OR_KEYS)} API key(s). Rotating on 429.")
+    print(f"[BYNARA] Loaded {len(_OR_KEYS)} API key(s). Model: {OPENROUTER_MODEL}.")
 
 def _or_get_active_key():
     """Return the first key that isn't currently rate-limited, or None."""
