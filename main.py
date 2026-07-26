@@ -130,7 +130,7 @@ async def on_ready():
     await bot.load_extension('playerlife')
     await bot.load_extension('miniplayergame')
     await bot.tree.sync(guild=ALLOWED_GUILD_OBJ)
-    await bot.change_presence(activity=discord.Game(name="With Aden's Balls"))
+    await bot.change_presence(activity=discord.Game(name="ODI WC 2026"))
     print(f'{bot.user} has connected to Discord!')
     print(f'Bot is ready! Prefix: .')
     await backup_db_to_channel()
