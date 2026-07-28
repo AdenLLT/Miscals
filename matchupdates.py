@@ -135,6 +135,9 @@ EMOJI_MAPPING = {
 last_timelines = {}
 
 
+# Live match state — read by commentary.py
+_live_match_state: dict = {}
+
 # Store last processed wickets to prevent duplicates (username + timestamp)
 last_wickets = {}
 
@@ -688,6 +691,7 @@ def parse_embed_fields(embed, guild=None):
 
                     data[f'{prefix}_username'] = username
                     data[f'{prefix}_name'] = last_name
+                    data[f'{prefix}_full_name'] = full_name
                     data[f'{prefix}_score'] = f"{runs}({balls})"
                     data[f'{prefix}_team'] = team if team else ""
 
@@ -734,6 +738,7 @@ def parse_embed_fields(embed, guild=None):
 
                 data['bowler_username'] = username
                 data['bowler_name'] = last_name
+                data['bowler_full_name'] = full_name
                 data['bowler_stats'] = f"{wickets}-{runs} ({overs})"
                 data['bowler_team'] = team if team else ""
 
@@ -1281,7 +1286,7 @@ class MatchUpdates(commands.Cog):
             # Dedup by user_id within this single message to prevent double-sends
             already_sent_ids = set()
             current_time = time.time()
-            
+
             for user_id, role in players_to_show:
                 if user_id in already_sent_ids:
                     print(f"   ⏭️ Already sent nowstat for user_id {user_id} this message, skipping")
@@ -1452,6 +1457,11 @@ class MatchUpdates(commands.Cog):
             await message.channel.send(file=file)
             print(f"✅ SENT WICKET IMAGE\n")
 
+            # Update live match state with wicket event for commentary
+            _live_match_state['pending_wicket'] = wicket_data
+            _live_match_state['channel_id']     = channel_id
+            _live_match_state['last_updated']   = time.time()
+
             # After wicket image, send nowstat for next batsman/bowler
             # if this same message also contains "Next batsman/bowler" info
             if players_to_show and not nowstat_sent:
@@ -1461,7 +1471,7 @@ class MatchUpdates(commands.Cog):
                     if uid in already_sent_ids:
                         continue
                     already_sent_ids.add(uid)
-                    
+
                     # Check if this exact message has already triggered a nowstat for this player+role
                     msg_nowstat_key = (message.id, uid, role)
                     if msg_nowstat_key in sent_nowstat_message_ids:
@@ -1482,7 +1492,7 @@ class MatchUpdates(commands.Cog):
                     if len(sent_nowstat_message_ids) > 1000:
                         sent_nowstat_message_ids.clear()
                     last_nowstats[nowstat_key] = current_time_pw
-                    
+
                     conn2 = sqlite3.connect('players.db')
                     c2 = conn2.cursor()
                     c2.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (uid,))
@@ -1531,6 +1541,15 @@ class MatchUpdates(commands.Cog):
             return
 
         last_timelines[channel_id] = current_timeline
+
+        # Update live match state for commentary
+        match_data['channel_id'] = channel_id
+        tl = match_data.get('timeline', [])
+        match_data['last_ball']      = tl[-1] if tl else ''
+        match_data['over_completed'] = len(tl) > 0 and len(tl) % 6 == 0
+        match_data['timeline_key']   = current_timeline
+        match_data['last_updated']   = time.time()
+        _live_match_state.update(match_data)
 
         print(f"\n🎨 CREATING MATCH IMAGE...")
 

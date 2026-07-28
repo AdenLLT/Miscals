@@ -137,9 +137,10 @@ async def on_ready():
     # Ensure every claimed user has a card in the cache channel
     asyncio.get_event_loop().create_task(startup_sync_card_cache(bot))
     # Start background feed pre-generation (100 posts on startup, 30/hr after)
-    from playerlife import start_feed_background_gen, start_fan_discussion
+    from playerlife import start_feed_background_gen
+    from commentary import start_commentary
     start_feed_background_gen(bot)
-    start_fan_discussion(bot)
+    start_commentary(bot)
 
 _last_backup_ts: float = 0.0
 
@@ -669,18 +670,6 @@ async def on_command_error(ctx, error):
     if isinstance(error, commands.CommandNotFound):
         return
     await ctx.send(f"❌ Error: {error}")
-
-@bot.listen('on_message')
-async def handle_discussion_channel(message):
-    """Inject real user messages into the fan discussion so fans drift to their topic."""
-    if message.author.bot:
-        return
-    if getattr(message.channel, 'id', None) == 1528839693897044159:
-        try:
-            from playerlife import inject_user_message
-            inject_user_message(message.author.display_name, message.content or '')
-        except Exception:
-            pass
 
 @bot.listen('on_message')
 async def log_dm_messages(message):
