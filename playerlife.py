@@ -18,7 +18,7 @@ from datetime import datetime, timedelta
 import os
 import time as _time
 OPENROUTER_API_URL = "https://router.bynara.id/v1/chat/completions"
-OPENROUTER_MODEL   = "laguna-s-2.1"
+OPENROUTER_MODEL   = "mistral-large"
 POSTS_PER_PAGE = 3
 
 # ── Key loading ───────────────────────────────────────────────────────────────

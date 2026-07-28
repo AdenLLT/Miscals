@@ -1,3444 +1,6208 @@
+from keep_alive import keep_alive
+from cricket_stats import ensure_card_in_cache, startup_sync_card_cache
 import discord
-import sqlite3
+import os
 import json
 import random
+import sqlite3
+import pickle
 import asyncio
+import time
+import io
 import math
-import re
-import urllib.request
-import urllib.error
-from discord.ext import commands
+import pytz
 from discord import app_commands
-from discord.ui import View, Button, Select
 from datetime import datetime, timedelta
+from typing import Dict, Optional
+from io import BytesIO
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
+import aiohttp
+from discord.ui import Select, View
+from discord.ext import commands, tasks
+from discord.ext.commands.cooldowns import BucketType
+intents = discord.Intents.default()
+intents.members = True
+intents.presences = True 
+intents.message_content = True
+intents.voice_states = True  # Required for voice
+intents.guilds = True  # Required for voice
+mydb = sqlite3.connect("players.db")
+crsr = mydb.cursor()
+mydb.commit()
 
-# ============================================================
-# OPENROUTER AI CONFIG STARTS HERE
-# ============================================================
-import os
-import time as _time
-OPENROUTER_API_URL = "https://router.bynara.id/v1/chat/completions"
-OPENROUTER_MODEL   = "laguna-s-2.1"
-POSTS_PER_PAGE = 3
+DB_BACKUP_CHANNEL_ID = 1511452654906114139
 
-# ── Key loading ───────────────────────────────────────────────────────────────
-# Uses BYNARA_API_KEY (can be comma-separated for multiple keys).
-# When a key hits 429 the bot automatically skips it until midnight UTC.
-def _load_or_keys():
-    keys = []
-    for raw in os.environ.get("OPENROUTER_API_KEY", "").split(","):
-        k = raw.strip()
-        if k:
-            keys.append(k)
-    return keys
+async def restore_db_from_channel():
+    """Download the last players.db attachment from the backup channel and use it."""
+    channel = bot.get_channel(DB_BACKUP_CHANNEL_ID)
+    if not channel:
+        print("❌ DB backup channel not found.")
+        return
+    async for message in channel.history(limit=200):
+        for attachment in message.attachments:
+            if attachment.filename == 'players.db':
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(attachment.url) as resp:
+                        if resp.status == 200:
+                            data = await resp.read()
+                            with open('players.db', 'wb') as f:
+                                f.write(data)
+                            global mydb, crsr
+                            mydb.close()
+                            mydb = sqlite3.connect("players.db")
+                            crsr = mydb.cursor()
+                            print("✅ Restored players.db from backup channel.")
+                            return
+    print("ℹ️ No players.db backup found in backup channel — using local file.")
 
-_OR_KEYS: list = _load_or_keys()
-_OR_KEY_LIMITED_UNTIL: dict = {}   # key -> unix timestamp when limit resets
-
-if not _OR_KEYS:
-    print("[BYNARA] WARNING: No API keys found! Set BYNARA_API_KEY in your environment variables. All AI calls will fail.")
-else:
-    print(f"[BYNARA] Loaded {len(_OR_KEYS)} API key(s). Model: {OPENROUTER_MODEL}.")
-
-def _or_get_active_key():
-    """Return the first key that isn't currently rate-limited, or None."""
-    now = _time.time()
-    for key in _OR_KEYS:
-        if now >= _OR_KEY_LIMITED_UNTIL.get(key, 0):
-            return key
-    return None
-
-def _or_mark_limited(key: str, reset_ms=None):
-    """Mark a key as rate-limited until its reset time (or next midnight UTC)."""
-    if reset_ms:
-        try:
-            reset_at = int(reset_ms) / 1000
-        except (TypeError, ValueError):
-            reset_at = None
-    else:
-        reset_at = None
-    if not reset_at:
-        from datetime import datetime, timedelta
-        tomorrow = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
-        reset_at = tomorrow.timestamp()
-    _OR_KEY_LIMITED_UNTIL[key] = reset_at
-    from datetime import datetime
-    print(f"[OPENROUTER] Key …{key[-6:]} rate-limited until "
-          f"{datetime.utcfromtimestamp(reset_at).strftime('%H:%M UTC')} "
-          f"({len([k for k in _OR_KEYS if _time.time() < _OR_KEY_LIMITED_UNTIL.get(k,0)])} of {len(_OR_KEYS)} keys now limited)")
-
-def all_keys_limited() -> bool:
-    """True when every key is currently rate-limited."""
-    now = _time.time()
-    return all(now < _OR_KEY_LIMITED_UNTIL.get(k, 0) for k in _OR_KEYS)
-# ─────────────────────────────────────────────────────────────────────────────
-
-# ============================================================
-# DATABASE INIT
-# ============================================================
-
-def init_playerlife_db():
-    conn = sqlite3.connect('players.db')
-    c = conn.cursor()
-
-    c.execute('''CREATE TABLE IF NOT EXISTS player_life
-                 (user_id INTEGER PRIMARY KEY,
-                  cash INTEGER DEFAULT 50000,
-                  bank INTEGER DEFAULT 0,
-                  reputation INTEGER DEFAULT 50,
-                  confidence INTEGER DEFAULT 50,
-                  fitness INTEGER DEFAULT 100,
-                  energy INTEGER DEFAULT 100,
-                  happiness INTEGER DEFAULT 50,
-                  fans INTEGER DEFAULT 1000,
-                  fan_loyalty INTEGER DEFAULT 50,
-                  marital_status TEXT DEFAULT 'Single',
-                  partner_name TEXT DEFAULT NULL,
-                  house_level INTEGER DEFAULT 0,
-                  car_id TEXT DEFAULT NULL,
-                  sponsor_tier INTEGER DEFAULT 0,
-                  sponsor_name TEXT DEFAULT NULL,
-                  contract_value INTEGER DEFAULT 0,
-                  last_train TIMESTAMP DEFAULT NULL,
-                  last_rest TIMESTAMP DEFAULT NULL,
-                  last_press TIMESTAMP DEFAULT NULL,
-                  last_scandal TIMESTAMP DEFAULT NULL,
-                  last_social TIMESTAMP DEFAULT NULL,
-                  last_rehab TIMESTAMP DEFAULT NULL,
-                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-
-    c.execute('''CREATE TABLE IF NOT EXISTS player_rivals
-                 (user_id INTEGER,
-                  rival_id INTEGER,
-                  declared_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                  PRIMARY KEY (user_id, rival_id))''')
-
-    c.execute('''CREATE TABLE IF NOT EXISTS player_cars
-                 (user_id INTEGER,
-                  car_name TEXT,
-                  car_value INTEGER,
-                  purchased_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-
-    c.execute('''CREATE TABLE IF NOT EXISTS player_properties
-                 (user_id INTEGER,
-                  property_name TEXT,
-                  property_value INTEGER,
-                  purchased_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-
-    c.execute('''CREATE TABLE IF NOT EXISTS social_media_accounts
-                 (user_id INTEGER PRIMARY KEY,
-                  platform TEXT DEFAULT 'CricketGram',
-                  followers INTEGER DEFAULT 500,
-                  posts INTEGER DEFAULT 0,
-                  viral_posts INTEGER DEFAULT 0,
-                  total_likes INTEGER DEFAULT 0,
-                  verification_status INTEGER DEFAULT 0,
-                  bio TEXT DEFAULT NULL,
-                  last_post TIMESTAMP DEFAULT NULL)''')
-
-    c.execute('''CREATE TABLE IF NOT EXISTS social_posts
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  user_id INTEGER,
-                  post_type TEXT,
-                  content TEXT,
-                  likes INTEGER DEFAULT 0,
-                  comments INTEGER DEFAULT 0,
-                  went_viral INTEGER DEFAULT 0,
-                  posted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-
-    c.execute('''CREATE TABLE IF NOT EXISTS locker_room
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  user_id INTEGER,
-                  target_id INTEGER,
-                  message TEXT,
-                  sentiment TEXT,
-                  sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-
-    c.execute('''CREATE TABLE IF NOT EXISTS trash_talk_log
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  sender_id INTEGER,
-                  target_id INTEGER,
-                  message TEXT,
-                  confidence_damage INTEGER,
-                  sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-
-    c.execute('''CREATE TABLE IF NOT EXISTS player_trophies
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  user_id INTEGER,
-                  trophy_name TEXT,
-                  awarded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-
-    c.execute('''CREATE TABLE IF NOT EXISTS ai_feed_cache
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  cache_date TEXT,
-                  language_filter TEXT DEFAULT 'all',
-                  page_number INTEGER DEFAULT 0,
-                  posts_json TEXT,
-                  generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-
-    c.execute('''CREATE TABLE IF NOT EXISTS post_comments
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  post_id INTEGER,
-                  commenter_handle TEXT,
-                  comment_text TEXT,
-                  sentiment TEXT,
-                  comment_likes INTEGER DEFAULT 0,
-                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-
-    # Add fan_gain column to social_posts if not present (safe migration)
+async def backup_db_to_channel():
+    """Send the current players.db to the backup channel."""
     try:
-        c.execute("ALTER TABLE social_posts ADD COLUMN fan_gain INTEGER DEFAULT 0")
-    except Exception:
-        pass
+        channel = bot.get_channel(DB_BACKUP_CHANNEL_ID)
+        if channel:
+            await channel.send(file=discord.File('players.db'))
+    except Exception as e:
+        print(f"[backup] DB backup failed (non-critical): {e}")
+
+class MyHelp(commands.MinimalHelpCommand):
+    async def send_pages(self):
+        destination = self.get_destination()
+        for page in self.paginator.pages:
+            emby = discord.Embed(description=page, color=discord.Color.blue())
+            await destination.send(embed=emby)
+
+bot = commands.Bot(
+    command_prefix="-",
+    description="**STATS IN DEVELOPMENT**",
+    intents=intents,
+    case_insensitive=True,
+    strip_after_prefix=True,
+    help_command=MyHelp()
+)
+
+ALLOWED_GUILD_ID = 1451591563078533292
+ALLOWED_GUILD_OBJ = discord.Object(id=ALLOWED_GUILD_ID)
+
+STAFF_ROLE_ID = 1452028308735922339
+
+def is_staff_or_admin():
+    """Passes if the user has administrator permission OR the staff role."""
+    async def predicate(ctx):
+        if ctx.author.guild_permissions.administrator:
+            return True
+        if any(r.id == STAFF_ROLE_ID for r in ctx.author.roles):
+            return True
+        raise commands.MissingPermissions(['administrator'])
+    return commands.check(predicate)
+
+def is_staff_or_admin_slash():
+    """app_commands check: passes if user has administrator permission OR the staff role."""
+    async def predicate(interaction: discord.Interaction) -> bool:
+        if interaction.user.guild_permissions.administrator:
+            return True
+        if any(r.id == STAFF_ROLE_ID for r in interaction.user.roles):
+            return True
+        raise app_commands.MissingPermissions(['administrator'])
+    return app_commands.check(predicate)
+
+@bot.check
+async def only_allowed_guild(ctx):
+    return ctx.guild is not None and ctx.guild.id == ALLOWED_GUILD_ID
+
+@bot.tree.interaction_check
+async def only_allowed_guild_slash(interaction: discord.Interaction) -> bool:
+    return interaction.guild_id == ALLOWED_GUILD_ID
+
+@bot.event
+async def on_ready():
+    global elite_players
+    await restore_db_from_channel()
+    init_db()
+    init_fantasy_db()
+    init_nicknames_db()
+    _init_embeds_table()
+    elite_players = load_elite_players()
+    # Load the stats cog
+    await bot.load_extension('cricket_stats')
+    await bot.load_extension('matchupdates')
+    await bot.load_extension('tournament')
+    await bot.load_extension('series')
+    await bot.load_extension('playerlife')
+    await bot.load_extension('miniplayergame')
+    await bot.tree.sync(guild=ALLOWED_GUILD_OBJ)
+    await bot.change_presence(activity=discord.Game(name="With Aden's Balls"))
+    print(f'{bot.user} has connected to Discord!')
+    print(f'Bot is ready! Prefix: .')
+    await backup_db_to_channel()
+    # Ensure every claimed user has a card in the cache channel
+    asyncio.get_event_loop().create_task(startup_sync_card_cache(bot))
+    # Start background feed pre-generation (100 posts on startup, 30/hr after)
+    from playerlife import start_feed_background_gen, start_fan_discussion
+    start_feed_background_gen(bot)
+    start_fan_discussion(bot)
+
+_last_backup_ts: float = 0.0
+
+@bot.after_invoke
+async def after_command_backup(ctx):
+    global _last_backup_ts
+    import time as _t
+    now = _t.time()
+    if now - _last_backup_ts < 300:   # at most once every 5 minutes
+        return
+    _last_backup_ts = now
+    await backup_db_to_channel()
+
+class PlayerSelectionView(discord.ui.View):
+    def __init__(self, india_players, nz_players):
+        super().__init__(timeout=300)
+        self.selected_players = []
+        self.india_players = india_players
+        self.nz_players = nz_players
+        self.selection_complete = False
+
+        # Create India dropdown
+        india_options = []
+        for player in india_players[:25]:  # Discord limit
+            rep = get_representative(player)
+            desc = "🇮🇳 India"
+            if rep:
+                desc += f" (Claimed by @{rep[1]})"
+            else:
+                desc += " (Unclaimed)"
+            india_options.append(discord.SelectOption(
+                label=player[:100],
+                value=f"IND:{player}",
+                description=desc[:100],
+                emoji="🇮🇳"
+            ))
+
+        india_select = discord.ui.Select(
+            placeholder="🇮🇳 Select India Players",
+            min_values=0,
+            max_values=11,
+            options=india_options,
+            custom_id="india_select"
+        )
+        india_select.callback = self.player_select_callback
+        self.add_item(india_select)
+
+        # Create New Zealand dropdown
+        nz_options = []
+        for player in nz_players[:25]:  # Discord limit
+            rep = get_representative(player)
+            desc = "🇳🇿 New Zealand"
+            if rep:
+                desc += f" (Claimed by @{rep[1]})"
+            else:
+                desc += " (Unclaimed)"
+            nz_options.append(discord.SelectOption(
+                label=player[:100],
+                value=f"NZ:{player}",
+                description=desc[:100],
+                emoji="🇳🇿"
+            ))
+
+        nz_select = discord.ui.Select(
+            placeholder="🇳🇿 Select New Zealand Players",
+            min_values=0,
+            max_values=11,
+            options=nz_options,
+            custom_id="nz_select"
+        )
+        nz_select.callback = self.player_select_callback
+        self.add_item(nz_select)
+
+    async def player_select_callback(self, interaction: discord.Interaction):
+        # Aggregate selections from both dropdowns
+        all_selected = []
+        for child in self.children:
+            if isinstance(child, discord.ui.Select) and hasattr(child, 'values'):
+                all_selected.extend(child.values)
+
+        # Remove prefix and ensure uniqueness
+        self.selected_players = []
+        for value in all_selected:
+            player_name = value.split(':', 1)[1] if ':' in value else value
+            if player_name not in self.selected_players:
+                self.selected_players.append(player_name)
+
+        if len(self.selected_players) > 11:
+            await interaction.response.send_message("❌ You can only select up to 11 players total!", ephemeral=True)
+            return
+
+        india_count = sum(1 for p in self.selected_players if p in self.india_players)
+        nz_count = sum(1 for p in self.selected_players if p in self.nz_players)
+
+        content = f"**Selecting Fantasy 11** ({len(self.selected_players)}/11)\n\n"
+        content += f"🇮🇳 **India:** {india_count} players\n🇳🇿 **New Zealand:** {nz_count} players\n\n"
+        content += "**Selected Players:**\n"
+        content += "\n".join([f"{i+1}. {'🇮🇳' if p in self.india_players else '🇳🇿'} {p}" for i, p in enumerate(self.selected_players)])
+
+        if len(self.selected_players) < 11:
+            content += f"\n\n⚠️ Select {11 - len(self.selected_players)} more player(s)"
+        else:
+            content += "\n\n✅ **Team complete!** Click 'Finish Selection' to proceed."
+
+        await interaction.response.edit_message(content=content, view=self)
+
+    @discord.ui.button(label="Finish Selection", style=discord.ButtonStyle.primary, row=2)
+    async def finish_selection(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.selected_players:
+            await interaction.response.send_message("❌ Please select at least one player!", ephemeral=True)
+            return
+
+        self.selection_complete = True
+        self.stop()
+        await interaction.response.edit_message(
+            content=f"✅ **Selection Finished!** ({len(self.selected_players)} players)", 
+            view=None
+        )
+
+
+class ConfirmationView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=60)
+        self.confirmed = False
+
+    @discord.ui.button(label="✅ Confirm Team", style=discord.ButtonStyle.success)
+    async def confirm_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.confirmed = True
+        self.stop()
+        await interaction.response.defer()
+
+    @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.danger)
+    async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.confirmed = False
+        self.stop()
+        await interaction.response.defer()
+
+
+# Replace the existing /createfantasy11 command with this updated version:
+
+@bot.tree.command(name="createfantasy11", description="Create your Fantasy 11 from India & NZ players")
+async def create_fantasy11(interaction: discord.Interaction):
+    user_id = interaction.user.id
+
+    existing_team, _ = get_fantasy_team(user_id)
+    if existing_team:
+        await interaction.response.send_message(
+            "❌ You already have a Fantasy 11 team! You can only create one team.",
+            ephemeral=True
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True)
+
+    india_players, nz_players = get_india_nz_players()
+
+    if not india_players or not nz_players:
+        await interaction.followup.send("❌ Could not load player data.", ephemeral=True)
+        return
+
+    view = PlayerSelectionView(india_players, nz_players)
+
+    await interaction.followup.send(
+        "**🏏 Create Your Fantasy 11 Team**\n\n"
+        "Select **up to 11 players** from India 🇮🇳 and New Zealand 🇳🇿.\n"
+        "⚠️ You can only create ONE team and CANNOT edit it!\n\n"
+        f"**Available:** {len(india_players)} India, {len(nz_players)} NZ players\n\n"
+        "Use the dropdowns below to select players from each team.",
+        view=view,
+        ephemeral=True
+    )
+
+    await view.wait()
+
+    if not view.selection_complete or not view.selected_players:
+        await interaction.followup.send("❌ **Team creation cancelled or incomplete.**", ephemeral=True)
+        return
+
+    india_count = sum(1 for p in view.selected_players if p in india_players)
+    nz_count = sum(1 for p in view.selected_players if p in nz_players)
+
+    confirm_embed = discord.Embed(
+        title="🏆 Confirm Your Fantasy Team",
+        description="**⚠️ Once confirmed, you CANNOT edit or create a new team!**",
+        color=0xFFD700
+    )
+
+    # Build players list with emojis
+    players_list = ""
+    for i, p in enumerate(view.selected_players):
+        emoji = "🇮🇳" if p in india_players else "🇳🇿"
+        player_emoji = get_player_emoji(p, bot)
+        rep_info = get_representative(p)
+        claimed_by = f" (@{rep_info[1]})" if rep_info else ""
+        players_list += f"{i+1}. {emoji} {player_emoji} {p}{claimed_by}\n"
+
+    confirm_embed.add_field(name="Selected Players", value=players_list, inline=False)
+    confirm_embed.add_field(
+        name="Team Composition",
+        value=f"🇮🇳 India: **{india_count}**\n🇳🇿 New Zealand: **{nz_count}**\n**Total: {len(view.selected_players)}**",
+        inline=False
+    )
+
+    confirm_view = ConfirmationView()
+    await interaction.followup.send(embed=confirm_embed, view=confirm_view, ephemeral=True)
+
+    await confirm_view.wait()
+
+    if not confirm_view.confirmed:
+        await interaction.followup.send("❌ **Team creation cancelled.**", ephemeral=True)
+        return
+
+    team_data = {
+        'players': view.selected_players,
+        'india_count': india_count,
+        'nz_count': nz_count
+    }
+
+    save_fantasy_team(user_id, team_data)
+
+    await interaction.followup.send("✅ **Fantasy 11 created!** Check <#1471951626058207292>", ephemeral=True)
+
+    # Post to channel with emojis and user mentions
+    fantasy_channel = bot.get_channel(1471951626058207292)
+
+    if fantasy_channel:
+        team_embed = discord.Embed(
+            title=f"🏆 {interaction.user.name}'s Fantasy 11 Team",
+            description=f"**Total Points:** 0\n\n🇮🇳 India: {india_count} | 🇳🇿 NZ: {nz_count}",
+            color=0xFFD700
+        )
+
+        india_in_team = [p for p in view.selected_players if p in india_players]
+        nz_in_team = [p for p in view.selected_players if p in nz_players]
+
+        if india_in_team:
+            india_text = ""
+            for p in india_in_team:
+                player_emoji = get_player_emoji(p, bot)
+                rep_info = get_representative(p)
+                if rep_info:
+                    india_text += f"{player_emoji} {p} (<@{rep_info[0]}>)\n"
+                else:
+                    india_text += f"{player_emoji} {p} (Unclaimed)\n"
+
+            team_embed.add_field(
+                name="🇮🇳 India Players",
+                value=india_text,
+                inline=True
+            )
+
+        if nz_in_team:
+            nz_text = ""
+            for p in nz_in_team:
+                player_emoji = get_player_emoji(p, bot)
+                rep_info = get_representative(p)
+                if rep_info:
+                    nz_text += f"{player_emoji} {p} (<@{rep_info[0]}>)\n"
+                else:
+                    nz_text += f"{player_emoji} {p} (Unclaimed)\n"
+
+            team_embed.add_field(
+                name="🇳🇿 New Zealand Players",
+                value=nz_text,
+                inline=True
+            )
+
+        team_embed.set_thumbnail(url=interaction.user.display_avatar.url)
+        team_embed.set_footer(text=f"Created by {interaction.user.name}")
+
+        await fantasy_channel.send(embed=team_embed)
+
+
+# Add the reset command for admins:
+
+@bot.command(name="resetfantasysquads", aliases=["rfs"], help="[ADMIN] Reset all fantasy teams")
+@is_staff_or_admin()
+async def resetfantasysquads_command(ctx):
+    """Reset all fantasy teams and points"""
+
+    # Confirmation
+    confirm_embed = discord.Embed(
+        title="⚠️ Confirm Fantasy Reset",
+        description=(
+            "Are you sure you want to **permanently delete ALL fantasy teams**?\n\n"
+            "This will:\n"
+            "• Delete all fantasy teams\n"
+            "• Reset all fantasy points to 0\n"
+            "• Clear all fantasy points logs\n\n"
+            "**This action cannot be undone!**"
+        ),
+        color=0xFF0000
+    )
+
+    confirm_msg = await ctx.send(embed=confirm_embed)
+    await confirm_msg.add_reaction("✅")
+    await confirm_msg.add_reaction("❌")
+
+    def check(reaction, user):
+        return user == ctx.author and str(reaction.emoji) in ["✅", "❌"] and reaction.message.id == confirm_msg.id
+
+    try:
+        reaction, user = await bot.wait_for('reaction_add', timeout=30.0, check=check)
+    except asyncio.TimeoutError:
+        await confirm_msg.edit(embed=discord.Embed(
+            title="❌ Reset Cancelled",
+            description="Confirmation timed out.",
+            color=0x808080
+        ))
+        await confirm_msg.clear_reactions()
+        return
+
+    if str(reaction.emoji) == "❌":
+        await confirm_msg.edit(embed=discord.Embed(
+            title="❌ Reset Cancelled",
+            description="Fantasy teams were not reset.",
+            color=0x808080
+        ))
+        await confirm_msg.clear_reactions()
+        return
+
+    # User confirmed - proceed with reset
+    await confirm_msg.clear_reactions()
+
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+
+    # Get count before deletion
+    c.execute("SELECT COUNT(*) FROM fantasy_teams")
+    teams_count = c.fetchone()[0]
+
+    c.execute("SELECT COUNT(*) FROM fantasy_points_log")
+    logs_count = c.fetchone()[0]
+
+    # Delete all data
+    c.execute("DELETE FROM fantasy_teams")
+    c.execute("DELETE FROM fantasy_points_log")
 
     conn.commit()
     conn.close()
 
-# ============================================================
-# HELPER FUNCTIONS
-# ============================================================
+    # Create success embed
+    success_embed = discord.Embed(
+        title="✅ Fantasy Reset Complete",
+        description="All fantasy teams and points have been deleted.",
+        color=0x00FF00
+    )
 
-def get_life(user_id):
+    success_embed.add_field(
+        name="Deleted",
+        value=f"**{teams_count}** fantasy teams\n**{logs_count}** points log entries",
+        inline=False
+    )
+
+    success_embed.set_footer(text=f"Reset by {ctx.author.name}")
+    success_embed.timestamp = discord.utils.utcnow()
+
+    await confirm_msg.edit(embed=success_embed)
+
+@bot.tree.command(name="myfantasy11", description="View your current Fantasy 11 team")
+async def myfantasy11(interaction: discord.Interaction):
+    user_id = interaction.user.id
+    team_data, points = get_fantasy_team(user_id)
+
+    if not team_data:
+        await interaction.response.send_message("❌ **You don't have a fantasy team yet!** Use `/createfantasy11` to create one.", ephemeral=True)
+        return
+
+    players = team_data.get('players', [])
+    india_count = team_data.get('india_count', 0)
+    nz_count = team_data.get('nz_count', 0)
+
+    embed = discord.Embed(
+        title=f"🏆 {interaction.user.name}'s Fantasy 11",
+        description=f"✅ **Total Points:** {points}\n\n🇮🇳 India: {india_count} | 🇳🇿 NZ: {nz_count}",
+        color=0xFFD700
+    )
+
+    india_players, nz_players = get_india_nz_players()
+
+    india_in_team = [p for p in players if p in india_players]
+    nz_in_team = [p for p in players if p in nz_players]
+
+    if india_in_team:
+        embed.add_field(name="🇮🇳 India Players", value="\n".join([f"• {p}" for p in india_in_team]), inline=True)
+    if nz_in_team:
+        embed.add_field(name="🇳🇿 NZ Players", value="\n".join([f"• {p}" for p in nz_in_team]), inline=True)
+
+    embed.set_thumbnail(url=interaction.user.display_avatar.url)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@bot.command(name="fantasylb", aliases=["flb"], help="Fantasy Cricket leaderboard")
+async def fantasy_leaderboard_command(ctx):
+    results = get_fantasy_leaderboard()
+
+    if not results:
+        embed = discord.Embed(
+            title="📊 Fantasy Cricket Leaderboard",
+            description="❌ **No fantasy teams yet!** Use `/createfantasy11`",
+            color=discord.Color.red()
+        )
+        await ctx.send(embed=embed)
+        return
+
+    leaderboard_text = ""
+    for i, (user_id, points, _) in enumerate(results[:10]):
+        leaderboard_text += f"{i+1}. <@{user_id}>: **{points}** pts\n"
+
+    embed = discord.Embed(
+        title="📊 Fantasy Cricket Leaderboard",
+        description=f"✅ **Current Standings:**\n\n{leaderboard_text}",
+        color=discord.Color.gold()
+    )
+    await ctx.send(embed=embed)
+@app_commands.describe(
+    message="The message content to send",
+    image="Optional image to attach"
+)
+@is_staff_or_admin_slash()
+async def sendmsg(interaction: discord.Interaction, message: str, image: Optional[discord.Attachment] = None):
+    # Hide the slash command response (ephemeral)
+    await interaction.response.send_message("✅ Message sent!", ephemeral=True)
+
+    # Send the message separately in the same channel
+    if image:
+        file = await image.to_file()
+        await interaction.channel.send(content=message, file=file)
+    else:
+        await interaction.channel.send(content=message)
+
+@bot.command(name="dm", help="[OWNER] Send a DM to a user from the bot")
+async def dm_user(ctx, member: discord.Member, *, message: str):
+    if ctx.author.id != 765965975761715241:
+        return
+    """Send a direct message to a user as the bot"""
+    try:
+        await member.send(message)
+        await ctx.send(f"✅ Message sent to **{member.display_name}**.", delete_after=5)
+    except discord.Forbidden:
+        await ctx.send(f"❌ Could not DM **{member.display_name}** — they may have DMs disabled.")
+    except Exception as e:
+        await ctx.send(f"❌ Failed to send DM: {e}")
+
+TEAM_ROLE_IDS = {
+    "india": 1460376137594044567, "pakistan": 1460376138755866644,
+    "australia": 1460376139611640025, "england": 1460376141314654424,
+    "new zealand": 1460376142342000762, "south africa": 1460376143633846527,
+    "west indies": 1460376148751028408, "sri lanka": 1460376147715166282,
+    "bangladesh": 1460376144862908523, "afghanistan": 1460376146163273739,
+    "netherlands": 1460376154480312370, "scotland": 1460376151795961897,
+    "ireland": 1460376149908525191, "zimbabwe": 1460376157668245545,
+    "uae": 1460376158985130114, "canada": 1460376154958725152,
+    "usa": 1460376156250570824,
+    "italy": 1513096652842467328, "nepal": 1513096680835125398,
+    "namibia": 1513096608063950878, "hong kong": 1513236745527889951,
+    "oman": 1513236895595757768, "papua new guinea": 1513237053935194262,
+    "uganda": 1513237221560287312, "malaysia": 1513238128482320454,
+    "spain": 1513238260502233198, "germany": 1513238268777595073,
+    "japan": 1513238484075282432, "portugal": 1513238487707549958,
+    "denmark": 1513238490723385466
+}
+
+@bot.command(name="dmteam", help="[OWNER] DM everyone on a team")
+async def dmteam(ctx, team_name: str, *, message: str):
+    if ctx.author.id != 765965975761715241:
+        return
+    """Send a DM to every player on the given team"""
+    role_id = TEAM_ROLE_IDS.get(team_name.lower())
+    if not role_id:
+        teams_list = ", ".join(t.title() for t in TEAM_ROLE_IDS)
+        await ctx.send(f"❌ Team **{team_name}** not found.\nAvailable teams: {teams_list}")
+        return
+
+    role = ctx.guild.get_role(role_id)
+    if not role:
+        await ctx.send(f"❌ Could not find the role for **{team_name}** in this server.")
+        return
+
+    members = [m for m in role.members if not m.bot]
+    if not members:
+        await ctx.send(f"❌ No members found with the **{role.name}** role.")
+        return
+
+    status_msg = await ctx.send(f"📨 Sending DMs to {len(members)} player(s) on **{role.name}**...")
+
+    sent = 0
+    failed = 0
+    for member in members:
+        try:
+            await member.send(message)
+            sent += 1
+        except discord.Forbidden:
+            failed += 1
+        except Exception:
+            failed += 1
+
+    result = f"✅ Sent to **{sent}** player(s)"
+    if failed:
+        result += f", ❌ **{failed}** had DMs disabled"
+    await status_msg.edit(content=result)
+
+@bot.command(name="quarterfinals")
+async def quarterfinals(ctx):
+    embed = discord.Embed(
+        title="Pakistan's CWC26",
+        description=(
+            "╭─── ⋅ 🏆 ⋅ ───╮\n\n"
+            "🇦🇫 **Afghanistan** VS **South Africa** 🇿🇦\n"
+            "───────────────\n"
+            "🇧🇩 **Bangladesh** VS **India** 🇮🇳\n"
+            "───────────────\n"
+            "🏴󠁧󠁢󠁳󠁣󠁴󠁿 **Scotland** VS **Netherlands** 🇳🇱\n"
+            "───────────────\n"
+            "🇱🇰 **Sri Lanka** VS **TBD #8** 🔍\n\n"
+            "╰─── ⋅ 🏆 ⋅ ───╯"
+        ),
+        color=discord.Color.gold(),
+        timestamp=datetime.utcnow()
+    )
+    embed.set_footer(text="CWC26 Quarter Finals")
+    if ctx.guild and ctx.guild.icon:
+        embed.set_thumbnail(url=ctx.guild.icon.url)
+    await ctx.send(embed=embed)
+
+@bot.listen()
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.CommandNotFound):
+        return
+    await ctx.send(f"❌ Error: {error}")
+
+@bot.listen('on_message')
+async def handle_discussion_channel(message):
+    """Inject real user messages into the fan discussion so fans drift to their topic."""
+    if message.author.bot:
+        return
+    if getattr(message.channel, 'id', None) == 1528839693897044159:
+        try:
+            from playerlife import inject_user_message
+            inject_user_message(message.author.display_name, message.content or '')
+        except Exception:
+            pass
+
+@bot.listen('on_message')
+async def log_dm_messages(message):
+    if message.author.bot:
+        return
+    if isinstance(message.channel, discord.DMChannel):
+        conn = sqlite3.connect('players.db')
+        c = conn.cursor()
+        c.execute(
+            "INSERT INTO dm_logs (user_id, username, content) VALUES (?, ?, ?)",
+            (message.author.id, str(message.author), message.content or '[no text content]')
+        )
+        conn.commit()
+        conn.close()
+
+@bot.command(name="dmfetch", help="[OWNER] Fetch last 5 DMs a user sent to the bot")
+async def dmfetch(ctx, member: discord.Member):
+    if ctx.author.id != 765965975761715241:
+        return
     conn = sqlite3.connect('players.db')
     c = conn.cursor()
-    c.execute("SELECT * FROM player_life WHERE user_id = ?", (user_id,))
-    row = c.fetchone()
+    c.execute(
+        "SELECT content, sent_at FROM dm_logs WHERE user_id = ? ORDER BY sent_at DESC LIMIT 5",
+        (member.id,)
+    )
+    rows = c.fetchall()
     conn.close()
-    if row:
-        cols = ["user_id","cash","bank","reputation","confidence","fitness","energy","happiness",
-                "fans","fan_loyalty","marital_status","partner_name","house_level","car_id",
-                "sponsor_tier","sponsor_name","contract_value","last_train","last_rest",
-                "last_press","last_scandal","last_social","last_rehab","created_at"]
-        return dict(zip(cols, row))
+
+    if not rows:
+        await ctx.send(f"❌ No DM history found for **{member.display_name}**.")
+        return
+
+    embed = discord.Embed(
+        title=f"📬 Last DMs from {member.display_name}",
+        color=0x5865F2
+    )
+    for i, (content, sent_at) in enumerate(reversed(rows), 1):
+        embed.add_field(
+            name=f"Message {i} — {sent_at}",
+            value=content[:1024],
+            inline=False
+        )
+    await ctx.author.send(embed=embed)
+
+
+def init_db():
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS player_representatives
+                 (player_name TEXT PRIMARY KEY, user_id INTEGER, username TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS match_stats
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  user_id INTEGER,
+                  runs INTEGER,
+                  balls_faced INTEGER,
+                  runs_conceded INTEGER,
+                  balls_bowled INTEGER,
+                  wickets INTEGER,
+                  not_out INTEGER,
+                  match_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    # ADD THIS NEW TABLE FOR CAPTAINS
+    c.execute('''CREATE TABLE IF NOT EXISTS team_captains
+                 (team_name TEXT PRIMARY KEY, player_name TEXT, user_id INTEGER, username TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS old_representatives
+     (id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER,
+      player_name TEXT,
+      removed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS dm_logs
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  user_id INTEGER,
+                  username TEXT,
+                  content TEXT,
+                  sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS invite_counts
+                 (user_id INTEGER,
+                  guild_id INTEGER,
+                  invite_uses INTEGER DEFAULT 0,
+                  PRIMARY KEY (user_id, guild_id))''')
+    c.execute('''CREATE TABLE IF NOT EXISTS stat_overrides
+                 (user_id INTEGER PRIMARY KEY,
+                  total_runs INTEGER,
+                  total_balls_faced INTEGER,
+                  times_not_out INTEGER,
+                  matches_played INTEGER,
+                  total_runs_conceded INTEGER,
+                  total_balls_bowled INTEGER,
+                  total_wickets INTEGER)''')
+    conn.commit()
+    conn.close()
+
+def init_fantasy_db():
+    """Initialize fantasy cricket database tables"""
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+
+    c.execute('''CREATE TABLE IF NOT EXISTS fantasy_teams
+                 (user_id INTEGER PRIMARY KEY,
+                  team_data TEXT,
+                  total_points INTEGER DEFAULT 0,
+                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+
+    c.execute('''CREATE TABLE IF NOT EXISTS fantasy_points_log
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  user_id INTEGER,
+                  player_name TEXT,
+                  match_id INTEGER,
+                  points_earned INTEGER,
+                  timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+
+    conn.commit()
+    conn.close()
+
+def init_nicknames_db():
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS user_nicknames
+                 (user_id INTEGER PRIMARY KEY, 
+                  original_nickname TEXT,
+                  custom_nickname TEXT,
+                  last_synced TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    conn.commit()
+    conn.close()
+
+
+# Load players from JSON
+def load_players():
+    try:
+        with open('players.json', 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except json.JSONDecodeError as e:
+        print(f"❌ Error loading players.json at line {e.lineno}, column {e.colno}")
+        print(f"Error message: {e.msg}")
+        print(f"Please check your players.json file for invalid characters at position {e.pos}")
+        # Try to read and show problematic line
+        with open('players.json', 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+            if e.lineno <= len(lines):
+                print(f"Problematic line: {lines[e.lineno-1]}")
+        return []
+    except FileNotFoundError:
+        print("❌ players.json file not found!")
+        return []
+
+def get_india_nz_players():
+    """Get all players from India and New Zealand teams"""
+    try:
+        with open('players.json', 'r', encoding='utf-8') as f:
+            teams_data = json.load(f)
+
+        india_players = []
+        nz_players = []
+
+        for team in teams_data:
+            if team['team'] == 'India':
+                india_players = [p['name'] for p in team['players']]
+            elif team['team'] == 'New Zealand':
+                nz_players = [p['name'] for p in team['players']]
+
+        return india_players, nz_players
+    except:
+        return [], []
+
+def get_fantasy_team(user_id):
+    """Get user's fantasy team"""
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute("SELECT team_data, total_points FROM fantasy_teams WHERE user_id = ?", (user_id,))
+    result = c.fetchone()
+    conn.close()
+
+    if result:
+        return json.loads(result[0]), result[1]
+    return None, 0
+
+def save_fantasy_team(user_id, team_data):
+    """Save user's fantasy team"""
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute("""INSERT OR REPLACE INTO fantasy_teams (user_id, team_data, total_points)
+                 VALUES (?, ?, COALESCE((SELECT total_points FROM fantasy_teams WHERE user_id = ?), 0))""",
+              (user_id, json.dumps(team_data), user_id))
+    conn.commit()
+    conn.close()
+
+def update_fantasy_points(user_id, points_to_add):
+    """Update fantasy team total points"""
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute("UPDATE fantasy_teams SET total_points = total_points + ? WHERE user_id = ?",
+              (points_to_add, user_id))
+    conn.commit()
+    conn.close()
+
+def get_fantasy_leaderboard():
+    """Get fantasy leaderboard data"""
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute("""SELECT user_id, total_points, team_data 
+                 FROM fantasy_teams 
+                 ORDER BY total_points DESC""")
+    results = c.fetchall()
+    conn.close()
+    return results
+
+# Get team color based on team name
+def get_team_color(team_name):
+    colors = {
+        "India": 0x0066CC,  # Blue
+        "Pakistan": 0x006400,  # Dark Green
+        "Australia": 0xFFD700,  # Gold
+        "England": 0x012169,  # Navy Blue
+        "New Zealand": 0x000000,  # Black
+        "South Africa": 0x006B3F,  # Green
+        "West Indies": 0x7B0041,  # Maroon
+        "Sri Lanka": 0x003DA5,  # Blue
+        "Bangladesh": 0x006A4E,  # Green
+        "Afghanistan": 0x5363ED,  # Red
+        "Netherlands": 0xFF3600,
+        "Scotland": 0xA100F2,
+        "Ireland": 0x9DFF2E,
+        "Zimbabwe": 0xFF2121,
+        "UAE": 0xFC4444,
+        "Canada": 0xFF0000,
+        "USA": 0x080026,
+        "Italy": 0x009246,
+        "Nepal": 0xDC143C,
+        "Namibia": 0x003580,
+        "Hong Kong": 0xDE2910,
+        "Oman": 0x009A44,
+        "Papua New Guinea": 0xBF0A30,
+        "Uganda": 0xFCDC04,
+        "Malaysia": 0xCC0001,
+        "Spain": 0xAA151B,
+        "Germany": 0xDD0000,
+        "Japan": 0xBC002D,
+        "Portugal": 0x1A7A3C,
+        "Denmark": 0xC60C30
+    }
+    return colors.get(team_name, 0x808080)  # Default gray
+
+# Get team flag emoji URL (for thumbnails)
+def get_team_flag_url(team_name):
+    # Using Twemoji CDN for flag images
+    flag_codes = {
+        "India": "1f1ee-1f1f3",  # 🇮🇳
+        "Pakistan": "1f1f5-1f1f0",  # 🇵🇰
+        "Australia": "1f1e6-1f1fa",  # 🇦🇺
+        "England": "1f3f4-e0067-e0062-e0065-e006e-e0067-e007f",  # 🏴󠁧󠁢󠁥󠁮󠁧󠁿
+        "New Zealand": "1f1f3-1f1ff",  # 🇳🇿
+        "South Africa": "1f1ff-1f1e6",  # 🇿🇦
+        "West Indies": "1f3f4",  # 🏴
+        "Sri Lanka": "1f1f1-1f1f0",  # 🇱🇰
+        "Bangladesh": "1f1e7-1f1e9",  # 🇧🇩
+        "Afghanistan": "1f1e6-1f1eb",  # 🇦🇫
+        "Netherlands": "1f1f3-1f1f1",  # 🇳🇱
+        "Scotland": "1f3f4-e0067-e0062-e0073-e0063-e0074-e007f",  # 🏴󠁧󠁢󠁳󠁣󠁴󠁿
+        "Ireland": "1f1ee-1f1ea",  # 🇮🇪
+        "Zimbabwe": "1f1ff-1f1fc",  # 🇿🇼
+        "UAE": "1f1e6-1f1ea",  # 🇦🇪
+        "Canada": "1f1e8-1f1e6",  # 🇨🇦
+        "USA": "1f1fa-1f1f8",  # 🇺🇸
+        "Italy": "1f1ee-1f1f9",  # 🇮🇹
+        "Nepal": "1f1f3-1f1f5",  # 🇳🇵
+        "Namibia": "1f1f3-1f1e6",  # 🇳🇦
+        "Hong Kong": "1f1ed-1f1f0",  # 🇭🇰
+        "Oman": "1f1f4-1f1f2",  # 🇴🇲
+        "Papua New Guinea": "1f1f5-1f1ec",  # 🇵🇬
+        "Uganda": "1f1fa-1f1ec",  # 🇺🇬
+        "Malaysia": "1f1f2-1f1fe",  # 🇲🇾
+        "Spain": "1f1ea-1f1f8",  # 🇪🇸
+        "Germany": "1f1e9-1f1ea",  # 🇩🇪
+        "Japan": "1f1ef-1f1f5",  # 🇯🇵
+        "Portugal": "1f1f5-1f1f9",  # 🇵🇹
+        "Denmark": "1f1e9-1f1f0"  # 🇩🇰
+    }
+    code = flag_codes.get(team_name)
+    if code:
+        return f"https://cdnjs.cloudflare.com/ajax/libs/twemoji/14.0.2/72x72/{code}.png"
     return None
 
-def ensure_life(user_id):
-    conn = sqlite3.connect('players.db')
-    c = conn.cursor()
-    c.execute("INSERT OR IGNORE INTO player_life (user_id) VALUES (?)", (user_id,))
-    c.execute("INSERT OR IGNORE INTO social_media_accounts (user_id) VALUES (?)", (user_id,))
-    conn.commit()
-    conn.close()
-
-def update_life(user_id, **kwargs):
-    if not kwargs:
-        return
-    fields = ", ".join([f"{k} = ?" for k in kwargs])
-    values = list(kwargs.values()) + [user_id]
-    conn = sqlite3.connect('players.db')
-    c = conn.cursor()
-    c.execute(f"UPDATE player_life SET {fields} WHERE user_id = ?", values)
-    conn.commit()
-    conn.close()
-
-def get_social(user_id):
-    conn = sqlite3.connect('players.db')
-    c = conn.cursor()
-    c.execute("SELECT * FROM social_media_accounts WHERE user_id = ?", (user_id,))
-    row = c.fetchone()
-    conn.close()
-    if row:
-        cols = ["user_id","platform","followers","posts","viral_posts","total_likes","verification_status","bio","last_post"]
-        return dict(zip(cols, row))
-    return None
-
-def update_social(user_id, **kwargs):
-    if not kwargs:
-        return
-    fields = ", ".join([f"{k} = ?" for k in kwargs])
-    values = list(kwargs.values()) + [user_id]
-    conn = sqlite3.connect('players.db')
-    c = conn.cursor()
-    c.execute(f"UPDATE social_media_accounts SET {fields} WHERE user_id = ?", values)
-    conn.commit()
-    conn.close()
-
-def get_player_name(user_id):
-    conn = sqlite3.connect('players.db')
-    c = conn.cursor()
-    c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (user_id,))
-    r = c.fetchone()
-    conn.close()
-    return r[0] if r else None
-
+# Get team flag emoji
 def get_team_flag(team_name):
     flags = {
-        "India": "🇮🇳", "Pakistan": "🇵🇰", "Australia": "🇦🇺", "England": "🏴󠁧󠁢󠁥󠁮󠁧󠁿",
-        "New Zealand": "🇳🇿", "South Africa": "🇿🇦", "West Indies": "🏝️", "Sri Lanka": "🇱🇰",
-        "Bangladesh": "🇧🇩", "Afghanistan": "🇦🇫", "Netherlands": "🇳🇱", "Scotland": "🏴󠁧󠁢󠁳󠁣󠁴󠁿",
-        "Ireland": "🇮🇪", "Zimbabwe": "🇿🇼", "UAE": "🇦🇪", "Canada": "🇨🇦", "USA": "🇺🇸"
+        "India": "🇮🇳",
+        "Pakistan": "🇵🇰",
+        "Australia": "🇦🇺",
+        "England": "🏴󠁧󠁢󠁥󠁮󠁧󠁿",
+        "New Zealand": "🇳🇿",
+        "South Africa": "🇿🇦",
+        "West Indies": "🏝️",
+        "Sri Lanka": "🇱🇰",
+        "Bangladesh": "🇧🇩",
+        "Afghanistan": "🇦🇫",
+        "Netherlands": "🇳🇱",
+        "Scotland": "🏴󠁧󠁢󠁳󠁣󠁴󠁿",
+        "Ireland": "🇮🇪",
+        "Zimbabwe": "🇿🇼",
+        "UAE": "🇦🇪",
+        "Canada": "🇨🇦",
+        "USA": "🇺🇸",
+        "Italy": "🇮🇹",
+        "Nepal": "🇳🇵",
+        "Namibia": "🇳🇦",
+        "Hong Kong": "🇭🇰",
+        "Oman": "🇴🇲",
+        "Papua New Guinea": "🇵🇬",
+        "Uganda": "🇺🇬",
+        "Malaysia": "🇲🇾",
+        "Spain": "🇪🇸",
+        "Germany": "🇩🇪",
+        "Japan": "🇯🇵",
+        "Portugal": "🇵🇹",
+        "Denmark": "🇩🇰"
     }
     return flags.get(team_name, "🏳️")
 
-def format_money(amount):
-    if amount >= 1_000_000:
-        return f"${amount/1_000_000:.2f}M"
-    elif amount >= 1_000:
-        return f"${amount/1_000:.1f}K"
-    return f"${amount}"
-
-def cooldown_check(last_time_str, hours):
-    if not last_time_str:
-        return True, 0
-    try:
-        last_time = datetime.strptime(last_time_str, '%Y-%m-%d %H:%M:%S')
-        delta = datetime.utcnow() - last_time
-        remaining = timedelta(hours=hours) - delta
-        if remaining.total_seconds() <= 0:
-            return True, 0
-        return False, int(remaining.total_seconds() / 60)
-    except:
-        return True, 0
-
-def stat_bar(value, max_val=100, length=10):
-    filled = round((value / max_val) * length)
-    return "█" * filled + "░" * (length - filled)
-
-# ============================================================
-# DATA CONSTANTS
-# ============================================================
-
-CARS = {
-    "honda_civic": {"name": "Honda Civic", "emoji": "🚗", "price": 25000, "prestige": 5},
-    "bmw_m3": {"name": "BMW M3", "emoji": "🏎️", "price": 80000, "prestige": 20},
-    "mercedes_amg": {"name": "Mercedes AMG GT", "emoji": "🏎️", "price": 150000, "prestige": 35},
-    "lamborghini": {"name": "Lamborghini Huracán", "emoji": "🦄", "price": 350000, "prestige": 60},
-    "ferrari_sf": {"name": "Ferrari SF90", "emoji": "🔴", "price": 500000, "prestige": 75},
-    "bugatti": {"name": "Bugatti Chiron", "emoji": "💎", "price": 3000000, "prestige": 100},
-    "rolls_royce": {"name": "Rolls-Royce Phantom", "emoji": "👑", "price": 600000, "prestige": 90},
-    "porsche_911": {"name": "Porsche 911 Turbo", "emoji": "⚡", "price": 200000, "prestige": 45},
-}
-
-HOUSES = [
-    {"name": "Studio Apartment", "emoji": "🏠", "price": 0, "value": 50000},
-    {"name": "City Flat", "emoji": "🏢", "price": 100000, "value": 200000},
-    {"name": "Suburban House", "emoji": "🏡", "price": 400000, "value": 600000},
-    {"name": "Luxury Villa", "emoji": "🏰", "price": 1500000, "value": 2500000},
-    {"name": "Private Mansion", "emoji": "🏯", "price": 5000000, "value": 8000000},
-    {"name": "Private Island Estate", "emoji": "🌴", "price": 15000000, "value": 25000000},
-]
-
-SPONSORS = [
-    {"name": "Local Sports Shop", "emoji": "🏪", "tier": 1, "monthly": 5000, "min_fans": 5000},
-    {"name": "UrbanFit Clothing", "emoji": "👕", "tier": 2, "monthly": 20000, "min_fans": 25000},
-    {"name": "PowerDrink Energy", "emoji": "⚡", "tier": 3, "monthly": 75000, "min_fans": 100000},
-    {"name": "SportsTech Pro", "emoji": "⌚", "tier": 4, "monthly": 200000, "min_fans": 500000},
-    {"name": "GlobalAir Airlines", "emoji": "✈️", "tier": 5, "monthly": 500000, "min_fans": 1000000},
-    {"name": "Nike Cricket", "emoji": "✅", "tier": 6, "monthly": 1500000, "min_fans": 5000000},
-]
-
-SCANDAL_EVENTS = [
-    {"text": "was caught partying the night before a match! 🎉", "rep": -15, "fans": -5000, "cash": -10000, "conf": -10},
-    {"text": "got into an argument with the umpire on live TV! 📺", "rep": -10, "fans": +2000, "cash": 0, "conf": -5},
-    {"text": "was accused of ball tampering! 🏏", "rep": -25, "fans": -15000, "cash": -50000, "conf": -20},
-    {"text": "posted a controversial tweet that went viral! 🐦", "rep": -20, "fans": +10000, "cash": 0, "conf": 0},
-    {"text": "was seen driving at 200km/h on the highway! 🏎️", "rep": -5, "fans": +5000, "cash": -30000, "conf": +5},
-    {"text": "got into a locker room brawl that was caught on camera! 🥊", "rep": -20, "fans": +8000, "cash": 0, "conf": -15},
-    {"text": "skipped national team training for a brand shoot! 💸", "rep": -15, "fans": +3000, "cash": +25000, "conf": 0},
-    {"text": "was spotted at a rival team's party! 🎭", "rep": -10, "fans": +2000, "cash": 0, "conf": -5},
-    {"text": "made fun of a cricket legend in an interview! 🎤", "rep": -20, "fans": +15000, "cash": 0, "conf": +10},
-    {"text": "leaked dressing room WhatsApp messages to the press! 📱", "rep": -30, "fans": +20000, "cash": 0, "conf": -25},
-]
-
-POSITIVE_EVENTS = [
-    {"text": "saved a fan who fell in the stadium! 🦸", "rep": +20, "fans": +25000, "cash": 0, "conf": +15},
-    {"text": "donated ${} to a children's cricket academy! 🏏", "rep": +25, "fans": +20000, "cash": 0, "conf": +10},
-    {"text": "signed autographs for 3 hours outside the stadium! ✍️", "rep": +15, "fans": +12000, "cash": 0, "conf": +10},
-    {"text": "was named as role model of the year by Cricket Monthly! 🏆", "rep": +20, "fans": +30000, "cash": +50000, "conf": +15},
-    {"text": "appeared on the national TV sports show! 📺", "rep": +10, "fans": +15000, "cash": +5000, "conf": +5},
-]
-
-POST_TYPES = {
-    "training": {
-        "name": "Training Clip 🏋️",
-        "templates": [
-            "Started the day at 5am. No days off. 💪 #CricketGrind #NeverStop",
-            "The nets don't lie. Putting in work every single day. 🏏 #TrainingMode",
-            "Another session done. My coach says I'm looking sharper than ever. 🔥 #LevelUp",
-            "When the batting machine breaks after 500 balls... buy another one 😤 #Standards",
-            "Ran 10km before most people wake up. 🌅 This is the lifestyle. #Dedication",
-        ],
-        "base_likes": (500, 8000),
-        "followers_gain": (50, 500),
-        "rep_change": +2,
-        "conf_change": +3,
-    },
-    "flex": {
-        "name": "Lifestyle Flex 💎",
-        "templates": [
-            "New wheels just dropped 🔑 Life is good when you work hard. 🙏",
-            "Views from the top suite in Dubai. Not bad for a kid from the streets 🌆",
-            "Custom fitted. Dripped. Ready. 👑 #YungPlatinum",
-            "They said it couldn't be done. New house, who dis? 🏠✨",
-            "First class everywhere I go. 🛫 That's the standard now.",
-        ],
-        "base_likes": (800, 15000),
-        "followers_gain": (100, 800),
-        "rep_change": -2,
-        "conf_change": +5,
-    },
-    "apology": {
-        "name": "Public Apology 🙏",
-        "templates": [
-            "I want to sincerely apologise to everyone I've let down. I'm only human. 🙏",
-            "Mistakes happen. I own mine 100%. Working to do better every day. ❤️",
-            "To the fans who believed in me — I hear you. I'm sorry. Won't happen again. 💔",
-            "This isn't who I am. I promise I'm working on it. Thank you for your patience 🙏",
-        ],
-        "base_likes": (2000, 20000),
-        "followers_gain": (200, 1500),
-        "rep_change": +8,
-        "conf_change": -5,
-    },
-    "controversy": {
-        "name": "Controversy Bait 💣",
-        "templates": [
-            "Some people in this sport don't deserve the jersey they wear. You know who you are. 👀",
-            "Imagine being called a legend when you never faced real pressure. Interesting. 🤔",
-            "Rankings are rigged. Fight me. 😤 #Truth",
-            "A certain team's captain needs to learn what leadership actually means. 🎭",
-            "Not naming names but some players' attitude in the locker room is absolutely SHOCKING 🤯",
-        ],
-        "base_likes": (5000, 50000),
-        "followers_gain": (500, 5000),
-        "rep_change": -10,
-        "conf_change": +8,
-    },
-    "motivation": {
-        "name": "Motivational Quote 🌟",
-        "templates": [
-            "\"Champions are made in the moments nobody sees.\" — remembering why I started. 🏏",
-            "Every ball I face today is a story I'll tell my kids one day. 🌟",
-            "Pain is temporary. Legacy is forever. 💪 #CricketLife",
-            "Not here for applause. Here for the craft. 🙏 #Purpose",
-            "Rise and grind. Today is another chance to be great. ☀️",
-        ],
-        "base_likes": (1500, 12000),
-        "followers_gain": (100, 800),
-        "rep_change": +3,
-        "conf_change": +2,
-    },
-    "matchday": {
-        "name": "Match Day Hype 🏟️",
-        "templates": [
-            "MATCHDAY. 🏟️ Blood, sweat and glory starts NOW. Let's GO!!!",
-            "Headphones in. Tunnel vision locked. Matchday. 🔒🎵",
-            "For everyone who ever doubted us — watch this space. 🏏🔥",
-            "Family, flag, and pride on the line today. Won't let anyone down. 🙏🇮🇳",
-            "The dressing room is electric right now. Can't wait for the nation to see this. 💪",
-        ],
-        "base_likes": (3000, 30000),
-        "followers_gain": (300, 2500),
-        "rep_change": +5,
-        "conf_change": +7,
-    },
-}
-
-TRASH_TALK_LINES = [
-    "My warm-up lasts longer than your whole innings 😂",
-    "You bowl like you're apologising to the batsman 🎳",
-    "Your batting average couldn't fill a cricket scoreboard 📉",
-    "I've seen more dangerous play in under-10 matches 👶",
-    "Your career is shorter than a T5 match 💀",
-    "My worst practice session is better than your best match 🤷",
-    "They only picked you to make the numbers look right 🔢",
-    "You're the reason cricket needs a mercy rule 😭",
-    "I've had drinks that lasted longer than your batting 🥤",
-    "The only record you'll break is 'most balls survived doing nothing' 😴",
-]
-
-PRESS_QUESTIONS = [
-    {
-        "question": "Critics are saying you've been underperforming. Your response?",
-        "options": {
-            "A": {"text": "I'm working hard. Results will follow.", "rep": +5, "conf": +3, "fans": +1000},
-            "B": {"text": "Critics don't have a bat in hand. Let them try.", "rep": -5, "conf": +10, "fans": +5000},
-            "C": {"text": "No comment.", "rep": -3, "conf": 0, "fans": -2000},
-        }
-    },
-    {
-        "question": "There are rumours of a rift in the dressing room. True?",
-        "options": {
-            "A": {"text": "Absolutely not, we're a family.", "rep": +5, "conf": +2, "fans": +500},
-            "B": {"text": "What happens in the dressing room stays there.", "rep": +3, "conf": 0, "fans": +1000},
-            "C": {"text": "I'll say this — some need to check their ego.", "rep": -10, "conf": +8, "fans": +8000},
-        }
-    },
-    {
-        "question": "How do you respond to being dropped from the squad?",
-        "options": {
-            "A": {"text": "I respect the selectors' decision. I'll work harder.", "rep": +8, "conf": -5, "fans": +2000},
-            "B": {"text": "I disagree. I deserved that spot.", "rep": -5, "conf": +5, "fans": +4000},
-            "C": {"text": "It's political. Nothing to do with performance.", "rep": -15, "conf": +10, "fans": +10000},
-        }
-    },
-    {
-        "question": "What's your message to young cricketers watching?",
-        "options": {
-            "A": {"text": "Believe in your dream and work relentlessly.", "rep": +10, "conf": +5, "fans": +5000},
-            "B": {"text": "Get a good agent first. This sport is a business.", "rep": -5, "conf": +3, "fans": +3000},
-            "C": {"text": "Watch me. I'll show you how it's done.", "rep": -2, "conf": +8, "fans": +2000},
-        }
-    },
-    {
-        "question": "Will you be announcing your retirement soon?",
-        "options": {
-            "A": {"text": "I've got years left. Count me in.", "rep": +5, "conf": +8, "fans": +3000},
-            "B": {"text": "I'll go when cricket says goodbye, not when critics do.", "rep": +8, "conf": +10, "fans": +6000},
-            "C": {"text": "Maybe. I haven't decided. It's complicated.", "rep": -5, "conf": -5, "fans": -3000},
-        }
-    },
-]
-
-LOCKER_ROOM_MESSAGES = [
-    "Bro you were 🔥 in today's match, the crowd went MAD",
-    "Between us - our captain has absolutely no idea what he's doing 😭",
-    "Who keeps leaving their pads in the middle of the room?? 😤",
-    "The team dinner was goated ngl 🍗 feeling locked in for tomorrow",
-    "Bro you HAVE to get that haircut before the next match 💀",
-    "Did you see coach's face when you hit that six? PRICELESS 😂",
-    "Secret: I listen to pop music before every match. Don't tell anyone 🎵",
-    "I'm so nervous for tomorrow I can't sleep 😰",
-    "Bro your celebration after that wicket had me DEAD 💀",
-    "Honestly? I think we're winning this tournament. Don't jinx it 🤫",
-]
-
-MARITAL_STATUSES = ["Single", "In a Relationship", "Engaged", "Married", "It's Complicated", "Divorced"]
-
-RELATIONSHIP_EVENTS = [
-    "Your partner surprised you at the stadium! +10 happiness 🥰",
-    "Date night after a long tour. Feeling recharged! +15 happiness 💑",
-    "Relationship drama leaked to the press! -10 rep 😬",
-    "Partner gave you a pep talk before the match. +8 confidence! 💪",
-    "Anniversary dinner at a 5-star restaurant. -$2000 💸",
-]
-
-
-# ============================================================
-# AI FEED HELPERS
-# ============================================================
-
-def get_cricket_players():
-    """Load player names from players.json (simple list for fallback usage)."""
-    players = []
-    try:
-        with open('players.json', 'r') as f:
-            data = json.load(f)
-            if isinstance(data, list):
-                for team_entry in data:
-                    if isinstance(team_entry, dict) and 'players' in team_entry:
-                        for p in team_entry['players']:
-                            name = p.get('name', '')
-                            if name:
-                                players.append(name)
-                    elif isinstance(team_entry, dict):
-                        name = team_entry.get('name') or team_entry.get('player_name') or team_entry.get('fullName', '')
-                        if name:
-                            players.append(name)
-                    elif isinstance(team_entry, str):
-                        players.append(team_entry)
-    except Exception:
-        pass
-
-    if not players:
-        players = [
-            "Virat Kohli", "Rohit Sharma", "MS Dhoni", "Jasprit Bumrah",
-            "Babar Azam", "Shaheen Afridi", "Mohammad Rizwan",
-            "Pat Cummins", "Steve Smith", "David Warner",
-            "Ben Stokes", "Joe Root", "Jos Buttler",
-            "Kane Williamson", "Trent Boult",
-            "Kagiso Rabada", "Quinton de Kock",
-            "Shakib Al Hasan", "Rashid Khan"
-        ]
-    return players[:40]
-
-
-def get_feed_player_data(bot=None):
-    """
-    Returns a rich dict of claimed players with their stats and discord username.
-    Used to inject real bot data into the AI feed prompt.
-    Format: {player_name: {discord: "@username", team: "India", runs: 340, wickets: 12,
-                           economy: 6.4, strike_rate: 142.0, matches: 8, highest: 67,
-                           best_bowling: "3/24", centuries: 0, fifties: 2, impact: 424}}
-    """
-    result = {}
-    try:
-        conn = sqlite3.connect('players.db')
-        c = conn.cursor()
-
-        # Get all claimed players with user_id
-        c.execute("""
-            SELECT pr.player_name, pr.user_id
-            FROM player_representatives pr
-            WHERE pr.player_name IS NOT NULL
-        """)
-        claimed = c.fetchall()
-
-        for player_name, user_id in claimed:
-            # Career batting + bowling stats
-            c.execute("""
-                SELECT
-                    SUM(runs) as total_runs,
-                    SUM(balls_faced) as total_balls,
-                    SUM(wickets) as total_wkts,
-                    SUM(balls_bowled) as balls_bowled,
-                    SUM(runs_conceded) as runs_conceded,
-                    SUM(not_out) as not_outs,
-                    COUNT(*) as matches,
-                    MAX(runs) as highest,
-                    MAX(wickets) as best_wkts
-                FROM match_stats WHERE user_id = ?
-            """, (user_id,))
-            row = c.fetchone()
-
-            # Tournament points table - find team
-            team = None
-            try:
-                with open('players.json', 'r') as f:
-                    teams_data = json.load(f)
-                for td in teams_data:
-                    if isinstance(td, dict) and 'players' in td:
-                        for p in td['players']:
-                            if p.get('name') == player_name:
-                                team = td.get('team')
-                                break
-            except Exception:
-                pass
-
-            # Discord username lookup via bot
-            discord_handle = f"@{player_name.lower().replace(' ', '_')}"
-            if bot:
-                try:
-                    # Try to find the member across guilds the bot is in
-                    for guild in bot.guilds:
-                        member = guild.get_member(user_id)
-                        if member:
-                            discord_handle = f"@{member.name}"
-                            break
-                except Exception:
-                    pass
-            else:
-                # Fallback: store user_id so we can look up later
-                discord_handle = f"uid:{user_id}"
-
-            if row and row[0] is not None:
-                total_runs = int(row[0] or 0)
-                total_balls_faced = int(row[1] or 0)
-                total_wkts = int(row[2] or 0)
-                balls_bowled = int(row[3] or 0)
-                runs_conceded = int(row[4] or 0)
-                not_outs = int(row[5] or 0)
-                matches = int(row[6] or 0)
-                highest = int(row[7] or 0)
-                best_wkts = int(row[8] or 0)
-
-                sr = round((total_runs / total_balls_faced * 100), 1) if total_balls_faced > 0 else 0.0
-                eco = round((runs_conceded / (balls_bowled / 6)), 2) if balls_bowled > 0 else 0.0
-                dismissals = matches - not_outs
-                avg = round(total_runs / dismissals, 1) if dismissals > 0 else total_runs
-
-                # Centuries and fifties
-                c.execute("SELECT COUNT(*) FROM match_stats WHERE user_id = ? AND runs >= 100", (user_id,))
-                centuries = c.fetchone()[0]
-                c.execute("SELECT COUNT(*) FROM match_stats WHERE user_id = ? AND runs >= 50 AND runs < 100", (user_id,))
-                fifties = c.fetchone()[0]
-
-                # Best bowling figures: max wickets in one match, least runs that match
-                c.execute("""
-                    SELECT wickets, runs_conceded FROM match_stats
-                    WHERE user_id = ? AND wickets > 0
-                    ORDER BY wickets DESC, runs_conceded ASC LIMIT 1
-                """, (user_id,))
-                bb_row = c.fetchone()
-                best_bowling = f"{bb_row[0]}/{bb_row[1]}" if bb_row else "0/0"
-
-                # Impact points formula from cricket_stats.py
-                c.execute("""
-                    SELECT SUM(
-                        runs + (wickets * 7) +
-                        CASE WHEN wickets >= 5 THEN 70 WHEN wickets >= 3 THEN 40 ELSE 0 END +
-                        CASE WHEN runs >= 100 THEN 100 WHEN runs >= 50 THEN 65 ELSE 0 END
-                    ) FROM match_stats WHERE user_id = ?
-                """, (user_id,))
-                impact_row = c.fetchone()
-                impact = int(impact_row[0] or 0)
-
-                result[player_name] = {
-                    'discord': discord_handle,
-                    'team': team or 'Unknown',
-                    'matches': matches,
-                    'runs': total_runs,
-                    'balls_faced': total_balls_faced,
-                    'strike_rate': sr,
-                    'average': avg,
-                    'highest': highest,
-                    'centuries': centuries,
-                    'fifties': fifties,
-                    'wickets': total_wkts,
-                    'economy': eco,
-                    'best_bowling': best_bowling,
-                    'impact': impact,
-                }
-            else:
-                # Claimed but no stats yet
-                result[player_name] = {
-                    'discord': discord_handle,
-                    'team': team or 'Unknown',
-                    'matches': 0,
-                    'runs': 0, 'balls_faced': 0, 'strike_rate': 0.0,
-                    'average': 0.0, 'highest': 0, 'centuries': 0, 'fifties': 0,
-                    'wickets': 0, 'economy': 0.0, 'best_bowling': '0/0', 'impact': 0,
-                }
-
-        conn.close()
-    except Exception as e:
-        pass
-
-    return result
-
-
-def get_tournament_context():
-    """Get active tournament standings for feed context."""
-    try:
-        conn = sqlite3.connect('players.db')
-        c = conn.cursor()
-        c.execute("""
-            SELECT t.name, tt.team_name, tt.points, tt.wins, tt.losses, tt.nrr, tt.matches_played
-            FROM tournaments t
-            JOIN tournament_teams tt ON t.id = tt.tournament_id
-            WHERE t.is_active = 1 AND t.is_archived = 0
-            ORDER BY tt.points DESC, tt.nrr DESC
-        """)
-        rows = c.fetchall()
-        conn.close()
-        if not rows:
-            return None, []
-        tourney_name = rows[0][0]
-        standings = [
-            {'team': r[1], 'pts': r[2], 'wins': r[3], 'losses': r[4], 'nrr': r[5], 'played': r[6]}
-            for r in rows
-        ]
-        return tourney_name, standings
-    except Exception:
-        return None, []
-
-
-import time as _time
-
-# Fallback posts used when Gemini is rate-limited
-FALLBACK_POSTS = {
-    'english': [
-        {"handle": "@cricket_soul99", "bio": "🏏 Cricket is religion", "content": "That last over was absolutely INSANE! The bowler was on fire, gave nothing away under pressure. This is what cricket is all about 🔥 #Cricket #T20", "likes": 847, "comments": 34, "time": "2h ago", "language": "english"},
-        {"handle": "@stump_mic_fan", "bio": "Watching cricket since 1992 📺", "content": "People sleeping on how good Bumrah has been this series. 4 wickets and economy of 4.2? Absolute weapon. No one else comes close right now 💪 #Bumrah", "likes": 2341, "comments": 89, "time": "5h ago", "language": "english"},
-        {"handle": "@sixhitter_vibes", "bio": "T20 addict | IPL every season", "content": "Unpopular opinion: Test cricket is still the ultimate format. Nothing tests a player's character like 5 days of pressure. Change my mind. 🏏 #TestCricket", "likes": 512, "comments": 156, "time": "1d ago", "language": "english"},
-        {"handle": "@yorker_king_fan", "bio": "Fast bowling enthusiast ⚡", "content": "That cover drive in the last match was poetry. Textbook technique, perfect timing. The batting coach must be proud 😍 #Cricket", "likes": 1203, "comments": 41, "time": "3h ago", "language": "english"},
-    ],
-    'hinglish': [
-        {"handle": "@desi_cricket_bhai", "bio": "Dil se cricket fan 🇮🇳", "content": "Yaar aaj ki innings toh kamaal thi! Bilkul mast batting ki usne, bhai logo ko samajh nahi aata iski value 🔥 #Cricket #India", "likes": 1847, "comments": 67, "time": "1h ago", "language": "hinglish"},
-        {"handle": "@rohit_gang_official", "bio": "Hitman ka fan forever 💙", "content": "Bhai yeh log kya bolte rehte hain drop karo drop karo — ek match mein hi saara hisaab chukta kar diya usne 😤 Iski class dekho phir baat karo 🙌", "likes": 3421, "comments": 203, "time": "4h ago", "language": "hinglish"},
-        {"handle": "@cricket_masala_daily", "bio": "Cricket gossip & updates 🏏", "content": "Kya scene hai yaar! Jab se naya captain aaya hai team ka mood hi alag hai. Ekdum positive vibes, sab ek saath khel rahe hain. Love to see it 🥹 #TeamIndia", "likes": 892, "comments": 55, "time": "6h ago", "language": "hinglish"},
-        {"handle": "@ipl_fanatic_007", "bio": "IPL har season dekhta hoon 👀", "content": "Bhai honestly bol raha hoon iski tara koi bowl nahi kar sakta abhi. Woh angle, woh pace — matlab yaar dil khush ho gaya aaj 🎯 #Cricket", "likes": 2109, "comments": 78, "time": "2h ago", "language": "hinglish"},
-    ],
-}
-
-def _get_fallback_posts(language_filter: str) -> list:
-    """Return shuffled fallback posts when API is unavailable."""
-    if language_filter == 'english':
-        posts = list(FALLBACK_POSTS['english'])
-    elif language_filter == 'hinglish':
-        posts = list(FALLBACK_POSTS['hinglish'])
-    else:
-        posts = list(FALLBACK_POSTS['english'][:2]) + list(FALLBACK_POSTS['hinglish'][:2])
-    random.shuffle(posts)
-    # Randomise likes/comments slightly so it feels fresh
-    for p in posts:
-        p = dict(p)
-        p['likes'] = max(10, p['likes'] + random.randint(-200, 400))
-        p['comments'] = max(1, p['comments'] + random.randint(-10, 30))
-    return posts
-
-
-def call_openrouter_sync(prompt: str, max_tokens: int = 2000) -> str:
-    """
-    Call OpenRouter with automatic key rotation on 429.
-    Tries every non-limited key in _OR_KEYS; raises RuntimeError("RATE_LIMITED")
-    only when all keys are exhausted for today.
-    """
-    if not _OR_KEYS:
-        raise RuntimeError("OPENROUTER_API_KEY is not set. Add it to your Koyeb environment variables.")
-
-    payload_str = json.dumps({
-        "model": OPENROUTER_MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 1.0,
-        "max_tokens": max_tokens
-    })
-
-    for key in _OR_KEYS:
-        # Skip keys already rate-limited today
-        if _time.time() < _OR_KEY_LIMITED_UNTIL.get(key, 0):
-            continue
-
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {key}",
-            "HTTP-Referer": "https://discord-cricket-bot.replit.app",
-            "X-Title": "Cricket Discord Bot"
-        }
-
-        for attempt in range(1, 4):
-            payload = payload_str.encode('utf-8')
-            req = urllib.request.Request(OPENROUTER_API_URL, data=payload, headers=headers, method="POST")
-            try:
-                with urllib.request.urlopen(req, timeout=120) as resp:
-                    data = json.loads(resp.read().decode('utf-8'))
-                    # Proxy may return 200 with an error body instead of an HTTP error code
-                    if 'choices' not in data:
-                        err_msg = (data.get('error') or data.get('message') or str(data))
-                        if isinstance(err_msg, dict):
-                            err_msg = err_msg.get('message', str(err_msg))
-                        print(f"[OPENROUTER] Key …{key[-6:]} attempt {attempt}: no choices — {str(err_msg)[:200]}")
-                        _time.sleep(3)
-                        continue
-                    text = data['choices'][0]['message']['content']
-                    if text is None:
-                        print(f"[OPENROUTER] Key …{key[-6:]} attempt {attempt}: null content, retrying...")
-                        _time.sleep(2)
-                        continue
-                    print(f"[OPENROUTER] OK key …{key[-6:]} (attempt {attempt}) — {len(text)} chars")
-                    return text
-            except urllib.error.HTTPError as e:
-                body = ""
-                try:
-                    body = e.read().decode('utf-8', errors='replace')[:400]
-                except Exception:
-                    pass
-                print(f"[OPENROUTER] HTTP {e.code} key …{key[-6:]}: {body}")
-                if e.code == 429:
-                    # Parse reset timestamp from the error body if available
-                    reset_ms = None
-                    try:
-                        err_data = json.loads(body)
-                        reset_ms = (err_data.get('error', {})
-                                    .get('metadata', {})
-                                    .get('headers', {})
-                                    .get('X-RateLimit-Reset'))
-                    except Exception:
-                        pass
-                    _or_mark_limited(key, reset_ms)
-                    break  # stop retrying this key, move to next
-                raise RuntimeError(f"OpenRouter API error: HTTP {e.code} — {body}")
-            except RuntimeError:
-                raise
-            except Exception as e:
-                print(f"[OPENROUTER] Exception key …{key[-6:]} (attempt {attempt}): {type(e).__name__}: {e}")
-                if attempt < 3:
-                    _time.sleep(2)
-                else:
-                    raise RuntimeError(f"OpenRouter API error: {e}")
-        # inner loop ended without returning — key was 429'd, try next
-
-    raise RuntimeError("RATE_LIMITED")  # all keys exhausted
-
-
-async def call_openrouter(prompt: str, max_tokens: int = 2000) -> str:
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, call_openrouter_sync, prompt, max_tokens)
-
-
-def _repair_truncated_json(raw: str) -> str:
-    """Rescue a truncated JSON array by keeping only complete objects."""
-    last_brace = raw.rfind('}')
-    if last_brace == -1:
-        raise ValueError("No complete JSON object found in response")
-    truncated = raw[:last_brace + 1].strip()
-    truncated = re.sub(r',\s*$', '', truncated)
-    if not truncated.startswith('['):
-        truncated = '[' + truncated
-    if not truncated.endswith(']'):
-        truncated += ']'
-    return truncated
-
-
-# ── CricketGram auto-post config ─────────────────────────────────────────────
-CRICKETGRAM_CHANNEL_ID = 1528790960908013610
-
-TEAM_FLAG_URLS = {
-    'india':         'https://flagcdn.com/w160/in.png',
-    'pakistan':      'https://flagcdn.com/w160/pk.png',
-    'australia':     'https://flagcdn.com/w160/au.png',
-    'england':       'https://flagcdn.com/w160/gb-eng.png',
-    'south africa':  'https://flagcdn.com/w160/za.png',
-    'new zealand':   'https://flagcdn.com/w160/nz.png',
-    'sri lanka':     'https://flagcdn.com/w160/lk.png',
-    'bangladesh':    'https://flagcdn.com/w160/bd.png',
-    'afghanistan':   'https://flagcdn.com/w160/af.png',
-    'zimbabwe':      'https://flagcdn.com/w160/zw.png',
-    'ireland':       'https://flagcdn.com/w160/ie.png',
-    'netherlands':   'https://flagcdn.com/w160/nl.png',
-    'scotland':      'https://flagcdn.com/w160/gb-sct.png',
-    'uae':           'https://flagcdn.com/w160/ae.png',
-    'kenya':         'https://flagcdn.com/w160/ke.png',
-    'canada':        'https://flagcdn.com/w160/ca.png',
-    'usa':           'https://flagcdn.com/w160/us.png',
-    'united states': 'https://flagcdn.com/w160/us.png',
-    'namibia':       'https://flagcdn.com/w160/na.png',
-    'nepal':         'https://flagcdn.com/w160/np.png',
-    'oman':          'https://flagcdn.com/w160/om.png',
-    'uganda':        'https://flagcdn.com/w160/ug.png',
-    'papua new guinea': 'https://flagcdn.com/w160/pg.png',
-}
-
-def _team_flag_url(team: str) -> str:
-    return TEAM_FLAG_URLS.get(team.lower().strip(), '')
-
-def _get_player_uid_map() -> dict:
-    """Returns {player_name: user_id} from the DB."""
-    try:
-        conn = sqlite3.connect('players.db')
-        c = conn.cursor()
-        c.execute("SELECT player_name, user_id FROM player_representatives WHERE player_name IS NOT NULL")
-        result = {row[0]: row[1] for row in c.fetchall()}
-        conn.close()
-        return result
-    except Exception:
-        return {}
-
-
-async def _build_cricketgram_embed(post: dict, uid_map: dict, bot) -> discord.Embed:
-    """Build a Discord embed for one CricketGram auto-post."""
-    title       = post.get('title', 'CricketGram')
-    handle      = post.get('handle', '@fan')
-    player_name = post.get('player_name', '')
-    player_disc = post.get('player_discord', '').lstrip('@')
-    player_team = post.get('player_team', '')
-    content     = post.get('content', '')
-    likes       = post.get('likes', 0)
-    cmts        = post.get('comments', 0)
-    time_ago    = post.get('time', 'recently')
-
-    is_team_post = not player_disc  # no discord handle = team-focused post
-
-    # Look up the player's actual custom emoji from bot guilds
-    player_emoji_str = ''
-    if not is_team_post and player_name and bot:
-        _ename = ''.join(c if c.isalnum() or c == '_' else '_' for c in player_name)[:32]
-        for _g in bot.guilds:
-            _eo = discord.utils.get(_g.emojis, name=_ename)
-            if _eo:
-                player_emoji_str = str(_eo)
-                break
-
-    # Append player signature for player posts
-    if not is_team_post and player_name and player_disc:
-        flag = get_team_flag(player_team)
-        _emoji_part = player_emoji_str if player_emoji_str else '🏏'
-        content = f"{content}\n\n**━ {_emoji_part} {player_name} (__@{player_disc}__) {flag}**"
-
-    embed = discord.Embed(title=title, description=content, color=0xE1306C)
-
-    # Author icon: random image
-    embed.set_author(name=handle, icon_url=f"https://picsum.photos/seed/{random.randint(1, 9999)}/64/64")
-
-    # Thumbnail: player's Discord pfp (player posts) or team flag (team posts)
-    thumbnail_url = None
-    if is_team_post:
-        team_for_flag = player_team or player_name
-        thumbnail_url = _team_flag_url(team_for_flag) or None
-    else:
-        uid = uid_map.get(player_name)
-        if uid and bot:
-            try:
-                user = bot.get_user(int(uid)) or await bot.fetch_user(int(uid))
-                if user:
-                    thumbnail_url = str(user.display_avatar.url)
-            except Exception:
-                pass
-
-    if thumbnail_url:
-        embed.set_thumbnail(url=thumbnail_url)
-
-    embed.set_footer(text=f"❤️ {likes:,}  💬 {cmts}  ·  {time_ago}")
-    return embed
-
-async def _post_cricketgram_batch(bot, page: int):
-    """Generate 1 post via one API call and send it to the channel."""
-    channel = bot.get_channel(CRICKETGRAM_CHANNEL_ID)
-    if not channel:
-        print(f"[BG_FEED] Channel {CRICKETGRAM_CHANNEL_ID} not found — skipping")
-        return
-
-    player_data = get_feed_player_data(bot=bot)
-    tourney_name, standings = get_tournament_context()
-    if not player_data:
-        simple_players = get_cricket_players()
-        player_data = {p: {'discord': f'@{p.lower().split()[0]}fan', 'team': 'Unknown',
-                           'matches': 0, 'runs': 0, 'wickets': 0, 'strike_rate': 0.0,
-                           'economy': 0.0, 'average': 0.0, 'highest': 0, 'best_bowling': '0/0',
-                           'centuries': 0, 'fifties': 0, 'impact': 0}
-                       for p in simple_players}
-
-    prompt = build_feed_prompt(player_data, 'all', page, tourney_name, standings)
-    raw = await call_openrouter(prompt)
-    raw = raw.strip()
-    s = raw.find('['); e = raw.rfind(']')
-    if s != -1 and e != -1 and e > s:
-        raw = raw[s:e + 1]
-    raw = re.sub(r',\s*([}\]])', r'\1', raw)
-    try:
-        posts = json.loads(raw)
-    except json.JSONDecodeError:
-        raw = _repair_truncated_json(raw)
-        try:
-            posts = json.loads(raw)
-        except json.JSONDecodeError:
-            print(f"[BG_FEED] Skipping batch — unparseable JSON from API")
-            return
-
-    uid_map = _get_player_uid_map()
-    sent = 0
-    for post in posts:
-        try:
-            embed = await _build_cricketgram_embed(post, uid_map, bot)
-            await channel.send(embed=embed)
-            await asyncio.sleep(1)
-            sent += 1
-        except Exception as ex:
-            print(f"[BG_FEED] Failed to send post: {ex}")
-
-    print(f"[BG_FEED] Batch {page} — sent {sent}/{len(posts)} posts to channel")
-
-
-async def background_feed_generator(bot):
-    """
-    Every 5 minutes: one API call → 1 post → sent to CRICKETGRAM_CHANNEL_ID.
-    Automatically pauses when API keys are rate-limited and resumes after reset.
-    """
-    _page = 0
-    await asyncio.sleep(5)  # brief pause for bot to finish connecting
-    print("[BG_FEED] Bot online — sending first CricketGram post now...")
-
-    while True:
-        if all_keys_limited():
-            now = _time.time()
-            earliest_reset = min(_OR_KEY_LIMITED_UNTIL.get(k, now) for k in _OR_KEYS)
-            wait = max(60, earliest_reset - now + 5)
-            print(f"[BG_FEED] All keys rate-limited — sleeping {int(wait//60)}m")
-            await asyncio.sleep(wait)
-            continue
-
-        try:
-            await _post_cricketgram_batch(bot, _page)
-            _page += 1
-        except Exception as e:
-            print(f"[BG_FEED] Batch {_page} failed: {e}")
-
-        await asyncio.sleep(90)  # 90 seconds
-
-
-def start_feed_background_gen(bot):
-    """Call from on_ready after the playerlife cog is loaded."""
-    asyncio.get_event_loop().create_task(background_feed_generator(bot))
-
-
-# ─────────────────────────────────────────────────────────────
-# FAN DISCUSSION — webhook-based chat in dedicated channel
-# ─────────────────────────────────────────────────────────────
-DISCUSSION_CHANNEL_ID = 1528839693897044159
-_discussion_webhook = None
-
-# Shared history — written by background loop AND on_message listener
-_discussion_history: list = []   # {"username": str, "message": str, "is_user": bool}
-_user_topic_pending: bool  = False  # flag: a real user just posted, prioritise their topic
-
-def inject_user_message(display_name: str, message: str):
-    """Called from on_message when a real user posts in the discussion channel."""
-    global _user_topic_pending
-    _discussion_history.append({"username": display_name, "message": message, "is_user": True})
-    if len(_discussion_history) > 25:
-        _discussion_history.pop(0)
-    _user_topic_pending = True
-    print(f"[DISCUSSION] User topic injected from @{display_name}: {message[:60]}")
-
-_FAN_NAMES = [
-    "cricket_soul", "sixhitter_vibes", "stump_mic_fan", "yorker_king",
-    "desi_cricket_bhai", "ipl_fanatic", "test_purist", "boundary_bandit",
-    "powerplay_pete", "googly_master", "cricket_nerd", "match_analyst",
-    "t20_king_fan", "odi_specialist", "pace_fan", "spinners_rule",
-    "cricket_banter", "thegoat_debates", "wicket_watcher", "crease_keeper",
-    "sixer_sanjay", "cover_drive_fan", "bowledhim_bro", "runrate_ranger",
-    "pitch_report", "duck_out", "over_the_top", "no_ball_bro",
-    "drs_review_fan", "freehit_king", "lofted_drive", "sweep_shot_stan",
-]
-
-
-async def _get_discussion_webhook(bot):
-    """Fetch or create the single persistent webhook for the discussion channel."""
-    global _discussion_webhook
-    if _discussion_webhook:
-        return _discussion_webhook
-    channel = bot.get_channel(DISCUSSION_CHANNEL_ID)
-    if not channel:
-        return None
-    try:
-        webhooks = await channel.webhooks()
-        for wh in webhooks:
-            if wh.name == "CricketGram Discussion":
-                _discussion_webhook = wh
-                return _discussion_webhook
-        _discussion_webhook = await channel.create_webhook(name="CricketGram Discussion")
-        return _discussion_webhook
-    except Exception as e:
-        print(f"[DISCUSSION] Webhook setup error: {e}")
-        return None
-
-
-async def _generate_discussion_msg(player_data: dict, history: list, user_topic_active: bool) -> dict:
-    """Ask AI for one fan discussion message. Returns dict with message + reply info."""
-    # Build player reference block
-    player_lines = []
-    for pname, pd in list(player_data.items())[:20]:
-        disc = pd.get('discord', '')
-        team = pd.get('team', 'Unknown')
-        em   = pd.get('emoji', '')
-        runs = pd.get('runs', 0)
-        wkts = pd.get('wickets', 0)
-        if em:
-            player_lines.append(f"  {em} **{pname}** ({disc}) — {team}, {runs}r/{wkts}w")
-        else:
-            player_lines.append(f"  **{pname}** ({disc}) — {team}, {runs}r/{wkts}w")
-    player_block = "\n".join(player_lines) or "  (no claimed players yet)"
-
-    # Build history block — highlight real user messages
-    hist_parts = []
-    user_msgs  = []
-    for h in history[-8:]:
-        prefix = "🔵 [REAL USER] " if h.get('is_user') else ""
-        hist_parts.append(f"  {prefix}{h['username']}: {h['message']}")
-        if h.get('is_user'):
-            user_msgs.append(h)
-    hist_block = ("Recent chat:\n" + "\n".join(hist_parts)) if hist_parts else ""
-
-    # Topic drift instruction when a real user has posted
-    if user_topic_active and user_msgs:
-        latest_user = user_msgs[-1]
-        topic_instruction = (
-            f'⚠️ PRIORITY: A REAL USER (@{latest_user["username"]}) just said: '
-            f'"{latest_user["message"]}" — your message MUST engage with their topic. '
-            f'React to it, answer it, agree/disagree with it, or expand on it.'
-        )
-    else:
-        topic_instruction = ""
-
-    # Reply logic — prefer replying to the real user when topic is active
-    is_reply = bool(history) and random.random() < 0.45
-    reply_target = None
-    if is_reply:
-        if user_topic_active and user_msgs:
-            reply_target = user_msgs[-1]  # always reply to real user first
-        else:
-            pool = history[-4:] if len(history) >= 4 else history
-            reply_target = random.choice(pool)
-
-    reply_instruction = (
-        f'You are REPLYING to @{reply_target["username"]} who said: "{reply_target["message"]}"'
-        if reply_target else
-        "Continue the discussion naturally."
-    )
-
-    prompt = f"""You are a passionate cricket fan chatting in a Discord cricket server.
-
-=== CLAIMED PLAYERS (use this exact format when mentioning them) ===
-{player_block}
-
-{hist_block}
-
-{topic_instruction}
-
-TASK: Write ONE Discord chat message (1-3 sentences, max 150 chars total).
-{reply_instruction}
-
-Rules:
-- Casual Discord tone — abbreviations, slang, banter welcome
-- Cricket-focused: stats, opinions, predictions, banter, debates
-- When mentioning a claimed player, write: {{emoji}} **{{PlayerName}} ({{@discord}})** 
-- 0-2 emojis max; no emoji at the very start
-- No surrounding quotation marks
-- Be specific and opinionated
-
-Return ONLY a JSON object, no markdown:
-{{"message": "your message here", "is_reply": {"true" if is_reply else "false"}, "reply_to_username": "{reply_target['username'] if reply_target else ''}"}}"""
-
-    raw = await call_openrouter(prompt, max_tokens=250)
-    raw = raw.strip()
-    s = raw.find('{'); e = raw.rfind('}')
-    if s != -1 and e != -1:
-        raw = raw[s:e + 1]
-    raw = re.sub(r',\s*([}\]])', r'\1', raw)
-    return json.loads(raw)
-
-
-async def background_fan_discussion(bot):
-    """Send AI-generated fan chat via webhook every 8 seconds."""
-    global _user_topic_pending
-    await asyncio.sleep(15)  # let bot fully connect first
-    print("[DISCUSSION] Fan discussion task started.")
-
-    # Cache player data + emojis, refresh every 5 minutes
-    _player_cache: dict = {}
-    _cache_ts: float = 0.0
-
-    while True:
-        try:
-            webhook = await _get_discussion_webhook(bot)
-            if not webhook:
-                await asyncio.sleep(15)
-                continue
-
-            # Refresh player data every 5 min
-            import time as _t
-            now = _t.time()
-            if now - _cache_ts > 300 or not _player_cache:
-                _player_cache = get_feed_player_data(bot=bot)
-                for pname in list(_player_cache.keys()):
-                    _en = ''.join(c if c.isalnum() or c == '_' else '_' for c in pname)[:32]
-                    _ef = ''
-                    for _g in bot.guilds:
-                        _eo = discord.utils.get(_g.emojis, name=_en)
-                        if _eo:
-                            _ef = str(_eo)
-                            break
-                    _player_cache[pname]['emoji'] = _ef
-                _cache_ts = now
-
-            topic_active = _user_topic_pending
-            result = await _generate_discussion_msg(_player_cache, _discussion_history, topic_active)
-
-            message_text = result.get('message', '').strip()
-            if not message_text:
-                await asyncio.sleep(15)
-                continue
-
-            is_reply       = result.get('is_reply', False)
-            reply_username = result.get('reply_to_username', '').strip('@').strip()
-
-            final_content = (
-                f"**REPLY TO: @{reply_username}**\n{message_text}"
-                if is_reply and reply_username else
-                message_text
-            )
-
-            username   = random.choice(_FAN_NAMES) + str(random.randint(1, 9999))
-            avatar_url = f"https://picsum.photos/seed/{random.randint(1, 99999)}/128/128"
-
-            await webhook.send(content=final_content, username=username, avatar_url=avatar_url)
-
-            _discussion_history.append({"username": username, "message": message_text, "is_user": False})
-            if len(_discussion_history) > 25:
-                _discussion_history.pop(0)
-
-            # Clear the user-topic flag after the first fan response addresses it
-            if topic_active:
-                _user_topic_pending = False
-
-            print(f"[DISCUSSION] Sent as @{username} (reply={is_reply}, user_topic={topic_active})")
-
-        except Exception as exc:
-            print(f"[DISCUSSION] Error: {exc}")
-
-        await asyncio.sleep(15)
-
-
-def start_fan_discussion(bot):
-    """Call from on_ready to launch the fan discussion loop."""
-    asyncio.get_event_loop().create_task(background_fan_discussion(bot))
-
-
-def build_feed_prompt(player_data: dict, language_filter: str, page: int,
-                      tourney_name: str = None, standings: list = None) -> str:
-    """
-    Build a Gemini prompt that injects real bot stats, discord usernames,
-    tournament standings, and varies content by page type.
-    """
-    lang_instruction = {
-        'all':      'Mix of English and Hinglish (Roman script). Roughly 50/50.',
-        'english':  'All posts in English only.',
-        'hinglish': 'All posts in Hinglish (Hindi in Roman script, e.g. "yaar", "bhai", "ekdum mast", "kya scene hai bhai"). NO Devanagari script.'
-    }.get(language_filter, 'Mix of English and Hinglish.')
-
-    # Page themes — each page has a DIFFERENT personality/content angle
-    PAGE_THEMES = [
-        "general fan reactions, player praise, match excitement — mix of player and team posts",
-        "TOXIC DRAMA — salty, savage trash-talk about specific players and their bad stats. Include real numbers ('scored 4 off 18 balls lmao', '0 wickets in 3 matches', 'economy 14.2 bruh'). Roast players, call them overrated. Be brutal and funny.",
-        "ODI WORLD CUP special — fans hyping or dreading their team's WC chances, knockout predictions, who deserves a spot, WC squad debates. All posts must include #ODIWC. Mix player and team-focused posts.",
-        "team rivalry posts — fans of different teams arguing, trash-talking rival nations, defending their team's tournament record. Posts can be fully about a team without mentioning a specific player.",
-        "leaderboard/stats obsession — posts about who tops the runs/wickets/economy/impact leaderboard (-lb), who's underperforming, heated ranking debates",
-        "ODI WORLD CUP predictions and drama — who will win the WC, shock early exits, dark horse teams, clutch players. #ODIWC must appear. Some posts team-focused, some player-focused.",
-        "TOXIC DRAMA 2 — even more savage. Flame wars between rival fans, personal attacks on players' consistency. 'bhai yeh century nahi maar sakta kabhi', 'bench player energy fr'. Maximum toxicity.",
-        "heartfelt team pride and player appreciation mixed with shade at rivals — trophy talk, NRR anxiety, tournament points table (-pts) reactions",
+# --------------
+
+
+# Get role emoji
+def get_role_emoji(role):
+    if "Wicketkeeper" in role:
+        return "<:wicketkeeper:1451994159668920330>"
+    elif "Batsman" in role:
+        return "<:bat:1451967322146213980>"
+    elif "Bowler" in role:
+        return "<:ball:1451974295793172547>"
+    elif "All-Rounder" in role or "All-rounder" in role:
+        return "<:allrounder:1451978476033671279>"
+    return ""
+
+# ========== OVR RATING SYSTEM ==========
+
+def calc_batting_ovr(batting_avg):
+    thresholds = [
+        (70, 99), (62, 98), (55, 97), (50, 96),
+        (47, 95), (43, 94), (40, 93), (37, 92),
+        (35, 91), (30, 90), (27, 89), (24, 88),
+        (21, 87), (18, 85), (16, 83), (14, 81),
+        (12, 79), (10, 77), (9, 75),  (8, 73),
+        (7, 71),  (6, 69),  (5, 67),  (4, 65),
+        (3, 63),
     ]
-    theme = PAGE_THEMES[page % len(PAGE_THEMES)]
-
-    # Pick a random sample of players WITH their stats for the prompt
-    all_players = list(player_data.items())
-    sample_players = random.sample(all_players, min(8, len(all_players))) if all_players else []
-
-    # Build the player context block
-    player_block_lines = []
-    for pname, pstats in sample_players:
-        discord_tag = pstats.get('discord', '@unknown')
-        # Resolve uid: format entries as generic tags when no bot available
-        if discord_tag.startswith('uid:'):
-            discord_tag = f"@{pname.lower().split()[0]}_player"
-        team = pstats.get('team', '?')
-        runs = pstats.get('runs', 0)
-        wkts = pstats.get('wickets', 0)
-        sr = pstats.get('strike_rate', 0)
-        eco = pstats.get('economy', 0)
-        highest = pstats.get('highest', 0)
-        best_bowl = pstats.get('best_bowling', '0/0')
-        avg = pstats.get('average', 0)
-        matches = pstats.get('matches', 0)
-        impact = pstats.get('impact', 0)
-        centuries = pstats.get('centuries', 0)
-        fifties = pstats.get('fifties', 0)
-        player_block_lines.append(
-            f"  - {pname} ({discord_tag}) [{team}]: "
-            f"{matches}M, {runs}R, SR={sr}, Avg={avg}, HS={highest}, {centuries}×100, {fifties}×50, "
-            f"{wkts}wkts, Eco={eco}, BB={best_bowl}, Impact={impact}"
-        )
-    player_block = "\n".join(player_block_lines) if player_block_lines else "  (No player data available)"
-
-    # Tournament context block
-    tourney_block = ""
-    if tourney_name and standings:
-        top5 = standings[:5]
-        rows = [f"  {i+1}. {s['team']} — {s['pts']}pts, W{s['wins']}L{s['losses']}, NRR {s['nrr']:+.3f}"
-                for i, s in enumerate(top5)]
-        tourney_block = f"\nActive Tournament: {tourney_name}\nTop standings:\n" + "\n".join(rows)
-
-    seed = f"P{page}_D{datetime.utcnow().strftime('%Y%m%d')}_T{theme[:12].replace(' ','')}"
-
-    prompt = f"""You are writing fake fan social media posts for "CricketGram" — a social feed inside a Discord cricket bot.
-
-Page seed: {seed}
-Page theme: {theme}
-Language rule: {lang_instruction}
-
-=== REAL PLAYER DATA FROM THE BOT ===
-(These are real players claimed by Discord users in this cricket bot. Use their ACTUAL stats in your posts.)
-{player_block}
-{tourney_block}
-
-=== STRICT RULES ===
-1. Generate EXACTLY 1 post. Put your full creativity into it — make it vivid, specific, and interesting.
-2. The post can be about a specific player (use their real name + Discord handle) OR purely team-focused (no specific player).
-3. For player posts: use REAL stats — actual run counts, strike rates, economy, wickets, impact points, highest scores, etc.
-4. For team posts: talk about the team's overall form, tournament points, NRR, squad depth, rivalries with other teams.
-5. If the theme mentions ODI WORLD CUP, the post MUST include #ODIWC as a hashtag.
-6. Follow the page theme closely. If it says TOXIC, be genuinely savage with real bad stats.
-7. Keep emojis natural and minimal — 1-3 per post max. Do not spam emojis.
-8. Language must match the rule — if Hinglish, use Roman script Hindi words naturally.
-9. Handle should be a creative cricket fan username, not the player's own name.
-
-=== JSON SCHEMA ===
-Return ONLY a valid JSON array with exactly 1 object (no markdown, no explanation):
-[
-  {{
-    "title": "short punchy post title — 5-10 words, no emojis",
-    "handle": "@fan_username",
-    "player_name": "Shaheen Shah Afridi",
-    "player_discord": "crxxed",
-    "player_team": "Pakistan",
-    "content": "post body — 2-3 sentences, 1-3 emojis max, hashtags where relevant, specific stats.",
-    "likes": 123,
-    "comments": 45,
-    "time": "2h ago",
-    "language": "english"
-  }}
-]
-Note: for team-focused posts where no specific player is mentioned, set player_name to the team name, player_discord to "" and player_team to that team."""
-
-    return prompt
+    for min_avg, ovr in thresholds:
+        if batting_avg >= min_avg:
+            return ovr
+    return 60
 
 
-def get_feed_from_cache(cache_date: str, language_filter: str, page: int):
-    conn = sqlite3.connect('players.db')
-    c = conn.cursor()
+def calc_bowling_ovr(bowl_avg):
+    if bowl_avg > 0:
+        for avg_thresh, score in [
+            (10, 99), (12, 97), (14, 95), (16, 93),
+            (18, 91), (20, 89), (22, 87), (25, 84),
+            (28, 81), (31, 78), (35, 74), (40, 70), (50, 65)
+        ]:
+            if bowl_avg <= avg_thresh:
+                return score
+        return 60
+    else:
+        return 60
+
+
+def calc_player_ovr(bat_ovr, bowl_ovr, role):
+    if "All-Rounder" in role or "All-rounder" in role:
+        if bat_ovr is None and bowl_ovr is None:
+            return 60
+        if bat_ovr is None:
+            return bowl_ovr
+        if bowl_ovr is None:
+            return bat_ovr
+        high = max(bat_ovr, bowl_ovr)
+        low  = min(bat_ovr, bowl_ovr)
+        return round(0.65 * high + 0.35 * low)
+    elif "Bowler" in role:
+        if bowl_ovr is None and bat_ovr is None:
+            return 60
+        if bowl_ovr is None:
+            return bat_ovr
+        if bat_ovr is None:
+            return bowl_ovr
+        if bat_ovr > bowl_ovr:
+            bonus = min(5, round(max(0, (bowl_ovr - 70) * 0.2)))
+            return bat_ovr + bonus
+        else:
+            bonus = min(2, round(max(0, (bat_ovr - 72) * 0.1)))
+            return bowl_ovr + bonus
+    else:  # Batsman, Wicketkeeper, WK-Batsman
+        if bat_ovr is None and bowl_ovr is None:
+            return 60
+        if bat_ovr is None:
+            return bowl_ovr
+        if bowl_ovr is None:
+            return bat_ovr
+        if bowl_ovr > bat_ovr:
+            bonus = min(2, round(max(0, (bat_ovr - 72) * 0.1)))
+            return bowl_ovr + bonus
+        else:
+            bonus = min(5, round(max(0, (bowl_ovr - 70) * 0.2)))
+            return bat_ovr + bonus
+
+
+def _get_ghost_ovr(user_id):
+    """Return (bat_ovr, bowl_ovr) from the ghost table, or None if not found."""
     try:
-        c.execute(
-            "SELECT posts_json FROM ai_feed_cache WHERE cache_date=? AND language_filter=? AND page_number=?",
-            (cache_date, language_filter, page)
-        )
+        conn = sqlite3.connect('players.db')
+        c = conn.cursor()
+        c.execute("SELECT bat_ovr, bowl_ovr FROM ovr_ghost_stats WHERE user_id = ?", (user_id,))
         row = c.fetchone()
         conn.close()
-        if row:
-            return json.loads(row[0])
+        return row
     except Exception:
-        conn.close()
-    return None
+        return None
 
 
-def save_feed_to_cache(cache_date: str, language_filter: str, page: int, posts: list):
+def get_player_ovr_for_vt(user_id, role="Batsman"):
+    """Return the main OVR for a player (for use in -vt).
+    Bat OVR unlocks at 60 balls faced, Bowl OVR unlocks at 60 balls bowled.
+    Falls back to ghost OVR when there are no live stats at all."""
     conn = sqlite3.connect('players.db')
     c = conn.cursor()
-    try:
-        c.execute(
-            "INSERT OR REPLACE INTO ai_feed_cache (cache_date, language_filter, page_number, posts_json) VALUES (?,?,?,?)",
-            (cache_date, language_filter, page, json.dumps(posts))
-        )
-        conn.commit()
-    except Exception:
-        pass
+    c.execute("""
+        SELECT SUM(runs), SUM(balls_faced), SUM(runs_conceded), SUM(balls_bowled),
+               SUM(wickets), SUM(not_out), COUNT(*)
+        FROM match_stats WHERE user_id = ?
+    """, (user_id,))
+    row = c.fetchone()
     conn.close()
 
+    if not row or row[0] is None:
+        ghost = _get_ghost_ovr(user_id)
+        if ghost:
+            bat_ovr = ghost[0]
+            bowl_ovr = ghost[1]
+            return calc_player_ovr(bat_ovr, bowl_ovr, role)
+        return None
 
-async def get_feed_page(language_filter: str, page: int, bot=None) -> tuple:
-    """Returns (posts, is_fallback). Caches AI results, uses fallback on rate limit."""
-    today = datetime.utcnow().strftime('%Y-%m-%d')
-    cached = get_feed_from_cache(today, language_filter, page)
-    if cached:
-        return cached, False
+    total_runs, total_balls_faced, total_runs_conceded, total_balls_bowled, total_wickets, times_not_out, matches_played = row
 
-    # Get rich player data with real stats and discord handles
-    player_data = get_feed_player_data(bot=bot)
-    tourney_name, standings = get_tournament_context()
+    FALLBACK_OVR = 60
 
-    # Fall back to simple player list if no claimed players exist yet
-    if not player_data:
-        simple_players = get_cricket_players()
-        player_data = {p: {'discord': f'@{p.lower().split()[0]}fan', 'team': 'Unknown',
-                           'matches': 0, 'runs': 0, 'wickets': 0, 'strike_rate': 0.0,
-                           'economy': 0.0, 'average': 0.0, 'highest': 0, 'best_bowling': '0/0',
-                           'centuries': 0, 'fifties': 0, 'impact': 0}
-                       for p in simple_players}
-
-    prompt = build_feed_prompt(player_data, language_filter, page, tourney_name, standings)
-
-    try:
-        raw = await call_openrouter(prompt)
-        raw = raw.strip()
-        # Extract the JSON array — find outermost [ ... ]
-        start = raw.find('[')
-        end = raw.rfind(']')
-        if start != -1 and end != -1 and end > start:
-            raw = raw[start:end + 1]
-        # Clean common model mistakes: trailing commas before ] or }
-        raw = re.sub(r',\s*([}\]])', r'\1', raw)
-        try:
-            posts = json.loads(raw)
-        except json.JSONDecodeError:
-            print(f"[FEED] JSON parse failed, attempting repair...")
-            raw = _repair_truncated_json(raw)
-            posts = json.loads(raw)
-        # Inject player emoji for each post — search guilds by emoji name (same
-        # approach as get_player_emoji in main.py, no ID lookup needed)
-        if bot:
-            for _p in posts:
-                _pname = _p.get('player_name', '')
-                _ename = ''.join(c if c.isalnum() or c == '_' else '_' for c in _pname)[:32]
-                _found = ''
-                for _g in bot.guilds:
-                    _eo = discord.utils.get(_g.emojis, name=_ename)
-                    if _eo:
-                        _found = str(_eo)
-                        break
-                _p['player_emoji'] = _found
-        save_feed_to_cache(today, language_filter, page, posts)
-        return posts, False
-    except RuntimeError as e:
-        if 'RATE_LIMITED' in str(e):
-            return _get_fallback_posts(language_filter), True
-        raise
-
-
-def build_feed_embed(posts: list, page: int, language_filter: str, is_loading: bool = False, is_fallback: bool = False) -> discord.Embed:
-    lang_emoji = {'all': '🌐', 'english': '🇬🇧', 'hinglish': '🇮🇳'}.get(language_filter, '🌐')
-    lang_name = {'all': 'All Languages', 'english': 'English Only', 'hinglish': 'Hinglish Only'}.get(language_filter, 'All')
-    embed = discord.Embed(
-        title=f"📱 CricketGram Fan Feed  {lang_emoji} {lang_name}",
-        description=f"*What fans are saying today... Page {page + 1}*",
-        color=0xE1306C
-    )
-    if is_loading:
-        embed.description = "⏳ *Loading Page...*"
-        embed.set_footer(text="Powered by TFHEx | Refreshes daily")
-        return embed
-    if not posts:
-        embed.description = "Could not load feed. Try again!"
-        return embed
-    for post in posts:
-        handle       = post.get('handle', '@unknown')
-        player_name  = post.get('player_name', '')
-        player_disc  = post.get('player_discord', '').lstrip('@')
-        emoji_str    = post.get('player_emoji', '')
-        content      = post.get('content', '')
-        likes        = post.get('likes', 0)
-        comments     = post.get('comments', 0)
-        time_ago     = post.get('time', 'recently')
-        player_team  = post.get('player_team', '')
-        lang_tag     = get_team_flag(player_team) if player_team else ("🇮🇳" if post.get('language') == 'hinglish' else "🇬🇧")
-        # Bold any remaining (@handle) mentions inside content
-        content = re.sub(r'\(@(\w+)\)', r'(@**\1**)', content)
-        # Player attribution line
-        if player_name and player_disc:
-            player_line = f"━━ {emoji_str} **{player_name} (__@{player_disc}__):** {content}".strip()
-        else:
-            player_line = f"━━ {content}"
-        field_value = f"*{lang_tag} {handle}  •  {time_ago}*\n{player_line}\n❤️ **{likes:,}**  💬 **{comments}**"
-        embed.add_field(name='\u200b', value=field_value, inline=False)
-    today_str = datetime.utcnow().strftime('%B %d, %Y')
-    if is_fallback:
-        embed.set_footer(text=f"⚠️ AI rate-limited — showing sample posts | Retry with 🔄 | {today_str}")
-        embed.color = 0xFF8C00  # Orange tint to signal fallback
+    if (total_balls_faced or 0) >= 60:
+        dismissals = matches_played - (times_not_out or 0)
+        batting_avg = (float(total_runs or 0) / dismissals) if dismissals > 0 else (float(total_runs or 0) / max(matches_played, 1))
+        bat_ovr = calc_batting_ovr(batting_avg)
     else:
-        embed.set_footer(text=f"📅 {today_str} | Refreshes daily at midnight UTC | OpenRouter AI")
-    return embed
+        bat_ovr = FALLBACK_OVR
 
-# ============================================================
-# VIEWS
-# ============================================================
+    if (total_balls_bowled or 0) >= 60:
+        bowl_avg_val = (float(total_runs_conceded or 0) / total_wickets) if (total_wickets or 0) > 0 else 0.0
+        bowl_ovr = calc_bowling_ovr(bowl_avg_val)
+    else:
+        bowl_ovr = FALLBACK_OVR
 
-class PressConferenceView(View):
-    def __init__(self, ctx, question_data):
-        super().__init__(timeout=60)
-        self.ctx = ctx
-        self.question_data = question_data
-        self.answered = False
+    # ── <18 matches nerf: reduce bat/bowl by 10%, then derive main OVR ──
+    if (matches_played or 0) < 18:
+        bat_ovr = round(bat_ovr * 0.90)
+        bowl_ovr = round(bowl_ovr * 0.90)
+    main_ovr = calc_player_ovr(bat_ovr, bowl_ovr, role)
 
-        for key, opt in question_data["options"].items():
-            btn = Button(label=f"{key}: {opt['text']}", style=discord.ButtonStyle.primary, custom_id=key)
-            btn.callback = self.make_callback(key)
-            self.add_item(btn)
+    return main_ovr
 
-    def make_callback(self, key):
-        async def callback(interaction: discord.Interaction):
-            if interaction.user.id != self.ctx.author.id:
-                await interaction.response.send_message("❌ This press conference isn't yours!", ephemeral=True)
-                return
-            if self.answered:
-                await interaction.response.send_message("Already answered!", ephemeral=True)
-                return
-            self.answered = True
-            opt = self.question_data["options"][key]
-            life = get_life(interaction.user.id)
-            new_rep = max(0, min(100, life["reputation"] + opt["rep"]))
-            new_conf = max(0, min(100, life["confidence"] + opt["conf"]))
-            new_fans = max(0, life["fans"] + opt["fans"])
-            update_life(interaction.user.id, reputation=new_rep, confidence=new_conf, fans=new_fans,
-                        last_press=datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'))
-            color = 0x00FF00 if opt["rep"] >= 0 else 0xFF0000
-            embed = discord.Embed(title="🎤 Press Conference", color=color)
-            embed.add_field(name="Your Response", value=f'*"{opt["text"]}"*', inline=False)
-            changes = []
-            if opt["rep"] != 0: changes.append(f"Reputation: {opt['rep']:+d}")
-            if opt["conf"] != 0: changes.append(f"Confidence: {opt['conf']:+d}")
-            if opt["fans"] != 0: changes.append(f"Fans: {opt['fans']:+,}")
-            embed.add_field(name="Impact", value="\n".join(changes) if changes else "No change", inline=False)
-            for child in self.children:
-                child.disabled = True
-            await interaction.response.edit_message(embed=embed, view=self)
-        return callback
+# ========================================
 
-class SocialPostTypeView(View):
-    def __init__(self, ctx, cog):
-        super().__init__(timeout=60)
-        self.ctx = ctx
-        self.cog = cog
-
-        for key, data in POST_TYPES.items():
-            btn = Button(label=data["name"], style=discord.ButtonStyle.primary)
-            btn.callback = self.make_cb(key)
-            self.add_item(btn)
-
-    def make_cb(self, post_key):
-        async def callback(interaction: discord.Interaction):
-            if interaction.user.id != self.ctx.author.id:
-                await interaction.response.send_message("Not your menu!", ephemeral=True)
-                return
-            for child in self.children:
-                child.disabled = True
-            await interaction.response.edit_message(view=self)
-            await self.cog._do_post(interaction, post_key)
-        return callback
-
-class PostModal(discord.ui.Modal, title="📱 CricketGram — Share Your Thoughts"):
-    post_content = discord.ui.TextInput(
-        label="What's on your mind?",
-        style=discord.TextStyle.paragraph,
-        placeholder="Talk cricket, flex your stats, call out rivals, anything... 🏏",
-        max_length=280,
-        required=True
-    )
-
-    def __init__(self, cog, ctx):
-        super().__init__()
-        self.cog = cog
-        self.ctx = ctx
-
-    async def on_submit(self, interaction: discord.Interaction):
-        try:
-            await interaction.response.defer(thinking=True)
-        except discord.errors.NotFound:
-            return
-        await self.cog._process_custom_post(interaction, str(self.post_content))
-
-
-class PostButtonView(View):
-    def __init__(self, cog, ctx):
-        super().__init__(timeout=60)
-        self.cog = cog
-        self.ctx = ctx
-        btn = Button(label="✏️ Write Post", style=discord.ButtonStyle.primary, emoji="📱")
-        btn.callback = self._open_modal
-        self.add_item(btn)
-
-    async def _open_modal(self, interaction: discord.Interaction):
-        if interaction.user.id != self.ctx.author.id:
+def emoji_for_select(emoji_str):
+    """Convert a custom emoji string like <:name:id> to a PartialEmoji for SelectOption use."""
+    if not emoji_str:
+        return None
+    if emoji_str.startswith('<:') and emoji_str.endswith('>'):
+        inner = emoji_str[2:-1]
+        parts = inner.split(':')
+        if len(parts) == 2:
             try:
-                await interaction.response.send_message("❌ This isn't your post panel!", ephemeral=True)
-            except discord.errors.NotFound:
+                return discord.PartialEmoji(name=parts[0], id=int(parts[1]))
+            except (ValueError, IndexError):
                 pass
-            return
-        try:
-            await interaction.response.send_modal(PostModal(self.cog, self.ctx))
-        except discord.errors.NotFound:
-            pass
+    return emoji_str
 
+# Find player by name (flexible matching)
+def find_player(player_name):
+    teams_data = load_players()
+    player_name_lower = player_name.lower()
 
-COMMENTS_PER_PAGE = 5
+    # First try exact match
+    for team_data in teams_data:
+        for player in team_data['players']:
+            if player['name'].lower() == player_name_lower:
+                return [player], [team_data['team']]
 
-class CheckPostView(View):
-    def __init__(self, post_data, comments, user_id):
-        super().__init__(timeout=120)
-        self.post_data = post_data
-        self.comments = comments
-        self.user_id = user_id
-        self.page = 0
-        self.max_page = max(0, (len(comments) - 1) // COMMENTS_PER_PAGE)
+    # If no exact match, try partial match
+    matches = []
+    match_teams = []
+    for team_data in teams_data:
+        for player in team_data['players']:
+            if player_name_lower in player['name'].lower():
+                matches.append(player)
+                match_teams.append(team_data['team'])
 
-        self.prev_btn = Button(label="◀ Prev", style=discord.ButtonStyle.secondary, disabled=True)
-        self.next_btn = Button(label="Next ▶", style=discord.ButtonStyle.secondary, disabled=self.max_page == 0)
-        self.prev_btn.callback = self._prev
-        self.next_btn.callback = self._next
-        self.add_item(self.prev_btn)
-        self.add_item(self.next_btn)
+    if matches:
+        return matches, match_teams
 
-    def build_embed(self):
-        d = self.post_data
-        viral_tag = "  🔥 **VIRAL**" if d['went_viral'] else ""
-        embed = discord.Embed(
-            title=f"📱 {d['player_name']}'s Post",
-            description=f'*"{d["content"]}"*',
-            color=0xFF6600 if d['went_viral'] else 0xE1306C
-        )
-        fan_line = f"  •  👥 **+{d['fan_gain']:,}** followers" if d.get('fan_gain') else ""
-        embed.add_field(
-            name="📊 Performance",
-            value=f"❤️ **{d['likes']:,}** likes{viral_tag}{fan_line}  •  💬 **{len(self.comments)}** comments",
-            inline=False
-        )
-        start = self.page * COMMENTS_PER_PAGE
-        page_comments = self.comments[start:start + COMMENTS_PER_PAGE]
-        if page_comments:
-            lines = []
-            for c in page_comments:
-                lines.append(f"**@{c['commenter_handle']}:** {c['comment_text']}")
-            embed.add_field(
-                name=f"Comments — Page {self.page+1}/{self.max_page+1}",
-                value="\n\n".join(lines),
-                inline=False
-            )
+    return None, None
+
+#---------------
+
+async def create_squad_image(team_name, team_data, guild):
+    """Create a squad visualization image using provided background"""
+
+    # Load the background image
+    try:
+        img = Image.open("squadbackground.png").convert('RGBA')
+        width, height = img.size
+    except FileNotFoundError:
+        print("❌ squadbackground.png not found!")
+        return None
+
+    # Categorize players
+    wicketkeepers = []
+    batsmen = []
+    allrounders = []
+    bowlers = []
+
+    captain_name = get_team_captain(team_name)
+
+    for player in team_data['players']:
+        player_info = {
+            'name': player['name'],
+            'role': player['role'],
+            'image': player['image'],
+            'is_captain': player['name'] == captain_name
+        }
+
+        rep_info = get_representative(player['name'])
+        if rep_info:
+            member = guild.get_member(rep_info[0])
+            if member and member.avatar:
+                player_info['avatar_url'] = str(member.avatar.url)
+            else:
+                # Use default Discord picture from local file
+                player_info['avatar_url'] = "discord.jpg"
         else:
-            embed.add_field(name="💬 Comments", value="⏳ Fans are still reading... try again shortly!", inline=False)
-        embed.set_footer(text=f"Sorted by likes • {len(self.comments)} total comments")
-        return embed
+            player_info['avatar_url'] = "discord.jpg"
+
+        if "Wicketkeeper" in player['role']:
+            wicketkeepers.append(player_info)
+        elif "Batsman" in player['role']:
+            batsmen.append(player_info)
+        elif "Bowler" in player['role']:
+            bowlers.append(player_info)
+        elif "All-Rounder" in player['role'] or "All-rounder" in player['role']:
+            allrounders.append(player_info)
+
+    # Layout configuration
+    avatar_size = 140
+    player_size = 140
+    role_icon_width = 120
+    role_icon_height = 80
+    wk_icon_width = 140  # WIDER WK ICON
+    allrounder_icon_width = 140  # WIDER ALLROUNDER ICON
+    bowler_icon_width = 140  # WIDER BOWLER ICON
+    captain_icon_width = 140  # WAY WIDER CAPTAIN ICON
+    captain_icon_height = 90  # CAPTAIN ICON HEIGHT
+    horizontal_spacing = 50
+    rows = [wicketkeepers, batsmen, allrounders, bowlers]
+
+    # Calculate starting Y position - MOVED FURTHER UP
+    start_y = 80  # MOVED FURTHER UP (was 120)
+    row_spacing = 240
+
+    # Add title text - REMOVED
+    draw = ImageDraw.Draw(img)
+
+    async with aiohttp.ClientSession() as session:
+        for row_idx, row in enumerate(rows):
+            if not row:
+                continue
+
+            # DYNAMIC SIZING: If more than 5 players, squeeze them
+            if len(row) > 5:
+                avatar_size_row = 110
+                player_size_row = 110
+                horizontal_spacing_row = 35
+                pair_width = 165
+                role_icon_width_row = 95
+                role_icon_height_row = 65
+                wk_icon_width_row = 110  # WIDER WK ICON for squeezed rows
+                allrounder_icon_width_row = 110  # WIDER ALLROUNDER ICON for squeezed rows
+                bowler_icon_width_row = 110  # WIDER BOWLER ICON for squeezed rows
+                captain_icon_width_row = 110  # WIDER CAPTAIN ICON for squeezed rows
+                captain_icon_height_row = 70  # CAPTAIN ICON HEIGHT for squeezed rows
+                overlap_offset = 50  # LESS OVERLAP for smaller sizes
+            else:
+                avatar_size_row = avatar_size
+                player_size_row = player_size
+                horizontal_spacing_row = horizontal_spacing
+                pair_width = 210
+                role_icon_width_row = role_icon_width
+                role_icon_height_row = role_icon_height
+                wk_icon_width_row = wk_icon_width  # WIDER WK ICON
+                allrounder_icon_width_row = allrounder_icon_width  # WIDER ALLROUNDER ICON
+                bowler_icon_width_row = bowler_icon_width  # WIDER BOWLER ICON
+                captain_icon_width_row = captain_icon_width  # WIDER CAPTAIN ICON
+                captain_icon_height_row = captain_icon_height  # CAPTAIN ICON HEIGHT
+                overlap_offset = 50  # REDUCED OVERLAP (was 70)
+
+            # Calculate total width needed for this row
+            total_width = len(row) * pair_width + (len(row) - 1) * horizontal_spacing_row
+            start_x = (width - total_width) // 2
+
+            current_y = start_y + (row_idx * row_spacing)
+
+            for player_idx, player_info in enumerate(row):
+                current_x = start_x + (player_idx * (pair_width + horizontal_spacing_row))
+
+                # FIRST: Paste Discord avatar (left side) WITH RED BORDER
+                avatar_x = current_x
+                avatar_y = current_y
+
+                if player_info['avatar_url']:
+                    try:
+                        # Check if it's the default discord.jpg or a URL
+                        if player_info['avatar_url'] == "discord.jpg":
+                            # Load from local file
+                            avatar_img = Image.open("discord.jpg").convert('RGBA')
+                        else:
+                            # Download from URL
+                            async with session.get(player_info['avatar_url']) as resp:
+                                if resp.status == 200:
+                                    avatar_data = await resp.read()
+                                    avatar_img = Image.open(io.BytesIO(avatar_data)).convert('RGBA')
+                                else:
+                                    # Fallback to discord.jpg if download fails
+                                    avatar_img = Image.open("discord.jpg").convert('RGBA')
+
+                        avatar_img = avatar_img.resize((avatar_size_row, avatar_size_row), Image.Resampling.LANCZOS)
+
+                        # Create a temporary image for avatar with border
+                        border_thickness = 8
+                        bordered_size = avatar_size_row + (border_thickness * 2)
+                        bordered_img = Image.new('RGBA', (bordered_size, bordered_size), (0, 0, 0, 0))
+                        bordered_draw = ImageDraw.Draw(bordered_img)
+
+                        # Draw red circular border
+                        bordered_draw.ellipse(
+                            [(0, 0), (bordered_size, bordered_size)],
+                            fill=None,
+                            outline=(255, 0, 0, 255),
+                            width=border_thickness
+                        )
+
+                        # Create circular mask for avatar
+                        mask = Image.new('L', (avatar_size_row, avatar_size_row), 0)
+                        mask_draw = ImageDraw.Draw(mask)
+                        mask_draw.ellipse((0, 0, avatar_size_row, avatar_size_row), fill=255)
+
+                        # Paste avatar in center of bordered image
+                        bordered_img.paste(avatar_img, (border_thickness, border_thickness), mask)
+
+                        # Paste the bordered avatar
+                        img.paste(bordered_img, (avatar_x - border_thickness, avatar_y - border_thickness), bordered_img)
+                    except Exception as e:
+                        print(f"Error loading avatar: {e}")
+
+                # SECOND: Paste player image (overlapping to the right) - TRANSPARENT WITH WHITE BACKGROUND AND BLACK OUTLINE
+                player_image_url = player_info['image']
+                if not player_image_url or player_image_url.strip() == "":
+                    player_image_url = "fallback.webp"
+
+                player_x = current_x + avatar_size_row - overlap_offset  # LESS OVERLAP
+                player_y = current_y
 
-    async def _prev(self, interaction: discord.Interaction):
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("Not your post!", ephemeral=True)
-            return
-        self.page = max(0, self.page - 1)
-        self.prev_btn.disabled = self.page == 0
-        self.next_btn.disabled = self.page >= self.max_page
-        await interaction.response.edit_message(embed=self.build_embed(), view=self)
-
-    async def _next(self, interaction: discord.Interaction):
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("Not your post!", ephemeral=True)
-            return
-        self.page = min(self.max_page, self.page + 1)
-        self.prev_btn.disabled = self.page == 0
-        self.next_btn.disabled = self.page >= self.max_page
-        await interaction.response.edit_message(embed=self.build_embed(), view=self)
-
-
-class BuyCarView(View):
-    def __init__(self, ctx, cog):
-        super().__init__(timeout=60)
-        self.ctx = ctx
-        self.cog = cog
-        for car_id, car in list(CARS.items())[:5]:
-            btn = Button(label=f"{car['emoji']} {car['name']} ({format_money(car['price'])})", style=discord.ButtonStyle.primary)
-            btn.callback = self.make_cb(car_id)
-            self.add_item(btn)
-        more_btn = Button(label="🔽 See Luxury Cars", style=discord.ButtonStyle.secondary, row=1)
-        more_btn.callback = self.show_more
-        self.add_item(more_btn)
-
-    def make_cb(self, car_id):
-        async def callback(interaction: discord.Interaction):
-            if interaction.user.id != self.ctx.author.id:
-                return
-            await self.cog._purchase_car(interaction, car_id)
-        return callback
-
-    async def show_more(self, interaction: discord.Interaction):
-        if interaction.user.id != self.ctx.author.id:
-            return
-        embed = discord.Embed(title="🏎️ Luxury Car Showroom", color=0xFFD700,
-                              description="Welcome to the exclusive tier. These aren't just cars — they're statements.")
-        luxury = {k: v for k, v in CARS.items() if v["price"] >= 200000}
-        for car_id, car in luxury.items():
-            embed.add_field(name=f"{car['emoji']} {car['name']}", 
-                          value=f"Price: **{format_money(car['price'])}**\nPrestige: {'⭐'*min(5, car['prestige']//20)}", inline=True)
-        embed.set_footer(text="Use -buycar <car name> to purchase")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-class FeedView(View):
-    """Interactive paginated AI fan feed with language filters and navigation."""
-
-    def __init__(self, ctx, initial_page: int = 0, language_filter: str = 'all', bot=None):
-        super().__init__(timeout=300)
-        self.ctx = ctx
-        self.page = initial_page
-        self.language_filter = language_filter
-        self.is_loading = False
-        self.bot = bot
-        self._update_buttons()
-
-    def _update_buttons(self):
-        self.clear_items()
-
-        # Language filter buttons
-        langs = [('🌐 All', 'all'), ('🇬🇧 English', 'english'), ('🇮🇳 Hinglish', 'hinglish')]
-        for label, lang in langs:
-            btn = Button(
-                label=label,
-                style=discord.ButtonStyle.success if self.language_filter == lang else discord.ButtonStyle.secondary,
-                row=0
-            )
-            btn.callback = self._make_lang_cb(lang)
-            self.add_item(btn)
-
-        # Refresh button
-        refresh_btn = Button(label="🔄 Refresh Page", style=discord.ButtonStyle.secondary, row=0)
-        refresh_btn.callback = self.refresh_page
-        self.add_item(refresh_btn)
-
-        # Navigation
-        prev_btn = Button(label="⬅️ Prev", style=discord.ButtonStyle.primary, disabled=(self.page == 0), row=1)
-        prev_btn.callback = self.prev_page
-        self.add_item(prev_btn)
-
-        page_btn = Button(label=f"Page {self.page + 1}", style=discord.ButtonStyle.secondary, disabled=True, row=1)
-        self.add_item(page_btn)
-
-        next_btn = Button(label="➡️ Next", style=discord.ButtonStyle.primary, row=1)
-        next_btn.callback = self.next_page
-        self.add_item(next_btn)
-
-    def _make_lang_cb(self, lang: str):
-        async def callback(interaction: discord.Interaction):
-            if interaction.user.id != self.ctx.author.id:
-                await interaction.response.send_message("This feed belongs to someone else!", ephemeral=True)
-                return
-            self.language_filter = lang
-            self.page = 0
-            await self._load_and_update(interaction)
-        return callback
-
-    async def prev_page(self, interaction: discord.Interaction):
-        if interaction.user.id != self.ctx.author.id:
-            await interaction.response.send_message("Not your feed!", ephemeral=True)
-            return
-        if self.page > 0:
-            self.page -= 1
-        await self._load_and_update(interaction)
-
-    async def next_page(self, interaction: discord.Interaction):
-        if interaction.user.id != self.ctx.author.id:
-            await interaction.response.send_message("Not your feed!", ephemeral=True)
-            return
-        self.page += 1
-        await self._load_and_update(interaction)
-
-    async def refresh_page(self, interaction: discord.Interaction):
-        if interaction.user.id != self.ctx.author.id:
-            await interaction.response.send_message("Not your feed!", ephemeral=True)
-            return
-        # Force re-generate by deleting cache for this page
-        today = datetime.utcnow().strftime('%Y-%m-%d')
-        conn = sqlite3.connect('players.db')
-        c = conn.cursor()
-        try:
-            c.execute(
-                "DELETE FROM ai_feed_cache WHERE cache_date=? AND language_filter=? AND page_number=?",
-                (today, self.language_filter, self.page)
-            )
-            conn.commit()
-        except Exception:
-            pass
-        conn.close()
-        await self._load_and_update(interaction)
-
-    async def _load_and_update(self, interaction: discord.Interaction):
-        # Show loading state
-        self._update_buttons()
-        loading_embed = build_feed_embed([], self.page, self.language_filter, is_loading=True)
-        await interaction.response.edit_message(embed=loading_embed, view=self)
-
-        # Generate posts
-        try:
-            posts, is_fallback = await get_feed_page(self.language_filter, self.page, bot=self.bot)
-            embed = build_feed_embed(posts, self.page, self.language_filter, is_fallback=is_fallback)
-            # Pre-generate the next page in the background so it's cached when user hits Next
-            asyncio.create_task(get_feed_page(self.language_filter, self.page + 1, bot=self.bot))
-        except Exception as e:
-            embed = discord.Embed(
-                title="📱 CricketGram Fan Feed",
-                description=f"❌ Failed to generate feed: {str(e)[:200]}\n\nTry again in a moment!",
-                color=0xFF0000
-            )
-
-        self._update_buttons()
-        await interaction.edit_original_response(embed=embed, view=self)
-
-
-# ============================================================
-# MAIN COG
-# ============================================================
-
-class PlayerLife(commands.Cog):
-    def __init__(self, bot):
-        self.bot = bot
-
-    # ---- ENSURE PROFILE ----
-    def cog_check_and_ensure(self, user_id):
-        ensure_life(user_id)
-        return get_life(user_id)
-
-    # ==================================================
-    # PROFILE & NET WORTH
-    # ==================================================
-
-    @commands.command(name="profile", aliases=["pf"], help="View your cricket life profile")
-    async def profile_command(self, ctx, member: discord.Member = None):
-        target = member or ctx.author
-        ensure_life(target.id)
-        life = get_life(target.id)
-        social = get_social(target.id)
-        player_name = get_player_name(target.id)
-
-        conn = sqlite3.connect('players.db')
-        c = conn.cursor()
-        try:
-            c.execute("SELECT COUNT(*) FROM player_cars WHERE user_id = ?", (target.id,))
-            car_count = c.fetchone()[0]
-        except: car_count = 0
-        try:
-            c.execute("SELECT COUNT(*) FROM player_properties WHERE user_id = ?", (target.id,))
-            prop_count = c.fetchone()[0]
-        except: prop_count = 0
-        try:
-            c.execute("SELECT COUNT(*) FROM player_rivals WHERE user_id = ?", (target.id,))
-            rival_count = c.fetchone()[0]
-        except: rival_count = 0
-        try:
-            c.execute("SELECT trophy_name FROM player_trophies WHERE user_id = ? ORDER BY awarded_at DESC LIMIT 3", (target.id,))
-            trophies = [r[0] for r in c.fetchall()]
-        except: trophies = []
-        conn.close()
-
-        house = HOUSES[min(life["house_level"], len(HOUSES)-1)]
-        rep_bar = stat_bar(life["reputation"])
-        conf_bar = stat_bar(life["confidence"])
-        fit_bar = stat_bar(life["fitness"])
-        energy_bar = stat_bar(life["energy"])
-        happy_bar = stat_bar(life["happiness"])
-
-        verified = "✅ Verified" if social and social["verification_status"] else "⬜ Unverified"
-
-        embed = discord.Embed(
-            title=f"🎯 {player_name or target.display_name}'s Cricket Life",
-            color=0xFFD700
-        )
-        embed.set_thumbnail(url=target.display_avatar.url)
-
-        # Status
-        ms_emoji = {"Single": "🧍", "In a Relationship": "💑", "Engaged": "💍", "Married": "💒", 
-                    "It's Complicated": "🤷", "Divorced": "💔"}.get(life["marital_status"], "🧍")
-        status_val = f"{ms_emoji} **{life['marital_status']}**"
-        if life["partner_name"]:
-            status_val += f" with {life['partner_name']}"
-
-        embed.add_field(name="💰 Finances", 
-                       value=f"Cash: **{format_money(life['cash'])}**\nBank: **{format_money(life['bank'])}**\nContract: **{format_money(life['contract_value'])}/mo**", 
-                       inline=True)
-        embed.add_field(name="📊 Stats",
-                       value=f"Rep: `{rep_bar}` {life['reputation']}\nConf: `{conf_bar}` {life['confidence']}\nFitness: `{fit_bar}` {life['fitness']}", 
-                       inline=True)
-        embed.add_field(name="❤️ Wellbeing",
-                       value=f"Energy: `{energy_bar}` {life['energy']}\nHappy: `{happy_bar}` {life['happiness']}\n{status_val}",
-                       inline=True)
-        embed.add_field(name="📱 Social Media",
-                       value=f"Followers: **{social['followers']:,}** | {verified}\nPosts: {social['posts']} | Viral: {social['viral_posts']}\nLikes: {social['total_likes']:,}",
-                       inline=True)
-        embed.add_field(name="🏠 Lifestyle",
-                       value=f"{house['emoji']} {house['name']}\n🚗 {car_count} car(s) owned\n🏅 Rival count: {rival_count}",
-                       inline=True)
-        embed.add_field(name="🏆 Recent Trophies",
-                       value="\n".join(trophies) if trophies else "None yet", inline=True)
-
-        if life["sponsor_name"]:
-            embed.add_field(name="🤝 Sponsor", value=f"{life['sponsor_name']}", inline=False)
-        embed.add_field(name="👥 Fans", value=f"**{life['fans']:,}** fans | Loyalty: {stat_bar(life['fan_loyalty'])} {life['fan_loyalty']}", inline=False)
-
-        embed.set_footer(text=f"Use -networth for full financial breakdown • -fans for fan details")
-        await ctx.send(embed=embed)
-
-    @commands.command(name="networth", aliases=["nw"], help="View your total net worth breakdown")
-    async def networth_command(self, ctx, member: discord.Member = None):
-        target = member or ctx.author
-        ensure_life(target.id)
-        life = get_life(target.id)
-        player_name = get_player_name(target.id)
-
-        conn = sqlite3.connect('players.db')
-        c = conn.cursor()
-        c.execute("SELECT car_name, car_value FROM player_cars WHERE user_id = ?", (target.id,))
-        cars = c.fetchall()
-        c.execute("SELECT property_name, property_value FROM player_properties WHERE user_id = ?", (target.id,))
-        props = c.fetchall()
-        conn.close()
-
-        cash_total = life["cash"] + life["bank"]
-        car_total = sum(v for _, v in cars)
-        prop_total = sum(v for _, v in props)
-        house_val = HOUSES[min(life["house_level"], len(HOUSES)-1)]["value"]
-        contract_annual = life["contract_value"] * 12
-        grand_total = cash_total + car_total + prop_total + house_val
-
-        embed = discord.Embed(
-            title=f"💎 {player_name or target.display_name}'s Net Worth",
-            description=f"### Total: **{format_money(grand_total)}**",
-            color=0xFFD700
-        )
-
-        embed.add_field(name="💵 Cash & Bank", 
-                       value=f"Wallet: {format_money(life['cash'])}\nBank: {format_money(life['bank'])}\nSubtotal: **{format_money(cash_total)}**", inline=True)
-
-        house = HOUSES[min(life["house_level"], len(HOUSES)-1)]
-        embed.add_field(name="🏠 Property", 
-                       value=f"{house['emoji']} {house['name']}: {format_money(house_val)}" + 
-                             ("\n" + "\n".join([f"🏢 {n}: {format_money(v)}" for n, v in props]) if props else "") + 
-                             f"\nSubtotal: **{format_money(prop_total + house_val)}**", inline=True)
-
-        car_text = "\n".join([f"🚗 {n}: {format_money(v)}" for n, v in cars]) if cars else "No cars"
-        embed.add_field(name="🚗 Cars", value=f"{car_text}\nSubtotal: **{format_money(car_total)}**", inline=True)
-        embed.add_field(name="📋 Annual Contract", value=f"**{format_money(contract_annual)}**/year", inline=True)
-        embed.add_field(name="📈 Wealth Rank", 
-                       value=self._get_wealth_rank(grand_total), inline=True)
-
-        await ctx.send(embed=embed)
-
-    def _get_wealth_rank(self, amount):
-        if amount >= 50_000_000: return "🌍 **Cricket Legend Billionaire**"
-        if amount >= 10_000_000: return "👑 **Cricket Royalty**"
-        if amount >= 5_000_000: return "💎 **Elite Cricketer**"
-        if amount >= 1_000_000: return "⭐ **Star Player**"
-        if amount >= 500_000: return "🏅 **Established Pro**"
-        if amount >= 100_000: return "📈 **Rising Star**"
-        return "🌱 **Rookie Budget**"
-
-    # ==================================================
-    # TRAINING & FITNESS
-    # ==================================================
-
-    @commands.command(name="train", aliases=["tr"], help="Train to improve your cricket skills")
-    async def train_command(self, ctx):
-        ensure_life(ctx.author.id)
-        life = get_life(ctx.author.id)
-        can, mins = cooldown_check(life["last_train"], 3)
-        if not can:
-            await ctx.send(f"⏳ You're too exhausted to train again. Come back in **{mins} minutes**.")
-            return
-        if life["energy"] < 20:
-            await ctx.send("😴 Your energy is too low to train! Use `-rest` first.")
-            return
-
-        training_types = ["Batting drills 🏏", "Bowling practice 🎳", "Fielding drills 🧤", 
-                         "Gym session 💪", "Video analysis 📹", "Mental coaching 🧠"]
-        training = random.choice(training_types)
-        conf_gain = random.randint(3, 8)
-        fit_gain = random.randint(2, 6)
-        energy_cost = random.randint(15, 25)
-        cash_cost = random.randint(500, 2000)
-
-        new_conf = min(100, life["confidence"] + conf_gain)
-        new_fit = min(100, life["fitness"] + fit_gain)
-        new_energy = max(0, life["energy"] - energy_cost)
-        new_cash = max(0, life["cash"] - cash_cost)
-        fan_gain = random.randint(50, 300)
-        new_fans = life["fans"] + fan_gain
-
-        update_life(ctx.author.id, confidence=new_conf, fitness=new_fit, energy=new_energy,
-                    cash=new_cash, fans=new_fans, last_train=datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'))
-
-        embed = discord.Embed(title=f"💪 Training Session Complete!", color=0x00FF00,
-                              description=f"**{training}** — Another day, another grind.")
-        embed.add_field(name="📈 Gains", value=f"+{conf_gain} Confidence\n+{fit_gain} Fitness\n+{fan_gain} Fans (training clip)", inline=True)
-        embed.add_field(name="📉 Costs", value=f"-{energy_cost} Energy\n-{format_money(cash_cost)} (session fee)", inline=True)
-        embed.add_field(name="📊 New Stats", value=f"Conf: {new_conf}/100\nFitness: {new_fit}/100\nEnergy: {new_energy}/100", inline=False)
-        embed.set_footer(text="Cooldown: 3 hours | Low energy? Use -rest")
-        await ctx.send(embed=embed)
-
-    @commands.command(name="rest", aliases=["rs"], help="Rest to recover energy")
-    async def rest_command(self, ctx):
-        ensure_life(ctx.author.id)
-        life = get_life(ctx.author.id)
-        can, mins = cooldown_check(life["last_rest"], 6)
-        if not can:
-            await ctx.send(f"⏳ You've already rested recently. Next rest in **{mins} minutes**.")
-            return
-
-        energy_gain = random.randint(30, 50)
-        happy_gain = random.randint(5, 15)
-        new_energy = min(100, life["energy"] + energy_gain)
-        new_happy = min(100, life["happiness"] + happy_gain)
-
-        rest_types = ["Had an incredible 10-hour sleep 😴", "Netflix and chill session 🎬", 
-                     "Meditation and yoga 🧘", "Spa day 🛁", "Beach day with the fam 🏖️"]
-        rest_type = random.choice(rest_types)
-        update_life(ctx.author.id, energy=new_energy, happiness=new_happy,
-                    last_rest=datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'))
-
-        embed = discord.Embed(title="😴 Rest Complete!", color=0x87CEEB, description=f"*{rest_type}*")
-        embed.add_field(name="Recovery", value=f"+{energy_gain} Energy\n+{happy_gain} Happiness", inline=True)
-        embed.add_field(name="Current", value=f"Energy: {new_energy}/100\nHappiness: {new_happy}/100", inline=True)
-        embed.set_footer(text="Cooldown: 6 hours | Keep energy high to train!")
-        await ctx.send(embed=embed)
-
-    @commands.command(name="rehab", aliases=["rh"], help="Visit rehabilitation center to recover fitness")
-    async def rehab_command(self, ctx):
-        ensure_life(ctx.author.id)
-        life = get_life(ctx.author.id)
-        can, mins = cooldown_check(life["last_rehab"], 12)
-        if not can:
-            await ctx.send(f"⏳ You're still in your rehab programme. Check back in **{mins} minutes**.")
-            return
-
-        cost = random.randint(5000, 20000)
-        if life["cash"] < cost:
-            await ctx.send(f"❌ Rehab costs **{format_money(cost)}** but you only have **{format_money(life['cash'])}**. Take out a loan!")
-            return
-
-        fit_gain = random.randint(20, 40)
-        new_fit = min(100, life["fitness"] + fit_gain)
-        new_cash = life["cash"] - cost
-        update_life(ctx.author.id, fitness=new_fit, cash=new_cash,
-                    last_rehab=datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'))
-
-        embed = discord.Embed(title="🏥 Rehabilitation Complete!", color=0x00FF99,
-                              description="The physio team worked miracles. You're feeling stronger already.")
-        embed.add_field(name="Recovery", value=f"+{fit_gain} Fitness\nNew Fitness: **{new_fit}/100**", inline=True)
-        embed.add_field(name="Cost", value=f"-{format_money(cost)}", inline=True)
-        embed.set_footer(text="Cooldown: 12 hours")
-        await ctx.send(embed=embed)
-
-    # ==================================================
-    # RIVALS & TRASH TALK
-    # ==================================================
-
-    @commands.command(name="rival", aliases=["rv"], help="Declare a rival")
-    async def rival_command(self, ctx, member: discord.Member = None):
-        if not member:
-            await ctx.send("❌ Tag a player to declare them your rival! Example: `-rival @Player`")
-            return
-        if member.id == ctx.author.id:
-            await ctx.send("❌ You can't rival yourself! 😂")
-            return
-
-        ensure_life(ctx.author.id)
-        ensure_life(member.id)
-
-        conn = sqlite3.connect('players.db')
-        c = conn.cursor()
-        c.execute("SELECT 1 FROM player_rivals WHERE user_id = ? AND rival_id = ?", (ctx.author.id, member.id))
-        existing = c.fetchone()
-        if existing:
-            await ctx.send(f"⚠️ You've already declared **{member.display_name}** your rival!")
-            conn.close()
-            return
-
-        c.execute("INSERT INTO player_rivals (user_id, rival_id) VALUES (?, ?)", (ctx.author.id, member.id))
-        conn.commit()
-        conn.close()
-
-        my_name = get_player_name(ctx.author.id) or ctx.author.display_name
-        their_name = get_player_name(member.id) or member.display_name
-        update_life(ctx.author.id, confidence=min(100, get_life(ctx.author.id)["confidence"] + 5))
-
-        quotes = [
-            f"The cricket world just got more interesting.",
-            f"One pitch isn't big enough for both of them.",
-            f"The rivalry we never knew we needed.",
-            f"Prepare for fireworks on and off the field.",
-        ]
-
-        embed = discord.Embed(
-            title="⚔️ RIVALRY DECLARED!",
-            description=f"**{my_name}** has officially declared **{their_name}** as their rival!\n\n*\"{random.choice(quotes)}\"*",
-            color=0xFF4444
-        )
-        embed.add_field(name="⚔️ Challenge Accepted?", value=f"{member.mention} — the gauntlet has been thrown. Do you accept?", inline=False)
-        embed.add_field(name="Bonus", value="+5 Confidence (nothing like a rivalry to fire you up!)", inline=False)
-        embed.set_thumbnail(url=ctx.author.display_avatar.url)
-        await ctx.send(embed=embed)
-
-    @commands.command(name="trashtalk", aliases=["tt"], help="Send trash talk to reduce opponent's confidence")
-    async def trashtalk_command(self, ctx, member: discord.Member = None):
-        if not member:
-            await ctx.send("❌ Tag someone to trash talk! Example: `-trashtalk @Player`")
-            return
-        if member.id == ctx.author.id:
-            await ctx.send("❌ Talking trash to yourself? Seek help 😭")
-            return
-
-        ensure_life(ctx.author.id)
-        ensure_life(member.id)
-
-        my_life = get_life(ctx.author.id)
-        their_life = get_life(member.id)
-
-        line = random.choice(TRASH_TALK_LINES)
-        damage = random.randint(5, 15)
-        own_conf_boost = random.randint(3, 8)
-
-        new_their_conf = max(0, their_life["confidence"] - damage)
-        new_my_conf = min(100, my_life["confidence"] + own_conf_boost)
-
-        update_life(ctx.author.id, confidence=new_my_conf)
-        update_life(member.id, confidence=new_their_conf)
-
-        conn = sqlite3.connect('players.db')
-        c = conn.cursor()
-        c.execute("INSERT INTO trash_talk_log (sender_id, target_id, message, confidence_damage) VALUES (?,?,?,?)",
-                  (ctx.author.id, member.id, line, damage))
-        conn.commit()
-        conn.close()
-
-        my_name = get_player_name(ctx.author.id) or ctx.author.display_name
-        their_name = get_player_name(member.id) or member.display_name
-
-        embed = discord.Embed(title="🔥 TRASH TALK DELIVERED!", color=0xFF6600)
-        embed.add_field(name=f"💬 {my_name} said:", value=f'*"{line}"*', inline=False)
-        embed.add_field(name="📉 Effect on Target", 
-                       value=f"{their_name}'s Confidence: -{damage} (now **{new_their_conf}/100**)", inline=True)
-        embed.add_field(name="📈 Effect on You",
-                       value=f"Your Confidence: +{own_conf_boost} (now **{new_my_conf}/100**)", inline=True)
-
-        if their_life["confidence"] < 30:
-            embed.set_footer(text="🧠 Their confidence is dangerously low. They're rattled!")
-        await ctx.send(embed=embed)
-
-    @commands.command(name="rivals", help="View your rivals list")
-    async def rivals_command(self, ctx, member: discord.Member = None):
-        target = member or ctx.author
-        conn = sqlite3.connect('players.db')
-        c = conn.cursor()
-        c.execute("SELECT rival_id FROM player_rivals WHERE user_id = ?", (target.id,))
-        rival_ids = [r[0] for r in c.fetchall()]
-        conn.close()
-
-        if not rival_ids:
-            await ctx.send(f"{'You have' if target == ctx.author else f'{target.display_name} has'} no declared rivals. Use `-rival @user` to start one!")
-            return
-
-        embed = discord.Embed(title=f"⚔️ {target.display_name}'s Rivals", color=0xFF4444)
-        for rid in rival_ids[:10]:
-            rmember = ctx.guild.get_member(rid)
-            rname = get_player_name(rid) or (rmember.display_name if rmember else f"User {rid}")
-            rlife = get_life(rid)
-            embed.add_field(name=rname, value=f"Rep: {rlife['reputation']} | Conf: {rlife['confidence']}" if rlife else "No data", inline=True)
-        await ctx.send(embed=embed)
-
-    # ==================================================
-    # SOCIAL MEDIA
-    # ==================================================
-
-    async def feed_command(self, ctx, language: str = "all"):
-        """Open the live AI-generated cricket fan feed.
-        Usage: -feed | -feed english | -feed hinglish
-        """
-        lang = language.lower().strip()
-        if lang not in ('all', 'english', 'hinglish', 'hindi'):
-            lang = 'all'
-        if lang == 'hindi':
-            lang = 'hinglish'
-
-        ensure_life(ctx.author.id)
-        view = FeedView(ctx, initial_page=0, language_filter=lang, bot=self.bot)
-
-        loading_embed = build_feed_embed([], 0, lang, is_loading=True)
-        msg = await ctx.send(embed=loading_embed, view=view)
-
-        try:
-            posts, is_fallback = await get_feed_page(lang, 0, bot=self.bot)
-            embed = build_feed_embed(posts, 0, lang, is_fallback=is_fallback)
-        except Exception as e:
-            embed = discord.Embed(
-                title="📱 CricketGram Fan Feed",
-                description=f"❌ Could not connect to AI: `{str(e)[:200]}`\n\nCheck your API key or try again!",
-                color=0xFF0000
-            )
-
-        view._update_buttons()
-        await msg.edit(embed=embed, view=view)
-
-    async def genposttoday(self, ctx, pages: int = 8):
-        """
-        Pre-generate all feed pages for today, one API call every 10 minutes.
-        This completely avoids Gemini rate limits by spacing calls far apart.
-        On 429, waits another 10 minutes then retries.
-
-        Usage: -genposttoday       → 8 pages × 3 langs = 24 calls (~4 hours)
-               -genposttoday 3    → 3 pages × 3 langs =  9 calls (~1.5 hours)
-        """
-        CALL_INTERVAL = 600       # 10 minutes between each call
-        RATE_LIMIT_WAIT = 600     # 10 minutes extra wait on 429
-        MAX_RETRIES = 3           # retries per page before giving up
-
-        pages = max(1, min(pages, 15))
-        langs = ['all', 'english', 'hinglish']
-        today = datetime.utcnow().strftime('%Y-%m-%d')
-        LANG_EMOJI = {'all': '🌐', 'english': '🇬🇧', 'hinglish': '🇮🇳'}
-
-        # Build todo list — skip already cached
-        todo = []
-        for lang in langs:
-            for page in range(pages):
-                if not get_feed_from_cache(today, lang, page):
-                    todo.append((lang, page))
-
-        skipped_already = pages * len(langs) - len(todo)
-        total = len(todo)
-
-        print(f"[FEED GEN] Starting: date={today} | todo={total} | cached={skipped_already}")
-        print(f"[FEED GEN] Queue: {todo}")
-        print(f"[FEED GEN] Interval: {CALL_INTERVAL}s | Est total time: {total * CALL_INTERVAL // 60}min")
-
-        if not todo:
-            embed = discord.Embed(
-                title="✅ Feed Already Generated",
-                description=(
-                    f"All **{pages} pages × {len(langs)} langs** are already cached for today!\n\n📅 Date: `{today}`\nUsers can open `-feed` instantly."
-                ),
-                color=0x00FF00
-            )
-            await ctx.send(embed=embed)
-            return
-
-        est_mins = total * CALL_INTERVAL // 60
-        status_embed = discord.Embed(
-            title="🤖 CricketGram Feed Generator",
-            description=(
-                f"Generating **{total}** page(s) — **1 call every 10 minutes**\n"
-                f"*(Skipping {skipped_already} already cached)*\n\n"
-                f"⏱️ Est. total time: **~{est_mins} minutes**\n"
-                f"🛡️ Auto-waits **10 min** on rate limit\n\n"
-                f"Progress: `0 / {total}`  `{'░' * 20}`"
-            ),
-            color=0xE1306C
-        )
-        status_embed.set_footer(text=f"📅 {today} | 10 min between calls | Keep bot running!")
-        status_msg = await ctx.send(embed=status_embed)
-
-        # Fetch player data and tournament context once
-        player_data = get_feed_player_data(bot=self.bot)
-        tourney_name, standings = get_tournament_context()
-        if not player_data:
-            simple_players = get_cricket_players()
-            player_data = {p: {
-                'discord': f'@{p.lower().split()[0]}fan', 'team': 'Unknown',
-                'matches': 0, 'runs': 0, 'wickets': 0, 'strike_rate': 0.0,
-                'economy': 0.0, 'average': 0.0, 'highest': 0,
-                'best_bowling': '0/0', 'centuries': 0, 'fifties': 0, 'impact': 0
-            } for p in simple_players}
-
-        print(f"[FEED GEN] Players loaded: {len(player_data)} | Tournament: {tourney_name or 'None'}")
-
-        done = 0
-        failed = []
-
-        async def _update_status(lang, page, msg_override=None):
-            pct = done / total
-            filled = int(pct * 20)
-            bar = '█' * filled + '░' * (20 - filled)
-            lang_e = LANG_EMOJI.get(lang, '🌐')
-            action = f"⏳ **{msg_override}**" if msg_override else f"**Generating:** {lang_e} `{lang}` — Page {page + 1}"
-            desc = (
-                f"{action}\n\n"
-                f"Progress: `{done} / {total}`\n"
-                f"`{bar}` {int(pct * 100)}%\n\n"
-                f"✅ Done: **{done}**  |  ⏭️ Cached: **{skipped_already}**  |  ❌ Failed: **{len(failed)}**"
-            )
-            emb = discord.Embed(title="🤖 CricketGram Feed Generator", description=desc, color=0xE1306C)
-            emb.set_footer(text=f"📅 {today} | 1 call per 10 min | Est. {((total - done) * CALL_INTERVAL) // 60}min remaining")
-            try:
-                await status_msg.edit(embed=emb)
-            except Exception:
-                pass
-
-        for i, (lang, page) in enumerate(todo):
-            lang_e = LANG_EMOJI.get(lang, '🌐')
-            print(f"[FEED GEN] --- [{i+1}/{total}] lang={lang} page={page+1} ---")
-            await _update_status(lang, page)
-
-            prompt = build_feed_prompt(player_data, lang, page, tourney_name, standings)
-            success = False
-
-            for attempt in range(1, MAX_RETRIES + 1):
                 try:
-                    print(f"[FEED GEN] → Calling Gemini (attempt {attempt}/{MAX_RETRIES})...")
-                    raw = await call_openrouter(prompt)
-                    raw = raw.strip()
-                    if raw.startswith('```'):
-                        parts = raw.split('```')
-                        raw = parts[1] if len(parts) > 1 else raw
-                        if raw.startswith('json'):
-                            raw = raw[4:]
-                    raw = raw.strip()
-                    posts = json.loads(raw)
-                    save_feed_to_cache(today, lang, page, posts)
-                    done += 1
-                    success = True
-                    print(f"[FEED GEN] ✅ Success: lang={lang} page={page+1} | {len(posts)} posts saved | done={done}/{total}")
-                    break
-
-                except RuntimeError as e:
-                    if 'RATE_LIMITED' in str(e):
-                        print(f"[FEED GEN] ❌ 429 on lang={lang} page={page+1} attempt={attempt} — waiting {RATE_LIMIT_WAIT}s")
-                        # Countdown in 60s chunks
-                        remaining = RATE_LIMIT_WAIT
-                        while remaining > 0:
-                            wait_chunk = min(60, remaining)
-                            mins_left = remaining // 60
-                            secs_left = remaining % 60
-                            await _update_status(lang, page,
-                                f"Rate limited! Waiting {mins_left}m {secs_left:02d}s before retry {attempt}/{MAX_RETRIES}")
-                            print(f"[FEED GEN]    ⏳ {remaining}s remaining...")
-                            await asyncio.sleep(wait_chunk)
-                            remaining -= wait_chunk
-                        print(f"[FEED GEN]    🔄 Retrying after 429 wait...")
+                    # Check if it's a local file or URL
+                    if player_image_url == "fallback.webp":
+                        player_img = Image.open("fallback.webp").convert('RGBA')
                     else:
-                        print(f"[FEED GEN] ❌ API error: {str(e)[:100]}")
-                        failed.append(f"{lang_e} `{lang}` p{page+1}: {str(e)[:60]}")
-                        break
+                        async with session.get(player_image_url) as resp:
+                            if resp.status == 200:
+                                player_img_data = await resp.read()
+                                player_img = Image.open(io.BytesIO(player_img_data)).convert('RGBA')
+                            else:
+                                player_img = Image.open("fallback.webp").convert('RGBA')
+
+                    player_img = player_img.resize((player_size_row, player_size_row), Image.Resampling.LANCZOS)
+
+                    # Create WHITE background circle
+                    white_bg = Image.new('RGBA', (player_size_row, player_size_row), (255, 255, 255, 255))
+
+                    # Create circular mask
+                    mask = Image.new('L', (player_size_row, player_size_row), 0)
+                    mask_draw = ImageDraw.Draw(mask)
+                    mask_draw.ellipse((0, 0, player_size_row, player_size_row), fill=255)
+
+                    # Composite player image on white background
+                    white_bg.paste(player_img, (0, 0), player_img)
+
+                    # MAKE TRANSPARENT
+                    white_bg.putalpha(180)
+
+                    # Create BLACK OUTLINE
+                    outline_thickness = 3  # THIN BLACK OUTLINE
+                    outlined_img = Image.new('RGBA', (player_size_row, player_size_row), (0, 0, 0, 0))
+                    outlined_draw = ImageDraw.Draw(outlined_img)
+                    outlined_draw.ellipse(
+                        [(0, 0), (player_size_row - 1, player_size_row - 1)],
+                        fill=None,
+                        outline=(0, 0, 0, 255),
+                        width=outline_thickness
+                    )
+
+                    # Paste player image with white background
+                    img.paste(white_bg, (player_x, player_y), mask)
+                    # Paste black outline on top
+                    img.paste(outlined_img, (player_x, player_y), outlined_img)
 
                 except Exception as e:
-                    print(f"[FEED GEN] ❌ Unexpected error: {str(e)[:100]}")
-                    failed.append(f"{lang_e} `{lang}` p{page+1}: {str(e)[:60]}")
-                    break
+                    print(f"Error loading player image: {e}")
+                    try:
+                        player_img = Image.open("fallback.webp").convert('RGBA')
+                        player_img = player_img.resize((player_size_row, player_size_row), Image.Resampling.LANCZOS)
 
-            if not success and not any(f"`{lang}` p{page+1}" in f for f in failed):
-                print(f"[FEED GEN] 💀 Gave up on lang={lang} page={page+1} after {MAX_RETRIES} attempts")
-                failed.append(f"{lang_e} `{lang}` p{page+1}: failed after {MAX_RETRIES} attempts")
+                        white_bg = Image.new('RGBA', (player_size_row, player_size_row), (255, 255, 255, 255))
+                        mask = Image.new('L', (player_size_row, player_size_row), 0)
+                        mask_draw = ImageDraw.Draw(mask)
+                        mask_draw.ellipse((0, 0, player_size_row, player_size_row), fill=255)
+                        white_bg.paste(player_img, (0, 0), player_img)
+                        white_bg.putalpha(180)
 
-            # Wait 10 minutes before next call (skip after last item)
-            if i < total - 1:
-                print(f"[FEED GEN] Sleeping {CALL_INTERVAL}s (10 min) before next call...")
-                remaining = CALL_INTERVAL
-                while remaining > 0:
-                    wait_chunk = min(60, remaining)
-                    mins_left = remaining // 60
-                    secs_left = remaining % 60
-                    await _update_status(lang, page,
-                        f"✅ Done! Next call in {mins_left}m {secs_left:02d}s ({i+2}/{total})")
-                    await asyncio.sleep(wait_chunk)
-                    remaining -= wait_chunk
+                        outlined_img = Image.new('RGBA', (player_size_row, player_size_row), (0, 0, 0, 0))
+                        outlined_draw = ImageDraw.Draw(outlined_img)
+                        outlined_draw.ellipse(
+                            [(0, 0), (player_size_row - 1, player_size_row - 1)],
+                            fill=None,
+                            outline=(0, 0, 0, 255),
+                            width=3
+                        )
 
-        # Final summary
-        total_cached = done + skipped_already
-        total_possible = pages * len(langs)
-        print(f"[FEED GEN] === COMPLETE === generated={done} | cached={skipped_already} | failed={len(failed)} | coverage={total_cached}/{total_possible}")
-        if failed:
-            print(f"[FEED GEN] Failed: {failed}")
+                        img.paste(white_bg, (player_x, player_y), mask)
+                        img.paste(outlined_img, (player_x, player_y), outlined_img)
+                    except:
+                        pass
 
-        if failed:
-            fail_list = "\n".join(f"• {f}" for f in failed[:10])
-            final_color = 0xFF8C00 if done > 0 else 0xFF0000
-            final_desc = (
-                f"**{done}/{total}** generated  |  **{skipped_already}** cached  |  **{len(failed)}** failed\n\n"
-                f"**Cache coverage:** `{total_cached}/{total_possible}` pages ready\n\n"
-                f"**Failed:**\n{fail_list}\n\n"
-                f"{'✅ `-feed` works for cached pages.' if total_cached > 0 else '❌ No pages available.'}"
-            )
-        else:
-            final_color = 0x00FF00
-            final_desc = (
-                f"**{done}** new page(s) generated  +  **{skipped_already}** already cached\n\n"
-                f"**Total ready:** `{total_cached}/{total_possible}` pages across all languages\n\n"
-                f"✅ Users can open `-feed` instantly — no rate limit errors!"
-            )
+                # Add role icon - BOTTOM LEFT (under the avatar) - WIDER FOR SPECIFIC ROLES, MOVED LEFT AND DOWN
+                role_icon_path = None
+                current_role_width = role_icon_width_row
 
-        final_embed = discord.Embed(
-            title="✅ Feed Generation Complete" if not failed else "⚠️ Feed Generation Done (with errors)",
-            description=final_desc,
-            color=final_color
-        )
-        final_embed.add_field(
-            name="📋 Coverage",
-            value=f"🌐 All · 🇬🇧 English · 🇮🇳 Hinglish\nPages 1–{pages} each",
-            inline=True
-        )
-        final_embed.add_field(
-            name="📅 Cache",
-            value=f"`{today}` UTC\nExpires midnight UTC",
-            inline=True
-        )
-        final_embed.set_footer(text="Run -genposttoday again tomorrow for fresh posts")
-        await status_msg.edit(embed=final_embed)
-    async def cleartodayfeed(self, ctx):
-        """Wipe today's feed cache so -genposttoday can start fresh."""
-        today = datetime.utcnow().strftime('%Y-%m-%d')
-        conn = sqlite3.connect('players.db')
-        c = conn.cursor()
+                if "Wicketkeeper" in player_info['role']:
+                    role_icon_path = "wk.png"
+                    current_role_width = wk_icon_width_row  # USE WIDER WIDTH FOR WK
+                elif "Batsman" in player_info['role']:
+                    role_icon_path = "bat.png"
+                elif "Bowler" in player_info['role']:
+                    role_icon_path = "bowler.png"
+                    current_role_width = bowler_icon_width_row  # USE WIDER WIDTH FOR BOWLER
+                elif "All-Rounder" in player_info['role'] or "All-rounder" in player_info['role']:
+                    role_icon_path = "allrounder.png"
+                    current_role_width = allrounder_icon_width_row  # USE WIDER WIDTH FOR ALLROUNDER
+
+                if role_icon_path:
+                    try:
+                        role_icon = Image.open(role_icon_path).convert('RGBA')
+                        role_icon = role_icon.resize((current_role_width, role_icon_height_row), Image.Resampling.LANCZOS)
+                        icon_x = avatar_x - 35  # MOVED MORE TO LEFT (was -25)
+                        icon_y = avatar_y + avatar_size_row - role_icon_height_row + 20  # MOVED MORE DOWN (was +10)
+                        img.paste(role_icon, (icon_x, icon_y), role_icon)
+                    except Exception as e:
+                        print(f"Error loading role icon: {e}")
+
+                # Add captain icon if applicable - TOP RIGHT (over player image)
+                if player_info['is_captain']:
+                    try:
+                        captain_icon = Image.open("captain.png").convert('RGBA')
+                        captain_icon = captain_icon.resize((captain_icon_width_row, captain_icon_height_row), Image.Resampling.LANCZOS)
+                        cap_x = player_x + player_size_row - 70  # MOVED MORE TO LEFT (was -55)
+                        cap_y = player_y - 15
+                        img.paste(captain_icon, (cap_x, cap_y), captain_icon)
+                    except Exception as e:
+                        print(f"Error loading captain icon: {e}")
+
+    # Add team flag in bottom right - CIRCULAR SHAPE, SAME SIZE FOR ALL TEAMS
+    if team_name.lower() == "west indies":
+        # Special handling for West Indies - use local file
         try:
-            c.execute("DELETE FROM ai_feed_cache WHERE cache_date = ?", (today,))
-            deleted = c.rowcount
-            conn.commit()
+            flag_img = Image.open("westindies.jpg").convert('RGBA')
+            flag_size = 240  # CIRCULAR SIZE
+            flag_img = flag_img.resize((flag_size, flag_size), Image.Resampling.LANCZOS)
+
+            # Create circular mask
+            mask = Image.new('L', (flag_size, flag_size), 0)
+            mask_draw = ImageDraw.Draw(mask)
+            mask_draw.ellipse((0, 0, flag_size, flag_size), fill=255)
+
+            # Create circular flag
+            circular_flag = Image.new('RGBA', (flag_size, flag_size), (0, 0, 0, 0))
+            circular_flag.paste(flag_img, (0, 0), mask)
+
+            flag_x = width - 260
+            flag_y = height - 260
+
+            # Paste circular flag
+            img.paste(circular_flag, (flag_x, flag_y), circular_flag)
         except Exception as e:
-            conn.close()
-            await ctx.send(f"❌ Failed to clear cache: {e}")
-            return
-        conn.close()
-
-        embed = discord.Embed(
-            title="🗑️ Today's Feed Cache Cleared",
-            description=f"Deleted **{deleted}** cached page(s) for `{today}`.\n\n"
-                        f"Run `-genposttoday` to pre-generate a fresh batch.",
-            color=0xFF6B6B
-        )
-        await ctx.send(embed=embed)
-
-    @commands.command(name="socialmedia", aliases=["sm"], help="Access your social media account")
-    async def socialmedia_command(self, ctx):
-        ensure_life(ctx.author.id)
-        social = get_social(ctx.author.id)
-        life = get_life(ctx.author.id)
-        player_name = get_player_name(ctx.author.id) or ctx.author.display_name
-
-        verified_badge = "✅" if social["verification_status"] else ""
-        follower_tier = self._follower_tier(social["followers"])
-
-        conn = sqlite3.connect('players.db')
-        c = conn.cursor()
-        c.execute("SELECT post_type, likes, went_viral, posted_at FROM social_posts WHERE user_id = ? ORDER BY posted_at DESC LIMIT 5", (ctx.author.id,))
-        recent_posts = c.fetchall()
-        conn.close()
-
-        embed = discord.Embed(
-            title=f"📱 {player_name}'s CricketGram {verified_badge}",
-            description=f"*{social['bio'] or 'No bio yet. Use -setbio to add one!'}*",
-            color=0xE1306C
-        )
-        embed.set_thumbnail(url=ctx.author.display_avatar.url)
-
-        embed.add_field(name="📊 Account Stats",
-                       value=f"👥 **{social['followers']:,}** Followers\n"
-                             f"📸 **{social['posts']}** Posts\n"
-                             f"🔥 **{social['viral_posts']}** Viral Posts\n"
-                             f"❤️ **{social['total_likes']:,}** Total Likes",
-                       inline=True)
-        embed.add_field(name="🏆 Account Status",
-                       value=f"Tier: **{follower_tier}**\n"
-                             f"{'✅ Verified Account' if social['verification_status'] else '⬜ Not Verified'}\n"
-                             f"Engagement Rate: **{self._calc_engagement(social):.1f}%**",
-                       inline=True)
-        embed.add_field(name="💡 Growth Tips",
-                       value=self._growth_tips(social, life),
-                       inline=False)
-
-        if recent_posts:
-            post_text = ""
-            for pt, lk, viral, ts in recent_posts:
-                vmark = " 🔥 VIRAL" if viral else ""
-                post_text += f"• [{POST_TYPES.get(pt, {}).get('name', pt)}] {lk:,} likes{vmark}\n"
-            embed.add_field(name="📸 Recent Posts", value=post_text, inline=False)
-
-        embed.set_footer(text="Use -post to share content | -setbio to update bio | -verify to get verified")
-        await ctx.send(embed=embed)
-
-    def _follower_tier(self, followers):
-        if followers >= 10_000_000: return "🌍 Global Icon"
-        if followers >= 1_000_000: return "💫 Celebrity"
-        if followers >= 500_000: return "⭐ Influencer"
-        if followers >= 100_000: return "🔥 Creator"
-        if followers >= 10_000: return "📈 Rising"
-        return "🌱 Newcomer"
-
-    def _calc_engagement(self, social):
-        if not social["posts"] or not social["followers"]: return 0
-        avg_likes = social["total_likes"] / max(social["posts"], 1)
-        return min(99.9, (avg_likes / max(social["followers"], 1)) * 100)
-
-    def _growth_tips(self, social, life):
-        tips = []
-        if social["followers"] < 10000: tips.append("📌 Post daily to grow faster!")
-        if social["viral_posts"] == 0: tips.append("💣 Try controversy bait to go viral")
-        if life["reputation"] < 50: tips.append("🙏 Post an apology to recover rep")
-        if not tips: tips.append("🚀 You're doing great! Keep posting!")
-        return "\n".join(tips)
-
-    @commands.command(name="post", aliases=["p"], help="Share a custom post on CricketGram")
-    async def post_command(self, ctx):
-        ensure_life(ctx.author.id)
-        life = get_life(ctx.author.id)
-        social = get_social(ctx.author.id)
-        player_name = get_player_name(ctx.author.id) or ctx.author.display_name
-        embed = discord.Embed(
-            title="📱 New CricketGram Post",
-            description=f"**{player_name}** — {social['followers']:,} followers\n\nClick below to write your post!",
-            color=0xE1306C
-        )
-        embed.set_thumbnail(url=ctx.author.display_avatar.url)
-        embed.set_footer(text="Max 280 characters • People will comment on your post automatically")
-        view = PostButtonView(self, ctx)
-        await ctx.send(embed=embed, view=view)
-
-    async def _do_post(self, interaction, post_key):
-        user_id = interaction.user.id
-        ensure_life(user_id)
-        life = get_life(user_id)
-        social = get_social(user_id)
-        post_data = POST_TYPES[post_key]
-        template = random.choice(post_data["templates"])
-
-        # Calculate performance
-        base_min, base_max = post_data["base_likes"]
-        likes = random.randint(base_min, base_max)
-
-        # Boost by follower count
-        follower_boost = social["followers"] / 10000
-        likes = int(likes * (1 + follower_boost * 0.1))
-
-        fan_min, fan_max = post_data["followers_gain"]
-        fan_gain = random.randint(fan_min, fan_max)
-
-        # Viral check
-        went_viral = random.random() < 0.08  # 8% chance
-        if went_viral:
-            likes *= random.randint(5, 20)
-            fan_gain *= random.randint(5, 15)
-
-        # Update social
-        new_followers = social["followers"] + fan_gain
-        new_posts = social["posts"] + 1
-        new_viral = social["viral_posts"] + (1 if went_viral else 0)
-        new_total_likes = social["total_likes"] + likes
-
-        update_social(user_id, followers=new_followers, posts=new_posts, viral_posts=new_viral,
-                      total_likes=new_total_likes, last_post=datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'))
-
-        # Update life stats
-        new_rep = max(0, min(100, life["reputation"] + post_data["rep_change"]))
-        new_conf = max(0, min(100, life["confidence"] + post_data["conf_change"]))
-        new_fans = life["fans"] + fan_gain
-        update_life(user_id, reputation=new_rep, confidence=new_conf, fans=new_fans,
-                    last_social=datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'))
-
-        # Save post
-        conn = sqlite3.connect('players.db')
-        c = conn.cursor()
-        c.execute("INSERT INTO social_posts (user_id, post_type, content, likes, went_viral) VALUES (?,?,?,?,?)",
-                  (user_id, post_key, template, likes, 1 if went_viral else 0))
-        conn.commit()
-        conn.close()
-
-        color = 0xFF6600 if went_viral else 0xE1306C
-        embed = discord.Embed(
-            title=f"{'🔥 VIRAL POST!!! 🔥' if went_viral else '📸 Post Published!'}",
-            description=f'*"{template}"*',
-            color=color
-        )
-        if went_viral:
-            embed.description += "\n\n**🚨 YOUR POST WENT VIRAL! THE INTERNET IS TALKING!**"
-
-        embed.add_field(name="📊 Performance", 
-                       value=f"❤️ {likes:,} likes\n👥 +{fan_gain:,} followers\n📱 {new_followers:,} total", inline=True)
-        embed.add_field(name="📈 Impact",
-                       value=f"Rep: {post_data['rep_change']:+d}\nConf: {post_data['conf_change']:+d}", inline=True)
-
-        player_name = get_player_name(user_id) or interaction.user.display_name
-        embed.set_author(name=f"{player_name} on CricketGram", icon_url=interaction.user.display_avatar.url)
-        embed.set_footer(text=f"Total Followers: {new_followers:,} | Total Posts: {new_posts}")
-        await interaction.channel.send(embed=embed)
-
-    async def _process_custom_post(self, interaction: discord.Interaction, content: str):
-        """Handle a custom post submitted via modal."""
-        user_id = interaction.user.id
-        ensure_life(user_id)
-        social = get_social(user_id)
-        life   = get_life(user_id)
-        player_name = get_player_name(user_id) or interaction.user.display_name
-
-        # Likes & viral
-        base_likes  = random.randint(200, 3000)
-        follower_mult = 1 + (social['followers'] / 50000) * 0.5
-        likes = int(base_likes * follower_mult)
-        went_viral = random.random() < 0.10
-        viral_mult = random.randint(5, 20) if went_viral else 1
-        likes *= viral_mult
-        fan_gain = random.randint(50, 600)
-        if went_viral:
-            fan_gain *= random.randint(5, 15)
-
-        # Save post
-        conn = sqlite3.connect('players.db')
-        c = conn.cursor()
-        c.execute(
-            "INSERT INTO social_posts (user_id, post_type, content, likes, went_viral, fan_gain) VALUES (?,?,?,?,?,?)",
-            (user_id, 'custom', content, likes, 1 if went_viral else 0, fan_gain)
-        )
-        post_id = c.lastrowid
-        conn.commit()
-        conn.close()
-
-        # Update stats
-        update_social(user_id,
-                      followers=social['followers'] + fan_gain,
-                      posts=social['posts'] + 1,
-                      viral_posts=social['viral_posts'] + (1 if went_viral else 0),
-                      total_likes=social['total_likes'] + likes,
-                      last_post=datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'))
-        update_life(user_id,
-                    fans=life['fans'] + fan_gain,
-                    last_social=datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'))
-
-        # Kick off AI comment generation in background (non-blocking)
-        asyncio.get_event_loop().create_task(
-            self._generate_post_comments(post_id, player_name, content, social, life)
-        )
-
-        color = 0xFF6600 if went_viral else 0xE1306C
-        embed = discord.Embed(
-            title="🔥 VIRAL POST! 🔥" if went_viral else "📸 Post Published!",
-            description=f'*"{content}"*',
-            color=color
-        )
-        if went_viral:
-            embed.description += "\n\n**🚨 YOUR POST WENT VIRAL! THE INTERNET IS TALKING!**"
-        embed.add_field(
-            name="📊 Performance",
-            value=f"❤️ **{likes:,}** likes\n👥 **+{fan_gain:,}** followers\n📱 **{social['followers']+fan_gain:,}** total",
-            inline=True
-        )
-        embed.add_field(
-            name="💬 Comments",
-            value="⏳ Fans are reading your post...\nCheck with **-checkpost** in ~15 seconds!",
-            inline=True
-        )
-        embed.set_author(name=f"{player_name} on CricketGram", icon_url=interaction.user.display_avatar.url)
-        embed.set_footer(text="Use -checkpost to see all fan comments")
-        await interaction.followup.send(embed=embed)
-
-    async def _generate_post_comments(self, post_id, player_name, content, social, life):
-        """Generate AI fan comments for a custom post and store them in the DB."""
-        # Detect if the post is a question so fans actually answer it
-        stripped = content.strip()
-        _q_words = ('who ', 'what ', 'which ', 'where ', 'when ', 'why ', 'how ',
-                    'is ', 'are ', 'do ', 'does ', 'can ', 'could ', 'would ', 'should ')
-        is_question = stripped.endswith('?') or stripped.lower().startswith(_q_words)
-
-        if is_question:
-            comment_structure = """\
-- 2 direct answers to the question asked (give a clear opinion/answer — name a player, fact, or take a side)
-- 1 agreement or follow-up that builds on an answer
-- 1 disagreement or different opinion challenging the answers
-- 1 funny reply or cricket meme response to the question
-- 1 neutral analytical take that backs an answer with a stat"""
-            extra_rule = ("IMPORTANT: The post is a QUESTION — every comment MUST actually respond to what "
-                          "was asked. Fans should give real answers and debate them. Do NOT just praise the "
-                          "player or ignore the question.")
-        else:
-            comment_structure = """\
-- 2 hype/supportive (excited, praising, fanboying)
-- 1 hate/toxic (jealous, roasting, salty)
-- 1 neutral/analytical (debating, comparing, thoughtful)
-- 1 funny/meme (joke, cricket pun, light humour)
-- 1 question (asking something sparked by the post)"""
-            extra_rule = "Each comment must directly reference the post content — no generic cricket chat."
-
-        prompt = f"""You are generating realistic fan comments on a cricket player's CricketGram post.
-
-Player: {player_name}
-Followers: {social['followers']:,}
-Reputation: {life['reputation']}/100
-Post content: "{content}"
-
-Generate exactly 6 comments from different fan perspectives:
-{comment_structure}
-
-{extra_rule}
-Rules: max 80 chars each, natural cricket slang, 0-2 emojis per comment, no emoji at the start. Creative usernames only.
-
-Return ONLY valid JSON array, no markdown:
-[
-  {{
-    "handle": "fan_username",
-    "comment_text": "comment here",
-    "sentiment": "hype",
-    "likes": 42
-  }}
-]"""
-        try:
-            raw = await call_openrouter(prompt, max_tokens=700)
-            raw = raw.strip()
-            start = raw.find('[')
-            end   = raw.rfind(']')
-            if start != -1 and end != -1 and end > start:
-                raw = raw[start:end + 1]
-            raw = re.sub(r',\s*([}\]])', r'\1', raw)
+            print(f"Error loading West Indies flag: {e}")
+    else:
+        # Use flag URL for other teams
+        flag_url = get_team_flag_url(team_name)
+        if flag_url:
             try:
-                comments = json.loads(raw)
-            except json.JSONDecodeError:
-                raw = _repair_truncated_json(raw)
-                comments = json.loads(raw)
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(flag_url) as resp:
+                        if resp.status == 200:
+                            flag_data = await resp.read()
+                            flag_img = Image.open(io.BytesIO(flag_data)).convert('RGBA')
+                            flag_size = 240  # CIRCULAR SIZE
+                            flag_img = flag_img.resize((flag_size, flag_size), Image.Resampling.LANCZOS)
 
-            conn = sqlite3.connect('players.db')
-            c = conn.cursor()
-            for cm in comments:
-                c.execute(
-                    "INSERT INTO post_comments (post_id, commenter_handle, comment_text, sentiment, comment_likes) VALUES (?,?,?,?,?)",
-                    (post_id,
-                     cm.get('handle', 'fan'),
-                     cm.get('comment_text', ''),
-                     cm.get('sentiment', 'neutral'),
-                     cm.get('likes', 0))
-                )
-            c.execute("UPDATE social_posts SET comments = ? WHERE id = ?", (len(comments), post_id))
-            conn.commit()
-            conn.close()
-            print(f"[COMMENTS] {len(comments)} comments saved for post {post_id}")
-        except Exception as e:
-            print(f"[COMMENTS] Failed to generate for post {post_id}: {e}")
+                            # Create circular mask
+                            mask = Image.new('L', (flag_size, flag_size), 0)
+                            mask_draw = ImageDraw.Draw(mask)
+                            mask_draw.ellipse((0, 0, flag_size, flag_size), fill=255)
 
-    @commands.command(name="checkpost", aliases=["check"], help="Check your latest custom post's comments")
-    async def checkpost_command(self, ctx):
-        ensure_life(ctx.author.id)
-        conn = sqlite3.connect('players.db')
-        c = conn.cursor()
-        c.execute(
-            "SELECT id, content, likes, went_viral, COALESCE(fan_gain, 0) FROM social_posts "
-            "WHERE user_id = ? AND post_type = 'custom' ORDER BY posted_at DESC LIMIT 1",
-            (ctx.author.id,)
+                            # Create circular flag
+                            circular_flag = Image.new('RGBA', (flag_size, flag_size), (0, 0, 0, 0))
+                            circular_flag.paste(flag_img, (0, 0), mask)
+
+                            flag_x = width - 260
+                            flag_y = height - 260
+
+                            # Paste circular flag
+                            img.paste(circular_flag, (flag_x, flag_y), circular_flag)
+            except Exception as e:
+                print(f"Error loading flag: {e}")
+
+    # Convert to bytes
+    img = img.convert('RGB')
+    output = io.BytesIO()
+    img.save(output, format='PNG', quality=95)
+    output.seek(0)
+
+    return output
+#----------------
+
+# Get player representative
+def get_representative(player_name):
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute("SELECT user_id, username FROM player_representatives WHERE player_name = ?", 
+              (player_name,))
+    result = c.fetchone()
+    conn.close()
+    return result
+
+# Create player embed
+async def create_player_embed(player, team_name, guild):
+    embed = discord.Embed(
+        color=get_team_color(team_name)
+    )
+
+    # Get representative info
+    rep_info = get_representative(player['name'])
+
+    if rep_info:
+        user_id, username = rep_info
+        member = guild.get_member(user_id)
+
+        # Author field with representative
+        embed.set_author(
+            name=f"{player['name']} (@{username})",
+            icon_url=player['image']
         )
-        post_row = c.fetchone()
-        if not post_row:
-            conn.close()
-            await ctx.send("📭 You haven't made any custom posts yet! Use **-post** to share something.")
-            return
-        post_id, content, likes, went_viral, fan_gain = post_row
-        c.execute(
-            "SELECT commenter_handle, comment_text, sentiment, comment_likes "
-            "FROM post_comments WHERE post_id = ? ORDER BY comment_likes DESC",
-            (post_id,)
+
+        # Footer with representative
+        embed.set_footer(
+            text="Nations Player 2025-2026",
+            icon_url=member.avatar.url if member and member.avatar else "attachment://default.jpg"
         )
-        comments_raw = c.fetchall()
-        conn.close()
 
-        if not comments_raw:
-            await ctx.send("⏳ Fans are still reading your post! Try **-checkpost** again in a few seconds.")
-            return
-
-        player_name = get_player_name(ctx.author.id) or ctx.author.display_name
-        comments = [
-            {'commenter_handle': r[0], 'comment_text': r[1], 'sentiment': r[2], 'comment_likes': r[3]}
-            for r in comments_raw
-        ]
-        post_data = {
-            'player_name': player_name,
-            'content': content,
-            'likes': likes,
-            'fan_gain': fan_gain,
-            'went_viral': bool(went_viral)
-        }
-        view = CheckPostView(post_data, comments, ctx.author.id)
-        await ctx.send(embed=view.build_embed(), view=view)
-
-    @commands.command(name="setbio", help="Set your social media bio")
-    async def setbio_command(self, ctx, *, bio: str):
-        ensure_life(ctx.author.id)
-        if len(bio) > 150:
-            await ctx.send("❌ Bio must be under 150 characters!")
-            return
-        update_social(ctx.author.id, bio=bio)
-        await ctx.send(f"✅ Bio updated: *\"{bio}\"*")
-
-    @commands.command(name="verify", help="Apply for social media verification (costs reputation)")
-    async def verify_command(self, ctx):
-        ensure_life(ctx.author.id)
-        social = get_social(ctx.author.id)
-        life = get_life(ctx.author.id)
-
-        if social["verification_status"]:
-            await ctx.send("✅ You're already verified!")
-            return
-        if social["followers"] < 50000:
-            await ctx.send(f"❌ You need at least **50,000 followers** to apply for verification. You have **{social['followers']:,}**.")
-            return
-        if life["reputation"] < 60:
-            await ctx.send(f"❌ Your reputation is too low ({life['reputation']}/100). Need at least **60** to be verified.")
-            return
-
-        update_social(ctx.author.id, verification_status=1)
-        await ctx.send(f"🎉 **Congratulations!** Your CricketGram account is now **✅ Verified!** Your rep and follower count did the talking!")
-
-    # ==================================================
-    # FANS
-    # ==================================================
-
-    @commands.command(name="fans", help="View your fanbase details")
-    async def fans_command(self, ctx, member: discord.Member = None):
-        target = member or ctx.author
-        ensure_life(target.id)
-        life = get_life(target.id)
-        social = get_social(target.id)
-        player_name = get_player_name(target.id) or target.display_name
-
-        fan_tier = self._fan_tier(life["fans"])
-        loyalty_desc = "🔥 Die-hard loyal" if life["fan_loyalty"] > 75 else "😊 Generally supportive" if life["fan_loyalty"] > 50 else "😐 Casual" if life["fan_loyalty"] > 25 else "😤 Ready to turn on you"
-
-        embed = discord.Embed(
-            title=f"👥 {player_name}'s Fanbase",
-            description=f"**{life['fans']:,}** fans worldwide — Tier: **{fan_tier}**",
-            color=0xFF69B4
-        )
-        embed.set_thumbnail(url=target.display_avatar.url)
-        embed.add_field(name="📊 Fan Stats",
-                       value=f"Total Fans: **{life['fans']:,}**\nFan Loyalty: **{life['fan_loyalty']}/100** — {loyalty_desc}\nSocial Followers: **{social['followers']:,}**",
-                       inline=True)
-        embed.add_field(name="🏆 Fan Milestones",
-                       value=self._fan_milestones(life["fans"]),
-                       inline=True)
-        embed.add_field(name="💡 Fan Growth",
-                       value="Train regularly 💪\nPost on social media 📱\nWin matches 🏆\nDo press conferences 🎤",
-                       inline=False)
-        embed.set_footer(text="Fans affect sponsor deals, reputation, and more!")
-        await ctx.send(embed=embed)
-
-    def _fan_tier(self, fans):
-        if fans >= 5_000_000: return "🌍 Global Superstar"
-        if fans >= 1_000_000: return "🌟 International Icon"
-        if fans >= 500_000: return "⭐ National Celebrity"
-        if fans >= 100_000: return "🔥 Fan Favourite"
-        if fans >= 10_000: return "📈 Growing Star"
-        return "🌱 Local Hero"
-
-    def _fan_milestones(self, fans):
-        milestones = [(10000, "10K ✅"), (50000, "50K"), (100000, "100K"), 
-                      (500000, "500K"), (1000000, "1M"), (5000000, "5M")]
-        text = ""
-        for target, label in milestones:
-            check = "✅" if fans >= target else f"({fans/target*100:.0f}%)"
-            text += f"{label} {check}\n"
-        return text
-
-    # ==================================================
-    # SCANDAL
-    # ==================================================
-
-    @commands.command(name="scandal", aliases=["sc2"], help="Roll for a random scandal event")
-    async def scandal_command(self, ctx):
-        ensure_life(ctx.author.id)
-        life = get_life(ctx.author.id)
-        can, mins = cooldown_check(life["last_scandal"], 12)
-        if not can:
-            await ctx.send(f"⏳ The media has forgotten your last scandal. Wait **{mins} more minutes** before stirring things up again.")
-            return
-
-        player_name = get_player_name(ctx.author.id) or ctx.author.display_name
-
-        # 70% chance of scandal, 30% chance of positive event
-        if random.random() < 0.70:
-            event = random.choice(SCANDAL_EVENTS)
-            is_negative = True
+        # Image (representative's avatar)
+        if member and member.avatar:
+            embed.set_image(url=member.avatar.url)
         else:
-            event = random.choice(POSITIVE_EVENTS)
-            is_negative = False
-            if "{}" in event["text"]:
-                donation = random.randint(5, 50) * 1000
-                event = {**event, "text": event["text"].format(format_money(donation)), "cash": -donation}
-
-        new_rep = max(0, min(100, life["reputation"] + event["rep"]))
-        new_fans = max(0, life["fans"] + event["fans"])
-        new_cash = max(0, life["cash"] + (event.get("cash", 0)))
-        new_conf = max(0, min(100, life["confidence"] + event.get("conf", 0)))
-        update_life(ctx.author.id, reputation=new_rep, fans=new_fans, cash=new_cash, confidence=new_conf,
-                    last_scandal=datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'))
-
-        color = 0xFF0000 if is_negative else 0x00FF00
-        headline_starters = ["BREAKING:", "EXCLUSIVE:", "SOURCES SAY:", "CRICKET WORLD SHOCKED:"]
-        embed = discord.Embed(
-            title=f"📰 {random.choice(headline_starters)}",
-            description=f"**{player_name}** {event['text']}",
-            color=color
+            embed.set_image(url="attachment://default.jpg")
+    else:
+        # Author field - unclaimed
+        embed.set_author(
+            name=f"{player['name']} (Unclaimed)",
+            icon_url=player['image']
         )
-        changes = []
-        if event["rep"] != 0: changes.append(f"Reputation: {event['rep']:+d} → **{new_rep}**")
-        if event["fans"] != 0: changes.append(f"Fans: {event['fans']:+,} → **{new_fans:,}**")
-        if event.get("cash", 0) != 0: changes.append(f"Cash: {format_money(event['cash'])}")
-        if event.get("conf", 0) != 0: changes.append(f"Confidence: {event['conf']:+d}")
-        embed.add_field(name="📊 Impact", value="\n".join(changes) if changes else "No major impact", inline=False)
 
-        if is_negative and new_rep < 30:
-            embed.set_footer(text="⚠️ Your reputation is critically low! Use -press to do damage control.")
+        # Footer - unclaimed
+        embed.set_footer(
+            text="Unclaimed Player",
+            icon_url="attachment://default.jpg"
+        )
+
+        # Image - default
+        embed.set_image(url="attachment://default.jpg")
+
+    # Title
+    flag = get_team_flag(team_name)
+    embed.title = f"{flag}  ✦ {player['name']}"
+
+    # Description - Role and primary style
+    role_emoji = get_role_emoji(player['role'])
+    description = f"─ **{player['role']}** {role_emoji}\n"
+
+    # Primary style based on role
+    if "Batsman" in player['role'] or "Wicketkeeper" in player['role']:
+        # Batting style first
+        description += f"﹒*{player['batting_style']}*\n\n"
+        description += "__**Bowling Style:**__\n"
+        if player['bowling_style']:
+            description += f"﹒*{player['bowling_style']}*"
         else:
-            embed.set_footer(text="Cooldown: 12 hours")
-        await ctx.send(embed=embed)
+            description += "﹒*Not Officially Declared*  ﹒❌﹒"
+    elif "Bowler" in player['role']:
+        # Bowling style first
+        description += f"﹒*{player['bowling_style']}*\n\n"
+        description += "__**Batting Style:**__\n"
+        description += f"﹒*{player['batting_style']}*"
+    else:  # All-Rounder
+        # Both styles
+        description += f"﹒*{player['batting_style']}* (Bat)\n"
+        description += f"﹒*{player['bowling_style']}* (Bowl)"
 
-    # ==================================================
-    # PRESS CONFERENCE
-    # ==================================================
+    embed.description = description
 
-    @commands.command(name="press", aliases=["pc"], help="Attend a press conference")
-    async def press_command(self, ctx):
-        ensure_life(ctx.author.id)
-        life = get_life(ctx.author.id)
-        can, mins = cooldown_check(life["last_press"], 6)
-        if not can:
-            await ctx.send(f"⏳ You just faced the press. Give it **{mins} more minutes** before the next one.")
+    # Thumbnail
+    embed.set_thumbnail(url=player['image'])
+
+    return embed
+
+def get_team_captain(team_name):
+    """Get captain of a team"""
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute("SELECT player_name FROM team_captains WHERE team_name = ?", (team_name,))
+    result = c.fetchone()
+    conn.close()
+    return result[0] if result else None
+
+def set_team_captain(team_name, player_name, user_id, username):
+    """Set a player as team captain"""
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute("INSERT OR REPLACE INTO team_captains VALUES (?, ?, ?, ?)",
+              (team_name, player_name, user_id, username))
+    conn.commit()
+    conn.close()
+
+def remove_team_captain(team_name):
+    """Remove captain from a team"""
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute("DELETE FROM team_captains WHERE team_name = ?", (team_name,))
+    conn.commit()
+    conn.close()
+
+# Pagination View for Player List
+class PlayerListView(View):
+    def __init__(self, pages, ctx):
+        super().__init__(timeout=180)
+        self.pages = pages
+        self.current_page = 0
+        self.ctx = ctx
+        self.message = None
+        self.update_buttons()
+
+    def update_buttons(self):
+        self.children[0].disabled = self.current_page == 0
+        self.children[1].disabled = self.current_page == len(self.pages) - 1
+
+    async def update_message(self):
+        self.update_buttons()
+        await self.message.edit(embed=self.pages[self.current_page], view=self)
+
+    @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.primary)
+    async def previous_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("❌ This is not your menu!", ephemeral=True)
             return
 
-        question = random.choice(PRESS_QUESTIONS)
-        embed = discord.Embed(
-            title="🎤 PRESS CONFERENCE",
-            description=f"**Journalist:** *\"{question['question']}\"*\n\n**Choose your response:**",
-            color=0x1E90FF
+        self.current_page -= 1
+        await interaction.response.defer()
+        await self.update_message()
+
+    @discord.ui.button(label="Next ➡️", style=discord.ButtonStyle.primary)
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("❌ This is not your menu!", ephemeral=True)
+            return
+
+        self.current_page += 1
+        await interaction.response.defer()
+        await self.update_message()
+
+    async def on_timeout(self):
+        for child in self.children:
+            child.disabled = True
+        if self.message:
+            await self.message.edit(view=self)
+
+@bot.command(name="view", aliases=["v"], help="Search and view a cricket player")
+async def view_command(ctx, *, name: str):
+    players, team_names = find_player(name)
+
+    if not players:
+        await ctx.send(
+            f"❌ Player '{name}' not found. Please check the spelling and try again."
         )
-        view = PressConferenceView(ctx, question)
-        await ctx.send(embed=embed, view=view)
+        return
 
-    # ==================================================
-    # CARS & PROPERTIES
-    # ==================================================
+    # If multiple matches found, ask user to clarify
+    if len(players) > 1:
+        embed = discord.Embed(
+            title="🔍 Multiple Players Found",
+            description=f"Multiple players match '{name}'. Please be more specific:\n\n",
+            color=0xFFA500
+        )
 
-    @commands.command(name="showroom", aliases=["cars"], help="View the car showroom")
-    async def showroom_command(self, ctx):
-        ensure_life(ctx.author.id)
-        life = get_life(ctx.author.id)
+        for i, (player, team) in enumerate(zip(players, team_names), 1):
+            flag = get_team_flag(team)
+            embed.description += f"**{i}.** {flag} **{player['name']}** - {team}\n"
 
-        embed = discord.Embed(title="🚗 Cricket Star Car Showroom", 
-                              description=f"Your balance: **{format_money(life['cash'])}**", color=0xFFD700)
-        for car_id, car in CARS.items():
-            can_afford = "✅" if life["cash"] >= car["price"] else "❌"
-            embed.add_field(
-                name=f"{car['emoji']} {car['name']} {can_afford}",
-                value=f"Price: **{format_money(car['price'])}**\nPrestige: {'⭐' * min(5, car['prestige'] // 20) or '☆'}",
-                inline=True
-            )
-        embed.set_footer(text="Use -buycar <name> to purchase • e.g. -buycar bmw m3")
+        embed.set_footer(text="Use the full name with .view command")
         await ctx.send(embed=embed)
+        return
 
-    @commands.command(name="buycar", aliases=["bc"], help="Buy a car")
-    async def buycar_command(self, ctx, *, car_name: str):
-        ensure_life(ctx.author.id)
-        life = get_life(ctx.author.id)
+    # Single match found
+    player = players[0]
+    team_name = team_names[0]
+    embed = await create_player_embed(player, team_name, ctx.guild)
 
-        # Find car by partial name match
-        found_id = None
-        for car_id, car in CARS.items():
-            if car_name.lower() in car["name"].lower() or car_name.lower() == car_id:
-                found_id = car_id
-                break
-
-        if not found_id:
-            await ctx.send(f"❌ Car '{car_name}' not found! Use `-showroom` to see available cars.")
-            return
-
-        car = CARS[found_id]
-        if life["cash"] < car["price"]:
-            await ctx.send(f"❌ You can't afford a **{car['name']}**! You need {format_money(car['price'])} but have {format_money(life['cash'])}.")
-            return
-
-        new_cash = life["cash"] - car["price"]
-        update_life(ctx.author.id, cash=new_cash, car_id=found_id)
-
-        conn = sqlite3.connect('players.db')
-        c = conn.cursor()
-        c.execute("INSERT INTO player_cars (user_id, car_name, car_value) VALUES (?,?,?)",
-                  (ctx.author.id, car["name"], car["price"]))
-        conn.commit()
-        conn.close()
-
-        fan_boost = car["prestige"] * 100
-        new_fans = life["fans"] + fan_boost
-        update_life(ctx.author.id, fans=new_fans, cash=new_cash)
-
-        embed = discord.Embed(title=f"{car['emoji']} NEW CAR UNLOCKED!", color=0xFFD700,
-                              description=f"**{ctx.author.display_name}** just pulled up in a brand new **{car['name']}**!")
-        embed.add_field(name="💸 Transaction", value=f"-{format_money(car['price'])}\nRemaining: {format_money(new_cash)}", inline=True)
-        embed.add_field(name="📈 Clout Boost", value=f"+{fan_boost:,} fans\nPrestige: {'⭐' * min(5, car['prestige'] // 20)}", inline=True)
-        await ctx.send(embed=embed)
-
-    @commands.command(name="mycars", help="View your car collection")
-    async def mycars_command(self, ctx, member: discord.Member = None):
-        target = member or ctx.author
-        conn = sqlite3.connect('players.db')
-        c = conn.cursor()
-        c.execute("SELECT car_name, car_value, purchased_at FROM player_cars WHERE user_id = ? ORDER BY car_value DESC", (target.id,))
-        cars = c.fetchall()
-        conn.close()
-
-        if not cars:
-            await ctx.send(f"{'You have' if target == ctx.author else f'{target.display_name} has'} no cars! Use `-showroom` to buy one.")
-            return
-
-        total = sum(v for _, v, _ in cars)
-        embed = discord.Embed(title=f"🚗 {target.display_name}'s Garage", 
-                              description=f"**{len(cars)} cars** worth **{format_money(total)}** total", color=0xFFD700)
-        for name, val, _ in cars:
-            car_emoji = next((c["emoji"] for c in CARS.values() if c["name"] == name), "🚗")
-            embed.add_field(name=f"{car_emoji} {name}", value=f"Value: {format_money(val)}", inline=True)
-        await ctx.send(embed=embed)
-
-    @commands.command(name="buyhouse", aliases=["bh"], help="Upgrade your house")
-    async def buyhouse_command(self, ctx):
-        ensure_life(ctx.author.id)
-        life = get_life(ctx.author.id)
-        current = life["house_level"]
-        if current >= len(HOUSES) - 1:
-            await ctx.send("🏯 You already own a **Private Island Estate** — the pinnacle of cricket wealth!")
-            return
-
-        next_house = HOUSES[current + 1]
-        if life["cash"] < next_house["price"]:
-            await ctx.send(f"❌ You need **{format_money(next_house['price'])}** for a {next_house['name']}. You only have {format_money(life['cash'])}.")
-            return
-
-        new_cash = life["cash"] - next_house["price"]
-        new_fans = life["fans"] + next_house["price"] // 10
-        update_life(ctx.author.id, house_level=current + 1, cash=new_cash, fans=new_fans)
-
-        embed = discord.Embed(title=f"{next_house['emoji']} NEW HOME!", color=0x00FF00,
-                              description=f"You just moved into a **{next_house['name']}** worth **{format_money(next_house['value'])}**!")
-        embed.add_field(name="💸 Cost", value=format_money(next_house["price"]), inline=True)
-        embed.add_field(name="📈 Property Value", value=format_money(next_house["value"]), inline=True)
-        embed.add_field(name="👥 Fan Boost", value=f"+{next_house['price']//10:,} fans", inline=True)
-        await ctx.send(embed=embed)
-
-    @commands.command(name="myhouse", help="View your current property")
-    async def myhouse_command(self, ctx, member: discord.Member = None):
-        target = member or ctx.author
-        ensure_life(target.id)
-        life = get_life(target.id)
-        house = HOUSES[min(life["house_level"], len(HOUSES)-1)]
-        player_name = get_player_name(target.id) or target.display_name
-
-        embed = discord.Embed(title=f"🏠 {player_name}'s Home", color=0x00FF99)
-        embed.add_field(name="Current Residence", value=f"{house['emoji']} **{house['name']}**\nEstimated Value: **{format_money(house['value'])}**", inline=False)
-        if life["house_level"] < len(HOUSES) - 1:
-            next_h = HOUSES[life["house_level"] + 1]
-            embed.add_field(name="⬆️ Next Upgrade", value=f"{next_h['emoji']} {next_h['name']}\nCost: **{format_money(next_h['price'])}**", inline=False)
-        await ctx.send(embed=embed)
-
-    # ==================================================
-    # SPONSORS
-    # ==================================================
-
-    @commands.command(name="getsponsor", aliases=["gs"], help="Get a sponsorship deal based on your fans")
-    async def getsponsor_command(self, ctx):
-        ensure_life(ctx.author.id)
-        life = get_life(ctx.author.id)
-
-        available = [s for s in SPONSORS if life["fans"] >= s["min_fans"]]
-        if not available:
-            await ctx.send(f"❌ You need more fans to attract sponsors! Current: **{life['fans']:,}** | Min required: **{SPONSORS[0]['min_fans']:,}**")
-            return
-
-        best = available[-1]  # Get the best available sponsor
-        if life["sponsor_tier"] >= best["tier"]:
-            current = next((s for s in SPONSORS if s["tier"] == life["sponsor_tier"]), None)
-            await ctx.send(f"✅ You already have the best sponsor available: **{life['sponsor_name']}** ({format_money(current['monthly'])}/month)!\nGrow your fans for better deals!")
-            return
-
-        update_life(ctx.author.id, sponsor_tier=best["tier"], sponsor_name=f"{best['emoji']} {best['name']}",
-                    contract_value=best["monthly"])
-
-        embed = discord.Embed(title="🤝 SPONSORSHIP DEAL SIGNED!", color=0x00FF00,
-                              description=f"**{best['emoji']} {best['name']}** wants YOU as their brand ambassador!")
-        embed.add_field(name="💰 Monthly Earnings", value=f"**{format_money(best['monthly'])}/month**", inline=True)
-        embed.add_field(name="📋 Annual Value", value=f"**{format_money(best['monthly'] * 12)}/year**", inline=True)
-        embed.set_footer(text="Collect your monthly earnings with -collect | Grow fans for better deals!")
-        await ctx.send(embed=embed)
-
-    @commands.command(name="collect", aliases=["cl"], help="Collect your monthly sponsor earnings")
-    async def collect_command(self, ctx):
-        ensure_life(ctx.author.id)
-        life = get_life(ctx.author.id)
-
-        if not life["sponsor_name"] or life["contract_value"] == 0:
-            await ctx.send("❌ You don't have a sponsor yet! Use `-getsponsor` to get one.")
-            return
-
-        earnings = life["contract_value"]
-        new_cash = life["cash"] + earnings
-        # Use last_press timestamp as collect tracker (using existing column)
-        update_life(ctx.author.id, cash=new_cash)
-
-        embed = discord.Embed(title="💵 Sponsor Payment Received!", color=0x00FF00,
-                              description=f"**{life['sponsor_name']}** deposited your monthly payment!")
-        embed.add_field(name="Amount", value=f"**{format_money(earnings)}**", inline=True)
-        embed.add_field(name="New Balance", value=f"**{format_money(new_cash)}**", inline=True)
-        await ctx.send(embed=embed)
-
-    # ==================================================
-    # LOCKER ROOM
-    # ==================================================
-
-    @commands.command(name="lockerroom", aliases=["lr"], help="Send a private locker room message to a teammate")
-    async def lockerroom_command(self, ctx, member: discord.Member = None, *, message: str = None):
-        if not member:
-            # Show recent locker room activity
-            conn = sqlite3.connect('players.db')
-            c = conn.cursor()
-            c.execute("SELECT sender_id, target_id, message, sent_at FROM locker_room WHERE target_id = ? ORDER BY sent_at DESC LIMIT 5", (ctx.author.id,))
-            messages = c.fetchall()
-            conn.close()
-
-            embed = discord.Embed(title="🔒 Locker Room Inbox", color=0x4B0082)
-            if messages:
-                for sid, tid, msg, ts in messages:
-                    sender = ctx.guild.get_member(sid)
-                    sname = get_player_name(sid) or (sender.display_name if sender else "Someone")
-                    embed.add_field(name=f"From {sname}", value=f"*\"{msg}\"*", inline=False)
-            else:
-                embed.description = "No messages yet. What happens in the locker room stays here 🤫"
-            embed.set_footer(text="Use -lockerroom @player <message> to send one")
-            await ctx.send(embed=embed, ephemeral=False)
-            return
-
-        if not message:
-            message = random.choice(LOCKER_ROOM_MESSAGES)
-
-        conn = sqlite3.connect('players.db')
-        c = conn.cursor()
-        c.execute("INSERT INTO locker_room (user_id, target_id, message, sentiment) VALUES (?,?,?,?)",
-                  (ctx.author.id, member.id, message, "neutral"))
-        conn.commit()
-        conn.close()
-
-        my_name = get_player_name(ctx.author.id) or ctx.author.display_name
-        embed = discord.Embed(title="🔒 Locker Room Message Sent", color=0x4B0082,
-                              description=f"*\"{message}\"*")
-        embed.set_author(name=f"Private DM from {my_name}", icon_url=ctx.author.display_avatar.url)
-        embed.set_footer(text="🤫 What happens in the locker room stays here")
-        await ctx.send(embed=embed)
-
-        # Try to DM the target
+    # Check if we need to send default.jpg file
+    rep_info = get_representative(player['name'])
+    if not rep_info:
         try:
-            dm_embed = discord.Embed(title="🔒 You got a Locker Room Message!", color=0x4B0082,
-                                     description=f"*\"{message}\"*")
-            dm_embed.set_footer(text=f"From: {my_name} • CricketGram Locker Room")
-            await member.send(embed=dm_embed)
+            file = discord.File("default.jpg", filename="default.jpg")
+            await ctx.send(embed=embed, file=file)
+        except FileNotFoundError:
+            await ctx.send(embed=embed)
+    else:
+        member = ctx.guild.get_member(rep_info[0])
+        if not member or not member.avatar:
+            try:
+                file = discord.File("default.jpg", filename="default.jpg")
+                await ctx.send(embed=embed, file=file)
+            except FileNotFoundError:
+                await ctx.send(embed=embed)
+        else:
+            await ctx.send(embed=embed)
+
+@bot.command(name="claim", aliases=["c"], help="[ADMIN] Add a representative to a player")
+@is_staff_or_admin()
+async def claim_command(ctx, user: discord.Member, *, player_name: str):
+    players, team_names = find_player(player_name)
+
+    if not players:
+        await ctx.send(
+            f"❌ Player '{player_name}' not found."
+        )
+        return
+
+    # If multiple matches, ask for clarification
+    if len(players) > 1:
+        embed = discord.Embed(
+            title="🔍 Multiple Players Found",
+            description=f"Multiple players match '{player_name}'. Please use the full name:\n\n",
+            color=0xFFA500
+        )
+
+        for i, (player, team) in enumerate(zip(players, team_names), 1):
+            flag = get_team_flag(team)
+            embed.description += f"**{i}.** {flag} **{player['name']}** - {team}\n"
+
+        await ctx.send(embed=embed)
+        return
+
+    player = players[0]
+    team_name = team_names[0]
+
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+
+    # Check if player is already claimed
+    c.execute("SELECT username FROM player_representatives WHERE player_name = ?", 
+              (player['name'],))
+    existing = c.fetchone()
+
+    if existing:
+        await ctx.send(
+            f"⚠️ {player['name']} is already represented by @{existing[0]}. Use `-unclaim` first to remove them."
+        )
+        conn.close()
+        return
+
+    # Add representative
+    c.execute("INSERT INTO player_representatives VALUES (?, ?, ?)",
+              (player['name'], user.id, user.name))
+    conn.commit()
+    conn.close()
+
+    await ctx.send(
+        f"✅ {user.mention} is now representing **{player['name']}** from {team_name}!"
+    )
+
+    # Upload a card for the new user to the cache channel
+    asyncio.get_event_loop().create_task(ensure_card_in_cache(bot, user.id))
+
+    # Send notification to claims channel
+    claims_channel = bot.get_channel(1452037538792476682)
+    if claims_channel:
+        # Create claim announcement embed
+        embed = discord.Embed(
+            title="🎉 Player Update!",
+            description=f"{user.mention} Officially Represents **{player['name']}**",
+            color=get_team_color(team_name)
+        )
+
+        flag = get_team_flag(team_name)
+        role_emoji = get_role_emoji(player['role'])
+
+        embed.add_field(
+            name=f"{flag} Player Info",
+            value=f"**{player['name']}**\n{role_emoji} {player['role']}",
+            inline=True
+        )
+
+        embed.add_field(
+            name="👤 Representative",
+            value=f"{user.mention}",
+            inline=True
+        )
+
+        # Set player image as thumbnail and user avatar as image
+        embed.set_thumbnail(url=user.avatar.url)
+        embed.set_image(url=player['image'])
+
+        embed.set_footer(text=f"TFH Nations", icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
+        embed.timestamp = discord.utils.utcnow()
+
+        await claims_channel.send(embed=embed)
+
+@bot.command(name="unclaim", aliases=["uc"], help="[ADMIN] Remove a player's representative")
+@is_staff_or_admin()
+async def unclaim_command(ctx, *, player_name: str):
+    players, team_names = find_player(player_name)
+
+    if not players:
+        await ctx.send(
+            f"❌ Player '{player_name}' not found."
+        )
+        return
+
+    # If multiple matches, ask for clarification
+    if len(players) > 1:
+        embed = discord.Embed(
+            title="🔍 Multiple Players Found",
+            description=f"Multiple players match '{player_name}'. Please use the full name:\n\n",
+            color=0xFFA500
+        )
+
+        for i, (player, team) in enumerate(zip(players, team_names), 1):
+            flag = get_team_flag(team)
+            embed.description += f"**{i}.** {flag} **{player['name']}** - {team}\n"
+
+        await ctx.send(embed=embed)
+        return
+
+    player = players[0]
+    team_name = team_names[0]
+
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+
+    # Check if player has a representative
+    c.execute("SELECT username FROM player_representatives WHERE player_name = ?", 
+              (player['name'],))
+    existing = c.fetchone()
+
+    if not existing:
+        await ctx.send(
+            f"⚠️ {player['name']} is not currently claimed by anyone."
+        )
+        conn.close()
+        return
+
+    # Remove representative
+    c.execute("DELETE FROM player_representatives WHERE player_name = ?",
+              (player['name'],))
+    conn.commit()
+    conn.close()
+
+    await ctx.send(
+        f"✅ Removed @{existing[0]} as the representative of **{player['name']}**."
+    )
+
+@bot.command(name="me", aliases=["myrep"], help="View the player you represent")
+async def myclaim_command(ctx):
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", 
+              (ctx.author.id,))
+    result = c.fetchone()
+    conn.close()
+
+    if not result:
+        await ctx.send(
+            "❌ You don't represent any player yet."
+        )
+        return
+
+    player_name = result[0]
+    players, team_names = find_player(player_name)
+
+    if players:
+        player = players[0]
+        team_name = team_names[0]
+        embed = await create_player_embed(player, team_name, ctx.guild)
+        await ctx.send(embed=embed)
+    else:
+        await ctx.send(
+            f"⚠️ Error: Player data for {player_name} not found."
+        )
+
+
+# Add this to your main.py file
+
+# Team Selection View
+class TeamSelectView(View):
+    def __init__(self, ctx):
+        super().__init__(timeout=180)
+        self.ctx = ctx
+        self.selected_team = None
+        self.add_team_select()
+
+    def add_team_select(self):
+        teams_data = load_players()
+
+        chunks = [teams_data[:25], teams_data[25:]]
+        placeholders = ["🏏 Select Your Nation", "🏏 More Nations..."]
+
+        for idx, chunk in enumerate(chunks):
+            if not chunk:
+                continue
+            options = []
+            for team_data in chunk:
+                flag = get_team_flag(team_data['team'])
+                total_players = len(team_data['players'])
+                claimed_players = sum(1 for player in team_data['players'] if get_representative(player['name']))
+                if claimed_players == total_players:
+                    description = f"(TEAM FULL) - All {total_players} players claimed"
+                else:
+                    description = f"View {team_data['team']} players - {total_players - claimed_players} available"
+                options.append(discord.SelectOption(
+                    label=team_data['team'],
+                    description=description,
+                    emoji=flag
+                ))
+            select = Select(
+                placeholder=placeholders[idx],
+                options=options,
+                custom_id=f"team_select_{idx}"
+            )
+            select.callback = self.team_callback
+            self.add_item(select)
+
+    async def team_callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("❌ This is not your menu!", ephemeral=True)
+            return
+
+        self.selected_team = interaction.data['values'][0]
+
+        # Show player selection for the chosen team
+        view = PlayerSelectView(self.ctx, self.selected_team)
+
+        flag = get_team_flag(self.selected_team)
+        embed = discord.Embed(
+            title=f"{flag} Select Your Player from {self.selected_team}",
+            description="Choose the player you want to represent from the dropdown below.",
+            color=get_team_color(self.selected_team)
+        )
+
+        flag_url = get_team_flag_url(self.selected_team)
+        if flag_url:
+            embed.set_thumbnail(url=flag_url)
+
+        embed.set_footer(text="You can only represent one player at a time")
+
+        await interaction.response.edit_message(embed=embed, view=view)
+
+    async def on_timeout(self):
+        for child in self.children:
+            child.disabled = True
+        try:
+            await self.message.edit(view=self)
         except:
             pass
 
-    # ==================================================
-    # RELATIONSHIPS
-    # ==================================================
+# Player Selection View
+class PlayerSelectView(View):
+    def __init__(self, ctx, team_name):
+        super().__init__(timeout=180)
+        self.ctx = ctx
+        self.team_name = team_name
+        self.add_player_select()
 
-    @commands.command(name="relationship", aliases=["rel"], help="Manage your relationship status")
-    async def relationship_command(self, ctx, *, partner_name: str = None):
-        ensure_life(ctx.author.id)
-        life = get_life(ctx.author.id)
+    def add_player_select(self):
+        teams_data = load_players()
+        team_data = None
 
-        if not partner_name:
-            embed = discord.Embed(title="💑 Relationship Status", color=0xFF69B4)
-            ms_emoji = {"Single": "🧍", "In a Relationship": "💑", "Engaged": "💍", "Married": "💒",
-                        "It's Complicated": "🤷", "Divorced": "💔"}.get(life["marital_status"], "🧍")
-            embed.add_field(name="Status", value=f"{ms_emoji} **{life['marital_status']}**", inline=False)
-            if life["partner_name"]:
-                embed.add_field(name="Partner", value=life["partner_name"], inline=False)
-            embed.add_field(name="💡 Options", value="-relationship <name> to start dating\n-propose to get engaged\n-marry to tie the knot\n-breakup to end things", inline=False)
-            await ctx.send(embed=embed)
+        for t in teams_data:
+            if t['team'] == self.team_name:
+                team_data = t
+                break
+
+        if not team_data:
             return
 
-        if life["marital_status"] != "Single":
-            await ctx.send(f"❌ You're already **{life['marital_status']}**! You can't start dating someone else. Drama! 👀")
+        # Create options for player selection (max 25)
+        options = []
+        for player in team_data['players'][:25]:
+            rep_info = get_representative(player['name'])
+
+            if rep_info:
+                description = f"Claimed by @{rep_info[1]}"
+            else:
+                description = "Unclaimed - Available"
+
+            role_emoji = get_role_emoji(player['role'])
+
+            # Check if player is elite and use elite emoji instead
+            if player['name'] in elite_players:
+                elite_emoji = bot.get_emoji(1452949859412738110)
+                if elite_emoji:
+                    role_emoji = elite_emoji
+                else:
+                    role_emoji = emoji_for_select(role_emoji)
+            else:
+                role_emoji = emoji_for_select(role_emoji)
+
+            options.append(
+                discord.SelectOption(
+                    label=player['name'],
+                    description=description,
+                    emoji=role_emoji,
+                    value=player['name']
+                )
+            )
+
+        select = Select(
+            placeholder="👤 Select Your Player",
+            options=options,
+            custom_id="player_select"
+        )
+        select.callback = self.player_callback
+        self.add_item(select)
+
+    async def player_callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("❌ This is not your menu!", ephemeral=True)
             return
 
-        update_life(ctx.author.id, marital_status="In a Relationship", partner_name=partner_name,
-                    happiness=min(100, life["happiness"] + 15))
-        await ctx.send(f"💑 **{ctx.author.display_name}** is now **In a Relationship** with **{partner_name}**! +15 Happiness 🥰")
+        selected_player_name = interaction.data['values'][0]
 
-    @commands.command(name="propose", help="Get engaged to your partner")
-    async def propose_command(self, ctx):
-        ensure_life(ctx.author.id)
-        life = get_life(ctx.author.id)
-        if life["marital_status"] != "In a Relationship":
-            await ctx.send("❌ You need to be in a relationship first! Use `-relationship <name>`")
-            return
-        if life["cash"] < 50000:
-            await ctx.send("💍 A ring costs **$50,000**! You don't have enough. Save up first!")
-            return
-        update_life(ctx.author.id, marital_status="Engaged", cash=life["cash"] - 50000, happiness=min(100, life["happiness"] + 20))
-        await ctx.send(f"💍 **{ctx.author.display_name}** PROPOSED to **{life['partner_name']}**! They said YES! 🎉 -$50,000 for the ring | +20 Happiness")
-
-    @commands.command(name="marry", help="Get married to your partner")
-    async def marry_command(self, ctx):
-        ensure_life(ctx.author.id)
-        life = get_life(ctx.author.id)
-        if life["marital_status"] != "Engaged":
-            await ctx.send("❌ You need to be engaged first! Use `-propose`")
-            return
-        if life["cash"] < 100000:
-            await ctx.send("💒 A wedding costs **$100,000**! Save up first!")
-            return
-        update_life(ctx.author.id, marital_status="Married", cash=life["cash"] - 100000, 
-                    happiness=min(100, life["happiness"] + 25), fan_loyalty=min(100, life["fan_loyalty"] + 10))
-        await ctx.send(f"💒 **{ctx.author.display_name}** and **{life['partner_name']}** are now **MARRIED!** 🎊\n-$100,000 | +25 Happiness | +10 Fan Loyalty")
-
-    @commands.command(name="breakup", help="End your relationship")
-    async def breakup_command(self, ctx):
-        ensure_life(ctx.author.id)
-        life = get_life(ctx.author.id)
-        if life["marital_status"] == "Single":
-            await ctx.send("❌ You're already single! 💀")
-            return
-        old_status = life["marital_status"]
-        old_partner = life["partner_name"]
-        new_status = "Divorced" if old_status == "Married" else "Single"
-        update_life(ctx.author.id, marital_status=new_status, partner_name=None,
-                    happiness=max(0, life["happiness"] - 20), reputation=max(0, life["reputation"] - 5))
-        embed = discord.Embed(title="💔 Relationship Over", color=0xFF0000,
-                              description=f"**{ctx.author.display_name}** and **{old_partner}** have gone their separate ways.\n*-20 Happiness | -5 Reputation*")
-        if old_status == "Married":
-            embed.add_field(name="⚠️ Divorce Settlement", value="The lawyers are expensive. -$75,000", inline=False)
-            update_life(ctx.author.id, cash=max(0, life["cash"] - 75000))
-        await ctx.send(embed=embed)
-
-    # ==================================================
-    # MONEY COMMANDS
-    # ==================================================
-
-    @commands.command(name="balance", aliases=["bal"], help="Check your wallet and bank balance")
-    async def balance_command(self, ctx, member: discord.Member = None):
-        target = member or ctx.author
-        ensure_life(target.id)
-        life = get_life(target.id)
-        embed = discord.Embed(title=f"💰 {target.display_name}'s Finances", color=0x00FF00)
-        embed.add_field(name="👛 Wallet", value=f"**{format_money(life['cash'])}**", inline=True)
-        embed.add_field(name="🏦 Bank", value=f"**{format_money(life['bank'])}**", inline=True)
-        embed.add_field(name="💳 Total", value=f"**{format_money(life['cash'] + life['bank'])}**", inline=True)
-        if life["contract_value"]:
-            embed.add_field(name="📋 Monthly Income", value=f"**{format_money(life['contract_value'])}/mo**", inline=True)
-        await ctx.send(embed=embed)
-
-    @commands.command(name="deposit", aliases=["dep"], help="Deposit money into your bank")
-    async def deposit_command(self, ctx, amount: str):
-        ensure_life(ctx.author.id)
-        life = get_life(ctx.author.id)
-        if amount.lower() == "all":
-            amount = life["cash"]
-        else:
-            try:
-                amount = int(amount.replace(",", "").replace("$", ""))
-            except:
-                await ctx.send("❌ Invalid amount!")
-                return
-        if amount <= 0 or amount > life["cash"]:
-            await ctx.send(f"❌ Invalid amount. You have **{format_money(life['cash'])}** in wallet.")
-            return
-        update_life(ctx.author.id, cash=life["cash"] - amount, bank=life["bank"] + amount)
-        await ctx.send(f"🏦 Deposited **{format_money(amount)}** → Bank balance: **{format_money(life['bank'] + amount)}**")
-
-    @commands.command(name="withdraw", aliases=["wd"], help="Withdraw money from your bank")
-    async def withdraw_command(self, ctx, amount: str):
-        ensure_life(ctx.author.id)
-        life = get_life(ctx.author.id)
-        if amount.lower() == "all":
-            amount = life["bank"]
-        else:
-            try:
-                amount = int(amount.replace(",", "").replace("$", ""))
-            except:
-                await ctx.send("❌ Invalid amount!")
-                return
-        if amount <= 0 or amount > life["bank"]:
-            await ctx.send(f"❌ Invalid amount. You have **{format_money(life['bank'])}** in bank.")
-            return
-        update_life(ctx.author.id, cash=life["cash"] + amount, bank=life["bank"] - amount)
-        await ctx.send(f"💵 Withdrew **{format_money(amount)}** → Wallet: **{format_money(life['cash'] + amount)}**")
-
-    @commands.command(name="pay", aliases=["send2"], help="Send money to another player")
-    async def pay_command(self, ctx, member: discord.Member, amount: int):
-        ensure_life(ctx.author.id)
-        ensure_life(member.id)
-        if member.id == ctx.author.id:
-            await ctx.send("❌ You can't pay yourself!")
-            return
-        life = get_life(ctx.author.id)
-        if amount <= 0 or amount > life["cash"]:
-            await ctx.send(f"❌ Invalid amount. Wallet: {format_money(life['cash'])}")
-            return
-        their_life = get_life(member.id)
-        update_life(ctx.author.id, cash=life["cash"] - amount)
-        update_life(member.id, cash=their_life["cash"] + amount)
-        await ctx.send(f"💸 **{ctx.author.display_name}** sent **{format_money(amount)}** to **{member.display_name}**!")
-
-    @commands.command(name="gamble", aliases=["gam"], help="Gamble your money (risky!)")
-    async def gamble_command(self, ctx, amount: int):
-        ensure_life(ctx.author.id)
-        life = get_life(ctx.author.id)
-        if amount <= 0 or amount > life["cash"]:
-            await ctx.send(f"❌ Invalid amount. You have **{format_money(life['cash'])}**.")
-            return
-
-        outcome = random.random()
-        if outcome < 0.45:  # 45% win
-            winnings = int(amount * random.uniform(1.5, 3.0))
-            new_cash = life["cash"] - amount + winnings
-            update_life(ctx.author.id, cash=new_cash, happiness=min(100, life["happiness"] + 5))
-            await ctx.send(f"🎰 **WINNER!** You gambled **{format_money(amount)}** and won **{format_money(winnings)}**! New balance: **{format_money(new_cash)}** 🤑")
-        else:  # 55% loss
-            new_cash = life["cash"] - amount
-            update_life(ctx.author.id, cash=new_cash, happiness=max(0, life["happiness"] - 5))
-            await ctx.send(f"💸 **You lost!** **{format_money(amount)}** gone. New balance: **{format_money(new_cash)}** 😭")
-
-    # ==================================================
-    # ADMIN COMMANDS
-    # ==================================================
-
-    @commands.command(name="addcash", help="[ADMIN] Add cash to a player's account")
-    @commands.has_permissions(administrator=True)
-    async def addcash_command(self, ctx, member: discord.Member, amount: int):
-        ensure_life(member.id)
-        life = get_life(member.id)
-        update_life(member.id, cash=life["cash"] + amount)
-        await ctx.send(f"✅ Added **{format_money(amount)}** to **{member.display_name}**'s wallet. New balance: **{format_money(life['cash'] + amount)}**")
-
-    @commands.command(name="setstat", help="[ADMIN] Set a player's stat")
-    @commands.has_permissions(administrator=True)
-    async def setstat_command(self, ctx, member: discord.Member, stat: str, value: int):
-        valid = ["reputation", "confidence", "fitness", "energy", "happiness", "fans", "fan_loyalty"]
-        if stat not in valid:
-            await ctx.send(f"❌ Valid stats: {', '.join(valid)}")
-            return
-        ensure_life(member.id)
-        update_life(member.id, **{stat: max(0, min(100 if stat != "fans" else 999999999, value))})
-        await ctx.send(f"✅ Set **{member.display_name}**'s **{stat}** to **{value}**")
-
-    @commands.command(name="awardfans", help="[ADMIN] Award fans to a player (e.g. after a good match)")
-    @commands.has_permissions(administrator=True)
-    async def awardfans_command(self, ctx, member: discord.Member, amount: int, *, reason: str = "Award"):
-        ensure_life(member.id)
-        life = get_life(member.id)
-        update_life(member.id, fans=life["fans"] + amount)
-        update_social(member.id, followers=get_social(member.id)["followers"] + amount // 2)
-        embed = discord.Embed(title="👥 Fans Awarded!", color=0xFFD700,
-                              description=f"**{member.display_name}** gained **{amount:,}** fans!\n📌 Reason: {reason}")
-        embed.add_field(name="New Fan Count", value=f"**{life['fans'] + amount:,}**", inline=True)
-        await ctx.send(embed=embed)
-
-    @commands.command(name="awardtrophy", help="[ADMIN] Award a trophy to a player")
-    @commands.has_permissions(administrator=True)
-    async def awardtrophy_command(self, ctx, member: discord.Member, *, trophy_name: str):
+        # Check if user already represents a player
         conn = sqlite3.connect('players.db')
         c = conn.cursor()
-        c.execute("INSERT INTO player_trophies (user_id, trophy_name) VALUES (?,?)", (member.id, trophy_name))
+        c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", 
+                  (interaction.user.id,))
+        existing = c.fetchone()
+        conn.close()
+
+        if existing:
+            await interaction.response.send_message(
+                f"❌ You already represent **{existing[0]}**!\n"
+                f"Use `-unrepresent / -unrep` to remove your current player before claiming another.",
+                ephemeral=True
+            )
+            return
+
+        # Check if player is already claimed
+        rep_info = get_representative(selected_player_name)
+        if rep_info:
+            await interaction.response.send_message(
+                f"❌ **{selected_player_name}** is already represented by @{rep_info[1]}!",
+                ephemeral=True
+            )
+            return
+
+        # Find player data
+        players, team_names = find_player(selected_player_name)
+        if not players:
+            await interaction.response.send_message("❌ Player data not found!", ephemeral=True)
+            return
+
+        player = players[0]
+        team_name = team_names[0]
+
+        # Check if player is elite - block elite players from being claimed
+        if selected_player_name in elite_players:
+            try:
+                elite_emoji = interaction.client.get_emoji(1452949859412738110)
+                emoji_str = f"<:elite:{elite_emoji.id}>" if elite_emoji else "<:elite:1452949859412738110>"
+                auction_channel = interaction.client.get_channel(1516051222136623104)
+                channel_mention = auction_channel.mention if auction_channel else "<#1516051222136623104>"
+
+                dm_embed = discord.Embed(
+                    title="⭐ Elite Player Selected",
+                    description=f"This is an elite {emoji_str} player, you will have to buy elite players in {channel_mention}",
+                    color=0xFFD700
+                )
+                await interaction.user.send(embed=dm_embed)
+            except discord.Forbidden:
+                pass
+
+            await interaction.response.send_message(
+                f"❌ **{selected_player_name}** is an elite player and can only be purchased at auction!",
+                ephemeral=True
+            )
+            return
+
+        # DIRECTLY CLAIM THE PLAYER (no approval needed)
+        conn = sqlite3.connect('players.db')
+        c = conn.cursor()
+
+        # Add the claim
+        c.execute("INSERT INTO player_representatives VALUES (?, ?, ?)",
+                  (player['name'], interaction.user.id, interaction.user.name))
         conn.commit()
         conn.close()
-        player_name = get_player_name(member.id) or member.display_name
-        embed = discord.Embed(title="🏆 Trophy Awarded!", color=0xFFD700,
-                              description=f"**{player_name}** has been awarded the **{trophy_name}** trophy!")
+
+        # Upload a card for the new user to the cache channel
+        asyncio.get_event_loop().create_task(ensure_card_in_cache(bot, interaction.user.id))
+
+        # Send success message to user
+        await interaction.response.send_message(
+            f"✅ You are now representing **{player['name']}**!\n"
+            f"Use `-me` to view your player anytime.",
+            ephemeral=True
+        )
+
+        # Send notification to claims channel
+        claims_channel = interaction.client.get_channel(1452037538792476682)
+        if claims_channel:
+            flag = get_team_flag(team_name)
+            role_emoji = get_role_emoji(player['role'])
+
+            claim_embed = discord.Embed(
+                title="🎉 Player Update!",
+                description=f"{interaction.user.mention} Officially Represents **{player['name']}**",
+                color=get_team_color(team_name)
+            )
+
+            # Set author with player's image as icon
+            claim_embed.set_author(
+                name=".",
+                icon_url=player['image']
+            )
+
+            claim_embed.add_field(
+                name=f"{flag} Player Info",
+                value=f"**{player['name']}**\n{role_emoji} {player['role']}",
+                inline=True
+            )
+            claim_embed.add_field(
+                name="👤 Representative",
+                value=f"{interaction.user.mention}",
+                inline=True
+            )
+            claim_embed.set_thumbnail(url=interaction.user.avatar.url if interaction.user.avatar else None)
+            claim_embed.set_image(url=player['image'])
+            claim_embed.set_footer(text=f"TFH Nations")
+            claim_embed.timestamp = discord.utils.utcnow()
+            await claims_channel.send(embed=claim_embed)
+
+    async def on_timeout(self):
+        for child in self.children:
+            child.disabled = True
+
+# Main represent command
+@bot.command(name="represent", aliases=["rep"], help="Request to represent a cricket player")
+async def represent_command(ctx):
+    # Check if user already represents a player
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", 
+              (ctx.author.id,))
+    existing = c.fetchone()
+
+    conn.close()
+
+    if existing:
+        await ctx.send(
+            f"❌ You already represent **{existing[0]}**!\n"
+            f"Use `-unrepresent` to remove your current player before claiming another."
+        )
+        return
+
+    # Create team selection embed
+    embed = discord.Embed(
+        title="🏏 Select Your Nation",
+        description="Choose the nation you want to represent from the dropdown menu below.",
+        color=0x0066CC
+    )
+
+    embed.set_footer(text="Step 1 of 2: Select your nation")
+
+    view = TeamSelectView(ctx)
+    view.message = await ctx.send(embed=embed, view=view)
+
+# Unrepresent command
+@bot.command(name="unrepresent", aliases=["unrep"], help="Remove yourself as a player representative")
+async def unrepresent_command(ctx):
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+
+    c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", 
+              (ctx.author.id,))
+    result = c.fetchone()
+
+    if not result:
+        await ctx.send("❌ You don't represent any player!")
+        conn.close()
+        return
+
+    player_name = result[0]
+    conn.close()
+
+    # Warning embed
+    warn_embed = discord.Embed(
+        title="⚠️ Warning: Stats Will Be Reset",
+        description=(
+            f"You are about to stop representing **{player_name}**.\n\n"
+            f"**⚠️ Your cricket stats (runs, wickets, matches, etc.) will be wiped** — they'll appear as zero.\n\n"
+            f"🔒 **Your OVR rating is secretly preserved.** If you've batted or bowled 60+ balls, your Bat OVR and Bowl OVR are saved in the background and will still show on `-vt` and future `-statsi` lookups.\n\n"
+            f"Your old player will be recorded in history via `-oldreps`.\n\n"
+            f"Are you sure you want to continue?"
+        ),
+        color=0xFF0000
+    )
+
+    confirm_view = ConfirmationView()
+    msg = await ctx.send(embed=warn_embed, view=confirm_view)
+    await confirm_view.wait()
+
+    if not confirm_view.confirmed:
+        await msg.edit(embed=discord.Embed(
+            title="❌ Cancelled",
+            description="Your representation was not changed.",
+            color=0x808080
+        ), view=None)
+        return
+
+    # Save to old reps history
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+
+    c.execute('''CREATE TABLE IF NOT EXISTS old_representatives
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  user_id INTEGER,
+                  player_name TEXT,
+                  removed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+
+    c.execute("INSERT INTO old_representatives (user_id, player_name) VALUES (?, ?)",
+              (ctx.author.id, player_name))
+
+    # ── Ghost OVR: snapshot bat/bowl OVR before wiping stats ──
+    c.execute('''CREATE TABLE IF NOT EXISTS ovr_ghost_stats
+                 (user_id INTEGER PRIMARY KEY,
+                  bat_ovr INTEGER,
+                  bowl_ovr INTEGER,
+                  saved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+
+    c.execute("""
+        SELECT SUM(runs), SUM(runs_conceded), SUM(balls_bowled),
+               SUM(wickets), SUM(not_out), COUNT(*)
+        FROM match_stats WHERE user_id = ?
+    """, (ctx.author.id,))
+    ghost_row = c.fetchone()
+    if ghost_row and ghost_row[0] is not None and (ghost_row[5] or 0) >= 5:
+        g_runs, g_rc, g_bb, g_wk, g_no, g_mp = ghost_row
+        g_dis = g_mp - (g_no or 0)
+        g_bat_avg = float(g_runs or 0) / g_dis if g_dis > 0 else float(g_runs or 0) / max(g_mp, 1)
+        g_bat_ovr = calc_batting_ovr(g_bat_avg)
+        if (g_bb or 0) >= 6:
+            g_bowl_avg = float(g_rc or 0) / g_wk if (g_wk or 0) > 0 else 0.0
+            g_bowl_ovr = calc_bowling_ovr(g_bowl_avg)
+        else:
+            g_bowl_ovr = None
+        c.execute(
+            "INSERT OR REPLACE INTO ovr_ghost_stats (user_id, bat_ovr, bowl_ovr) VALUES (?, ?, ?)",
+            (ctx.author.id, g_bat_ovr, g_bowl_ovr)
+        )
+
+    # Reset displayed stats (OVR is preserved via ghost table above)
+    c.execute("DELETE FROM match_stats WHERE user_id = ?", (ctx.author.id,))
+    c.execute("DELETE FROM player_trophies WHERE user_id = ?", (ctx.author.id,))
+
+    # Remove representation
+    c.execute("DELETE FROM player_representatives WHERE user_id = ?", (ctx.author.id,))
+
+    # Remove from captains if applicable
+    c.execute("DELETE FROM team_captains WHERE player_name = ?", (player_name,))
+
+    conn.commit()
+    conn.close()
+
+    await msg.edit(embed=discord.Embed(
+        title="✅ Done",
+        description=(
+            f"You are no longer representing **{player_name}**.\n"
+            f"Your cricket stats and trophies have been reset.\n"
+            f"Use `-represent` to claim a new player."
+        ),
+        color=0x00FF00
+    ), view=None)
+
+@bot.command(name="resetmanualstats", help="[ADMIN] Manually reset stats for a user or 'all' who changed players recently")
+@is_staff_or_admin()
+async def resetmanualstats_command(ctx, target: str):
+    """Manually reset stats of a user or all users if they unrepped and switched in the last 5 days"""
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    five_days_ago = (datetime.utcnow() - timedelta(days=5)).strftime('%Y-%m-%d %H:%M:%S')
+
+    if target.lower() == "all":
+        # Find all users who unrepped in the last 5 days AND currently represent someone
+        c.execute("""
+            SELECT DISTINCT user_id 
+            FROM old_representatives 
+            WHERE removed_at > ? 
+            AND user_id IN (SELECT user_id FROM player_representatives)
+        """, (five_days_ago,))
+        users = c.fetchall()
+
+        if not users:
+            await ctx.send("❌ No users found who unrepped in the last 5 days and currently represent a player.")
+            conn.close()
+            return
+
+        confirm_embed = discord.Embed(
+            title="⚠️ Confirm Bulk Manual Stats Reset",
+            description=f"This will reset stats and trophies for **{len(users)}** users who switched players in the last 5 days.\n\n**This cannot be undone!**",
+            color=0xFF0000
+        )
+
+        confirm_view = ConfirmationView()
+        conf_msg = await ctx.send(embed=confirm_embed, view=confirm_view)
+        await confirm_view.wait()
+
+        if confirm_view.confirmed:
+            reset_count = 0
+            for (u_id,) in users:
+                c.execute("DELETE FROM match_stats WHERE user_id = ?", (u_id,))
+                c.execute("DELETE FROM player_trophies WHERE user_id = ?", (u_id,))
+                reset_count += 1
+            conn.commit()
+            await conf_msg.edit(content=f"✅ Stats and trophies reset for {reset_count} users.", embed=None, view=None)
+        else:
+            await conf_msg.edit(content="❌ Bulk reset cancelled.", embed=None, view=None)
+
+    else:
+        # Handle single member
+        try:
+            member = await commands.MemberConverter().convert(ctx, target)
+        except commands.MemberError:
+            await ctx.send("❌ Invalid member provided. Use a mention, ID, or 'all'.")
+            conn.close()
+            return
+
+        # Check if they unrepped in the last 5 days
+        c.execute("SELECT player_name, removed_at FROM old_representatives WHERE user_id = ? AND removed_at > ? ORDER BY removed_at DESC LIMIT 1", 
+                  (member.id, five_days_ago))
+        last_unrep = c.fetchone()
+
+        if not last_unrep:
+            await ctx.send(f"❌ {member.display_name} has not unrepped a player in the last 5 days.")
+            conn.close()
+            return
+
+        old_player, unrep_time = last_unrep
+
+        # Check if they currently represent someone
+        c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (member.id,))
+        current_rep = c.fetchone()
+
+        if not current_rep:
+            await ctx.send(f"❌ {member.display_name} currently does not represent any player. Use `-unrep` normally.")
+            conn.close()
+            return
+
+        current_player = current_rep[0]
+
+        # Confirmation
+        confirm_embed = discord.Embed(
+            title="⚠️ Confirm Manual Stats Reset",
+            description=(
+                f"User: {member.mention}\n"
+                f"Old Player: **{old_player}** (Unrepped at {unrep_time})\n"
+                f"Current Player: **{current_player}**\n\n"
+                "This will permanently delete all match stats and trophies for this user."
+            ),
+            color=0xFF0000
+        )
+
+        confirm_view = ConfirmationView()
+        conf_msg = await ctx.send(embed=confirm_embed, view=confirm_view)
+        await confirm_view.wait()
+
+        if confirm_view.confirmed:
+            c.execute("DELETE FROM match_stats WHERE user_id = ?", (member.id,))
+            c.execute("DELETE FROM player_trophies WHERE user_id = ?", (member.id,))
+            conn.commit()
+            await conf_msg.edit(content=f"✅ Stats and trophies reset for {member.mention}.", embed=None, view=None)
+        else:
+            await conf_msg.edit(content="❌ Reset cancelled.", embed=None, view=None)
+
+    conn.close()
+
+# Server IDs to upload emojis to
+EMOJI_SERVERS = [
+    840094596914741248,
+    829450700764217366,
+    902537846634733665,
+    886642304335609937,
+    823884737437368340,
+    877275137009917992,
+    848977887209979985,
+    1159160118018056192
+]
+
+EXCLUDED_EMOJI_SERVER = 1451591563078533292
+
+def get_emoji_guilds(bot_instance):
+    """Return all guilds available for emoji storage (excludes the main server)."""
+    return [g for g in bot_instance.guilds if g.id != EXCLUDED_EMOJI_SERVER]
+
+# Store emoji mappings {player_name: emoji_id}
+player_emojis = {}
+
+async def download_and_process_image(session, url, player_name):
+    """Download player image and convert to emoji format (PNG, max 256KB)"""
+    try:
+        async with session.get(url) as resp:
+            if resp.status != 200:
+                return None
+
+            image_data = await resp.read()
+            img = Image.open(BytesIO(image_data))
+
+            # Convert to RGBA if needed
+            if img.mode != 'RGBA':
+                img = img.convert('RGBA')
+
+            # Resize to 128x128 (Discord emoji recommended size)
+            img = img.resize((128, 128), Image.Resampling.LANCZOS)
+
+            # Save as PNG
+            output = BytesIO()
+            img.save(output, format='PNG', optimize=True)
+            output.seek(0)
+
+            # Check if under 256KB (Discord emoji limit)
+            if output.getbuffer().nbytes > 256000:
+                # Reduce size if too large
+                img = img.resize((64, 64), Image.Resampling.LANCZOS)
+                output = BytesIO()
+                img.save(output, format='PNG', optimize=True)
+                output.seek(0)
+
+            return output
+    except Exception as e:
+        print(f"❌ Error processing image for {player_name}: {e}")
+        return None
+
+async def upload_emojis_to_servers(bot):
+    """Upload player emojis to all servers the bot is in (except the main server)."""
+    teams_data = load_players()
+
+    # Collect all players
+    all_players = []
+    for team_data in teams_data:
+        for player in team_data['players']:
+            all_players.append({
+                'name': player['name'],
+                'image': player['image'],
+                'team': team_data['team']
+            })
+
+    print(f"📊 Total players to process: {len(all_players)}")
+
+    # Get all available guilds except the excluded main server
+    emoji_guilds = get_emoji_guilds(bot)
+
+    # Distribute players across servers (50 per server)
+    emojis_per_server = 50
+    server_index = 0
+
+    async with aiohttp.ClientSession() as session:
+        for i in range(0, len(all_players), emojis_per_server):
+            if server_index >= len(emoji_guilds):
+                print("⚠️ Not enough servers to upload all emojis!")
+                break
+
+            guild = emoji_guilds[server_index]
+
+            if not guild:
+                server_index += 1
+                continue
+
+            print(f"📤 Uploading to server: {guild.name} ({guild.id})")
+
+            # Get batch of players for this server
+            batch = all_players[i:i + emojis_per_server]
+
+            for player in batch:
+                try:
+                    # Create emoji name (alphanumeric + underscores only, max 32 chars)
+                    emoji_name = ''.join(c if c.isalnum() or c == '_' else '_' for c in player['name'])
+                    emoji_name = emoji_name[:32]
+
+                    # Check if emoji already exists
+                    existing_emoji = discord.utils.get(
+                        guild.emojis, 
+                        name=emoji_name
+                    )
+
+                    if existing_emoji:
+                        player_emojis[player['name']] = existing_emoji.id
+                        print(f"✅ Emoji already exists: {player['name']}")
+                        continue
+
+                    # Download and process image
+                    image_data = await download_and_process_image(
+                        session, 
+                        player['image'], 
+                        player['name']
+                    )
+
+                    if not image_data:
+                        print(f"❌ Failed to process image for {player['name']}")
+                        continue
+
+                    # Upload emoji to server
+                    emoji = await guild.create_custom_emoji(
+                        name=emoji_name,
+                        image=image_data.read()
+                    )
+
+                    player_emojis[player['name']] = emoji.id
+                    print(f"✅ Uploaded emoji: {player['name']} (ID: {emoji.id})")
+
+                    # Rate limit: wait between uploads
+                    await asyncio.sleep(2)
+
+                except discord.errors.HTTPException as e:
+                    if e.code == 30008:  # Maximum number of emojis reached
+                        print(f"⚠️ Server {guild.name} reached emoji limit")
+                        break
+                    else:
+                        print(f"❌ HTTP error uploading {player['name']}: {e}")
+                except Exception as e:
+                    print(f"❌ Error uploading {player['name']}: {e}")
+
+            server_index += 1
+            print(f"✅ Completed server {guild.name}")
+
+    # Save emoji mappings to file
+    with open('player_emojis.json', 'w') as f:
+        json.dump(player_emojis, f, indent=2)
+
+    print(f"✅ Upload complete! {len(player_emojis)} emojis uploaded")
+    return player_emojis
+
+def load_emoji_mappings():
+    """Load emoji mappings from file"""
+    try:
+        with open('player_emojis.json', 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+
+def get_player_emoji(player_name, bot=None):
+    """Get emoji format for a player"""
+    if not bot:
+        return "👤"
+
+    # Create the expected emoji name format
+    emoji_name = ''.join(c if c.isalnum() or c == '_' else '_' for c in player_name)[:32]
+
+    # Search for emoji across all available guilds (except excluded main server)
+    for guild in get_emoji_guilds(bot):
+        if guild:
+            # Try to find emoji by name
+            emoji_obj = discord.utils.get(guild.emojis, name=emoji_name)
+            if emoji_obj:
+                return str(emoji_obj)  # Returns <:emoji_name:emoji_id>
+
+    # Fallback if emoji not found
+    return "👤"
+
+# Add command to trigger emoji upload
+@bot.command(name="uploademojis", aliases=["ue"])
+@is_staff_or_admin()
+async def upload_emojis_command(ctx):
+    """[ADMIN] Upload player emojis to designated servers"""
+    await ctx.send("🔄 Starting emoji upload process... This will take several minutes.")
+
+    try:
+        emojis = await upload_emojis_to_servers(bot)
+        await ctx.send(f"✅ Emoji upload complete! {len(emojis)} players now have emojis.")
+    except Exception as e:
+        await ctx.send(f"❌ Error during upload: {e}")
+
+# Update playerlist command to use emojis
+@bot.command(name="playerlist", aliases=["pl"], help="View all players in a paginated list")
+async def playerlist_command(ctx):
+    teams_data = load_players()
+
+    if not teams_data:
+        await ctx.send("❌ No player data available.")
+        return
+
+    # Create pages (10 players per page)
+    all_players = []
+    for team_data in teams_data:
+        for player in team_data['players']:
+            rep_info = get_representative(player['name'])
+            rep_text = f"@{rep_info[1]}" if rep_info else "Unclaimed"
+            all_players.append({
+                'name': player['name'],
+                'team': team_data['team'],
+                'role': player['role'],
+                'representative': rep_text
+            })
+
+    players_per_page = 10
+    pages = []
+
+    for i in range(0, len(all_players), players_per_page):
+        page_players = all_players[i:i + players_per_page]
+
+        embed = discord.Embed(
+            title="All Nation Players",
+            color=0x0066CC
+        )
+
+        description = ""
+        for idx, player in enumerate(page_players, start=i+1):
+            flag = get_team_flag(player['team'])
+            role_emoji = get_role_emoji(player['role'])
+            emoji = get_player_emoji(player['name'], bot)
+
+            # Format: 1. [emoji] · 🇮🇳 · Rohit Sharma · 🏏
+            description += f"**{idx}.** {emoji} · {flag} · **{player['name']}** · {role_emoji}\n"
+            description += f"    └ *{player['team']}* • {player['representative']}\n\n"
+
+        embed.description = description
+        embed.set_footer(
+            text=f"Page {len(pages)+1}/{(len(all_players)-1)//players_per_page + 1} • Total Players: {len(all_players)}"
+        )
+        pages.append(embed)
+
+    if len(pages) == 1:
+        await ctx.send(embed=pages[0])
+    else:
+        view = PlayerListView(pages, ctx)
+        view.message = await ctx.send(embed=pages[0], view=view)
+
+@bot.command(name="viewteam", aliases=["vt"], help="View all players in a specific team")
+async def viewteam_command(ctx, *, team_name: str):
+    # Send loading message
+    loading_msg = await ctx.send("⏳ Loading squad info...")
+
+    teams_data = load_players()
+    if not teams_data:
+        await loading_msg.delete()
+        await ctx.send("❌ No player data available.")
+        return
+
+    # Find the team
+    team_data = None
+    for t in teams_data:
+        if t['team'].lower() == team_name.lower():
+            team_data = t
+            break
+
+    if not team_data:
+        await loading_msg.delete()
+        available_teams = ", ".join([t['team'] for t in teams_data])
+        await ctx.send(f"❌ Team '{team_name}' not found.\n\n**Available teams:** {available_teams}")
+        return
+
+    # Generate squad image
+    squad_image = await create_squad_image(team_data['team'], team_data, ctx.guild)
+
+    flag = get_team_flag(team_data['team'])
+    flag_url = get_team_flag_url(team_data['team'])
+
+    # Get team captain
+    captain_name = get_team_captain(team_data['team'])
+
+    # Compute OVR for every player in the squad, use top 12 for team OVR
+    all_player_ovrs = []
+
+    for player in team_data['players']:
+        rep_info = get_representative(player['name'])
+        if rep_info:
+            p_ovr = get_player_ovr_for_vt(rep_info[0], player['role'])
+        else:
+            p_ovr = None
+        all_player_ovrs.append(p_ovr if p_ovr is not None else 60)
+
+    top12_ovrs = sorted(all_player_ovrs, reverse=True)[:12]
+    team_avg_ovr = round(sum(top12_ovrs) / len(top12_ovrs)) if top12_ovrs else 60
+
+    embed = discord.Embed(
+        title=f"{flag} Official {team_data['team']} Squad · {team_avg_ovr} OVR",
+        color=get_team_color(team_data['team'])
+    )
+
+    # Set generated squad image as main embed image
+    if squad_image:
+        file = discord.File(squad_image, filename="squad.png")
+        embed.set_image(url="attachment://squad.png")
+
+    # Set flag as thumbnail
+    if flag_url:
+        embed.set_thumbnail(url=flag_url)
+
+    # Categorize players by role
+    batsmen = []
+    bowlers = []
+    allrounders = []
+    wicketkeepers = []
+
+    for player in team_data['players']:
+        rep_info = get_representative(player['name'])
+        rep_text = f"**@{rep_info[1]}**" if rep_info else "*Unclaimed*"
+        emoji = get_player_emoji(player['name'], bot)
+
+        # Player OVR
+        if rep_info:
+            p_ovr = get_player_ovr_for_vt(rep_info[0], player['role'])
+        else:
+            p_ovr = None
+        ovr_display = str(p_ovr) if p_ovr is not None else "NIL"
+
+        # Add (C) if this player is the captain
+        captain_badge = " **(C)**" if player['name'] == captain_name else ""
+
+        # Format: [emoji] · Player Name (C) · @rep · OVR OVR
+        player_line = f"{emoji} · {player['name']}{captain_badge} · {rep_text} · {ovr_display} OVR"
+
+        if "Wicketkeeper" in player['role']:
+            wicketkeepers.append(player_line)
+        elif "Batsman" in player['role']:
+            batsmen.append(player_line)
+        elif "Bowler" in player['role']:
+            bowlers.append(player_line)
+        elif "All-Rounder" in player['role'] or "All-rounder" in player['role']:
+            allrounders.append(player_line)
+
+    # Add fields for each category
+    if wicketkeepers:
+        embed.add_field(
+            name=f"<:wicketkeeper:1451994159668920330> Wicketkeepers ({len(wicketkeepers)})",
+            value="\n".join(wicketkeepers),
+            inline=False
+        )
+
+    if batsmen:
+        embed.add_field(
+            name=f"<:bat:1451967322146213980> Batsmen ({len(batsmen)})",
+            value="\n".join(batsmen),
+            inline=False
+        )
+
+    if allrounders:
+        embed.add_field(
+            name=f"<:allrounder:1451978476033671279> All-Rounders ({len(allrounders)})",
+            value="\n".join(allrounders),
+            inline=False
+        )
+
+    if bowlers:
+        embed.add_field(
+            name=f"<:ball:1451974295793172547> Bowlers ({len(bowlers)})",
+            value="\n".join(bowlers),
+            inline=False
+        )
+
+    total_players = len(team_data['players'])
+    claimed = sum(1 for p in team_data['players'] if get_representative(p['name']))
+    footer_text = f"Total Players: {total_players} • Claimed: {claimed} • Unclaimed: {total_players - claimed}"
+    if captain_name:
+        footer_text += f" • Captain: {captain_name}"
+
+    embed.set_footer(text=footer_text)
+
+    # Delete loading message and send with the squad image file if available
+    await loading_msg.delete()
+
+    if squad_image:
+        await ctx.send(embed=embed, file=file)
+    else:
+        await ctx.send(embed=embed)
+#-----------------
+
+@bot.command(name="squadimage", aliases=["is"], help="View all players in a specific team")
+async def viewteam_command(ctx, *, team_name: str):
+    teams_data = load_players()
+
+    if not teams_data:
+        await ctx.send("❌ No player data available.")
+        return
+
+    # Remove quotes if present
+    team_name = team_name.strip('"')
+
+    # Find the team
+    team_data = None
+    for t in teams_data:
+        if t['team'].lower() == team_name.lower():
+            team_data = t
+            team_name = t['team']  # Use exact team name
+            break
+
+    if not team_data:
+        available_teams = ", ".join([t['team'] for t in teams_data])
+        await ctx.send(f"❌ Team '{team_name}' not found.\n\n**Available teams:** {available_teams}")
+        return
+
+    # Send loading message
+    loading_msg = await ctx.send("🏏 Generating squad image...")
+
+    try:
+        # Generate squad image
+        image_bytes = await create_squad_image(team_name, team_data, ctx.guild)
+
+        # Create embed
+        flag = get_team_flag(team_name)
+        embed = discord.Embed(
+            title=f"{flag} Official {team_name} Squad",
+            color=get_team_color(team_name)
+        )
+
+        # Attach image
+        file = discord.File(fp=image_bytes, filename=f"{team_name}_squad.png")
+        embed.set_image(url=f"attachment://{team_name}_squad.png")
+
+        # Add footer
+        total_players = len(team_data['players'])
+        claimed = sum(1 for p in team_data['players'] if get_representative(p['name']))
+        captain_name = get_team_captain(team_name)
+
+        footer_text = f"Total: {total_players} • Claimed: {claimed} • Unclaimed: {total_players - claimed}"
+        if captain_name:
+            footer_text += f" • Captain: {captain_name}"
+
+        embed.set_footer(text=footer_text)
+
+        # Delete loading message and send result
+        await loading_msg.delete()
+        await ctx.send(embed=embed, file=file)
+
+    except Exception as e:
+        await loading_msg.edit(content=f"❌ Error generating squad image: {e}")
+        print(f"Squad image error: {e}")
+
+# Command to check emoji status
+@bot.command(name="checkemojis", aliases=["ce"])
+@is_staff_or_admin()
+async def check_emojis_command(ctx):
+    """[ADMIN] Check how many emojis are uploaded"""
+    player_emojis = load_emoji_mappings()
+    teams_data = load_players()
+
+    total_players = sum(len(team['players']) for team in teams_data)
+    uploaded = len(player_emojis)
+
+    embed = discord.Embed(
+        title="📊 Emoji Upload Status",
+        color=0x0066CC
+    )
+
+    embed.add_field(
+        name="Progress",
+        value=f"**{uploaded}** / **{total_players}** players have emojis\n"
+              f"({(uploaded/total_players*100):.1f}% complete)",
+        inline=False
+    )
+
+    # Check each server's emoji count
+    for guild in get_emoji_guilds(bot):
+        emoji_count = len(guild.emojis)
+        emoji_limit = guild.emoji_limit
+        embed.add_field(
+            name=f"{guild.name}",
+            value=f"{emoji_count}/{emoji_limit} emojis",
+            inline=True
+        )
+
+    await ctx.send(embed=embed)
+
+# Debug command to test emoji retrieval
+@bot.command(name="testemoji", aliases=["te"])
+@is_staff_or_admin()
+async def test_emoji_command(ctx, *, player_name: str):
+    """[ADMIN] Test emoji retrieval for a specific player"""
+    emoji = get_player_emoji(player_name, bot)
+
+    # Also check all servers
+    found_emojis = []
+    emoji_name = ''.join(c if c.isalnum() or c == '_' else '_' for c in player_name)[:32]
+
+    for guild in get_emoji_guilds(bot):
+        emoji_obj = discord.utils.get(guild.emojis, name=emoji_name)
+        if emoji_obj:
+            found_emojis.append(f"{guild.name}: {emoji_obj} (ID: {emoji_obj.id})")
+
+    embed = discord.Embed(
+        title=f"Emoji Test: {player_name}",
+        color=0x0066CC
+    )
+
+    embed.add_field(
+        name="Searched Name",
+        value=f"`{emoji_name}`",
+        inline=False
+    )
+
+    embed.add_field(
+        name="Result",
+        value=f"{emoji} (This is what shows in embeds)",
+        inline=False
+    )
+
+    if found_emojis:
+        embed.add_field(
+            name="Found in Servers",
+            value="\n".join(found_emojis),
+            inline=False
+        )
+    else:
+        embed.add_field(
+            name="Found in Servers",
+            value="❌ No emoji found with this name",
+            inline=False
+        )
+
+    await ctx.send(embed=embed)
+
+# Command to list all emojis in emoji servers
+@bot.command(name="listemojis", aliases=["le"])
+@is_staff_or_admin()
+async def list_emojis_command(ctx, server_index: int = 0):
+    """[ADMIN] List all emojis in a specific emoji server"""
+    emoji_guilds = get_emoji_guilds(bot)
+    if server_index >= len(emoji_guilds):
+        await ctx.send(f"❌ Server index must be between 0 and {len(emoji_guilds)-1}")
+        return
+
+    guild = emoji_guilds[server_index]
+
+    emojis = guild.emojis
+
+    embed = discord.Embed(
+        title=f"Emojis in {guild.name}",
+        description=f"Total: {len(emojis)}/{guild.emoji_limit}",
+        color=0x0066CC
+    )
+
+    # Show first 25 emojis as example
+    emoji_list = []
+    for emoji in emojis[:25]:
+        emoji_list.append(f"{emoji} `:{emoji.name}:` (ID: {emoji.id})")
+
+    if emoji_list:
+        embed.add_field(
+            name="Sample Emojis",
+            value="\n".join(emoji_list),
+            inline=False
+        )
+
+    if len(emojis) > 25:
+        embed.set_footer(text=f"Showing first 25 of {len(emojis)} emojis")
+
+    await ctx.send(embed=embed)
+
+# Elite players storage
+elite_players = set()
+
+def load_elite_players():
+    """Load elite players from file"""
+    try:
+        with open('elite_players.json', 'r') as f:
+            return set(json.load(f))
+    except FileNotFoundError:
+        return set()
+
+def save_elite_players():
+    """Save elite players to file"""
+    with open('elite_players.json', 'w') as f:
+        json.dump(list(elite_players), f, indent=2)
+
+def is_elite_player(player_name):
+    """Check if a player is marked as elite"""
+    return player_name in elite_players
+
+def get_player_emoji_with_elite(player_name, bot=None):
+    """Get emoji for a player, using elite emoji if applicable"""
+    if is_elite_player(player_name):
+        return "<:elite:1452949859412738110>"
+    return get_player_emoji(player_name, bot)
+
+@bot.command(name="elite", aliases=["e"], help="[ADMIN] Mark players as elite and create auction threads")
+@is_staff_or_admin()
+async def elite_command(ctx, *, players: str):
+    """
+    Mark players as elite and create auction threads
+    Usage: -elite player1, player2, player3
+    """
+    # Parse player names (split by comma)
+    player_names = [name.strip() for name in players.split(',')]
+
+    if not player_names:
+        await ctx.send("❌ Please provide at least one player name.\nUsage: `-elite player1, player2, player3`")
+        return
+
+    # Get the auction channel
+    auction_channel = bot.get_channel(1516051222136623104)
+    if not auction_channel:
+        await ctx.send("❌ Auction channel not found!")
+        return
+
+    success_count = 0
+    failed_players = []
+    created_threads = []
+
+    for player_name in player_names:
+        # Find the player
+        found_players, team_names = find_player(player_name)
+
+        if not found_players:
+            failed_players.append(f"{player_name} (not found)")
+            continue
+
+        if len(found_players) > 1:
+            failed_players.append(f"{player_name} (multiple matches - be more specific)")
+            continue
+
+        player = found_players[0]
+        team_name = team_names[0]
+
+        # Mark as elite
+        elite_players.add(player['name'])
+
+        # Create auction thread
+        try:
+            thread = await auction_channel.create_thread(
+                name=f"{player['name']}",
+                type=discord.ChannelType.public_thread,
+                reason=f"Elite player auction created by {ctx.author}"
+            )
+
+            # Send auction rules in the thread
+            auction_message = (
+                "**RULES\n"
+                "> - INCREASE BY 100K EVERYTIME (E.G 100K --> 200K)\n"
+                ">                                                            (E.G 1.1M - 1.2M)\n"
+                "> \n"
+                "> - TROLLING / MESSING AROUND -> INSTANT BAN\n"
+                "> \n"
+                "> - AUCTION ENDS AT 30TH DECEMBER \n"
+                "> - / / HOWEVER IF NO ONE BIDS FOR 3 DAYS -> LAST HIGHER BIDDER GETS THE PLAYER **\n"
+                "*SEND YOUR BID AS A MESSAGE AFTER A PERSON E.G 200K, PAYMENT WILL BE COLLECTED IN THE END IF YOU WIN*\n"
+                "__**BASE PRICE 100K**__"
+            )
+
+            await thread.send(auction_message)
+
+            success_count += 1
+            created_threads.append(f"{player['name']} ({team_name})")
+
+        except discord.HTTPException as e:
+            failed_players.append(f"{player['name']} (thread creation failed: {e})")
+
+    # Save elite players to file
+    save_elite_players()
+
+    # Send confirmation message
+    embed = discord.Embed(
+        title="<:elite:1452949859412738110> Elite Players Marked",
+        color=0xFFD700
+    )
+
+    if success_count > 0:
+        embed.add_field(
+            name=f"✅ Successfully Created ({success_count})",
+            value="\n".join([f"• {p}" for p in created_threads]),
+            inline=False
+        )
+
+    if failed_players:
+        embed.add_field(
+            name=f"❌ Failed ({len(failed_players)})",
+            value="\n".join([f"• {p}" for p in failed_players]),
+            inline=False
+        )
+
+    embed.set_footer(text="Elite players will now show the elite emoji in dropdowns")
+
+    await ctx.send(embed=embed)
+
+@bot.command(name="unelite", aliases=["une"], help="[ADMIN] Remove elite status from players")
+@is_staff_or_admin()
+async def unelite_command(ctx, *, players: str):
+    """
+    Remove elite status from players
+    Usage: -unelite player1, player2, player3
+           -unelite all
+    """
+    if players.strip().lower() == "all":
+        count = len(elite_players)
+        if count == 0:
+            await ctx.send("❌ There are no elite players to remove.")
+            return
+        elite_players.clear()
+        save_elite_players()
+        embed = discord.Embed(
+            title="Elite Status Removed",
+            description=f"✅ Removed elite status from all **{count}** player(s).",
+            color=0x808080
+        )
+        embed.set_footer(text=f"Done by {ctx.author}")
+        await ctx.send(embed=embed)
+        return
+
+    player_names = [name.strip() for name in players.split(',')]
+
+    if not player_names:
+        await ctx.send("❌ Please provide at least one player name.")
+        return
+
+    removed = []
+    not_found = []
+
+    for player_name in player_names:
+        found_players, _ = find_player(player_name)
+
+        if not found_players:
+            not_found.append(player_name)
+            continue
+
+        if len(found_players) > 1:
+            not_found.append(f"{player_name} (multiple matches)")
+            continue
+
+        player = found_players[0]
+
+        if player['name'] in elite_players:
+            elite_players.remove(player['name'])
+            removed.append(player['name'])
+        else:
+            not_found.append(f"{player['name']} (not elite)")
+
+    save_elite_players()
+
+    embed = discord.Embed(
+        title="Elite Status Removed",
+        color=0x808080
+    )
+
+    if removed:
+        embed.add_field(
+            name="✅ Removed",
+            value="\n".join([f"• {p}" for p in removed]),
+            inline=False
+        )
+
+    if not_found:
+        embed.add_field(
+            name="❌ Not Removed",
+            value="\n".join([f"• {p}" for p in not_found]),
+            inline=False
+        )
+
+    await ctx.send(embed=embed)
+
+@bot.command(name="listelite", aliases=["lse"], help="List all elite players")
+async def listelite_command(ctx):
+    """List all players marked as elite"""
+    if not elite_players:
+        await ctx.send("❌ No elite players have been marked yet.")
+        return
+
+    embed = discord.Embed(
+        title="<:elite:1452949859412738110> Elite Players",
+        description=f"Total: {len(elite_players)} players",
+        color=0xFFD700
+    )
+
+    # Group by team
+    teams_data = load_players()
+    elite_by_team = {}
+
+    for player_name in elite_players:
+        found_players, team_names = find_player(player_name)
+        if found_players:
+            team = team_names[0]
+            if team not in elite_by_team:
+                elite_by_team[team] = []
+            elite_by_team[team].append(player_name)
+
+    for team, players_list in sorted(elite_by_team.items()):
+        flag = get_team_flag(team)
+        embed.add_field(
+            name=f"{flag} {team}",
+            value="\n".join([f"• {p}" for p in players_list]),
+            inline=True
+        )
+
+    await ctx.send(embed=embed)
+
+@bot.command(name="removeemojis", aliases=["re"])
+@is_staff_or_admin()
+async def remove_emojis_command(ctx):
+    """[ADMIN] Remove all player emojis from designated servers"""
+    await ctx.send("🔄 Starting emoji removal process... This may take a few minutes.")
+
+    removed_count = 0
+    failed_count = 0
+
+    try:
+        # Load current emoji mappings
+        player_emojis = load_emoji_mappings()
+
+        if not player_emojis:
+            await ctx.send("❌ No emoji mappings found. Nothing to remove.")
+            return
+
+        # Iterate through all available guilds (except excluded main server)
+        for guild in get_emoji_guilds(bot):
+            print(f"🗑️ Removing emojis from: {guild.name} ({guild.id})")
+
+            # Get all emojis in this server
+            for emoji in guild.emojis:
+                try:
+                    # Check if this emoji name matches any player emoji format
+                    # (player emojis are alphanumeric with underscores)
+                    if any(emoji.name == ''.join(c if c.isalnum() or c == '_' else '_' for c in player_name)[:32] 
+                           for player_name in player_emojis.keys()):
+                        await emoji.delete(reason=f"Player emoji removal by {ctx.author}")
+                        removed_count += 1
+                        print(f"✅ Deleted emoji: {emoji.name}")
+
+                        # Rate limit: wait between deletions
+                        await asyncio.sleep(1)
+
+                except discord.errors.HTTPException as e:
+                    print(f"❌ HTTP error deleting {emoji.name}: {e}")
+                    failed_count += 1
+                except Exception as e:
+                    print(f"❌ Error deleting {emoji.name}: {e}")
+                    failed_count += 1
+
+            print(f"✅ Completed server {guild.name}")
+
+        # Clear the emoji mappings file
+        with open('player_emojis.json', 'w') as f:
+            json.dump({}, f, indent=2)
+
+        # Clear the in-memory dictionary
+        player_emojis.clear()
+
+        # Send completion message
+        embed = discord.Embed(
+            title="🗑️ Emoji Removal Complete",
+            color=0xFF0000
+        )
+
+        embed.add_field(
+            name="Results",
+            value=f"✅ **Removed:** {removed_count} emojis\n"
+                  f"❌ **Failed:** {failed_count} emojis",
+            inline=False
+        )
+
+        embed.set_footer(text="player_emojis.json has been cleared")
+
         await ctx.send(embed=embed)
 
-    # ==================================================
-    # MISC / FUN
-    # ==================================================
+    except Exception as e:
+        await ctx.send(f"❌ Error during removal: {e}")
+        print(f"❌ Error during emoji removal: {e}")
 
-    @commands.command(name="richlist", aliases=["rl"], help="View richest players")
-    async def richlist_command(self, ctx):
+@bot.command(name="syncleft", help="[ADMIN] Unclaim players whose representatives have left the server")
+@is_staff_or_admin()
+async def sync_left_command(ctx):
+    await ctx.send("🔄 Checking for representatives who left the server...")
+
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+
+    # Fetch all current claims
+    c.execute("SELECT player_name, user_id FROM player_representatives")
+    all_claims = c.fetchall()
+
+    removed_count = 0
+    removed_list = []
+
+    for player_name, user_id in all_claims:
+        # ctx.guild.get_member relies on the member cache (requires intents.members = True)
+        member = ctx.guild.get_member(user_id)
+
+        # If member is None, they are likely not in the server anymore
+        if member is None:
+            # Remove from representatives
+            c.execute("DELETE FROM player_representatives WHERE player_name = ?", (player_name,))
+
+            # Remove from captains if they were one
+            c.execute("DELETE FROM team_captains WHERE player_name = ?", (player_name,))
+
+            removed_list.append(player_name)
+            removed_count += 1
+
+    conn.commit()
+    conn.close()
+
+    if removed_count > 0:
+        # Create summary embed
+        embed = discord.Embed(title="🗑️ Sync Left Complete", color=0xFF0000)
+
+        # Chunk list if too long for description
+        description = "\n".join([f"• {p}" for p in removed_list[:50]])
+        if len(removed_list) > 50:
+            description += f"\n...and {len(removed_list) - 50} more."
+
+        embed.description = f"**{removed_count}** players were unclaimed because their representatives left the server.\n\n{description}"
+        await ctx.send(embed=embed)
+    else:
+        await ctx.send("✅ All current representatives are still in the server.")
+
+@bot.command(name="setcaptain", aliases=["sc"], help="[ADMIN] Set a player as team captain")
+@is_staff_or_admin()
+async def setcaptain_command(ctx, team_name: str, *, username: str):
+    """
+    Set a team captain
+    Usage: -setcaptain India @username or -setcaptain India username
+    """
+    # Remove @ if present
+    username = username.lstrip('@')
+
+    # Find the team
+    teams_data = load_players()
+    team_data = None
+    for t in teams_data:
+        if t['team'].lower() == team_name.lower():
+            team_data = t
+            break
+
+    if not team_data:
+        available_teams = ", ".join([t['team'] for t in teams_data])
+        await ctx.send(f"❌ Team '{team_name}' not found.\n\n**Available teams:** {available_teams}")
+        return
+
+    # Get player info from database
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute("SELECT player_name, user_id FROM player_representatives WHERE username = ?", (username,))
+    result = c.fetchone()
+    conn.close()
+
+    if not result:
+        await ctx.send(f"❌ No player representative found with username `{username}`.\nMake sure they have claimed a player first.")
+        return
+
+    player_name, user_id = result
+
+    # Verify the player is from the specified team
+    players, team_names = find_player(player_name)
+    if not players or team_names[0] != team_data['team']:
+        await ctx.send(f"❌ **{player_name}** (represented by @{username}) is not from **{team_data['team']}**!")
+        return
+
+    # Set as captain
+    set_team_captain(team_data['team'], player_name, user_id, username)
+
+    flag = get_team_flag(team_data['team'])
+    embed = discord.Embed(
+        title=f"👑 Captain Appointed",
+        description=f"{flag} **{player_name}** (@{username}) is now the captain of **{team_data['team']}**!",
+        color=get_team_color(team_data['team'])
+    )
+
+    # Get player data for image
+    player = players[0]
+    embed.set_thumbnail(url=player['image'])
+    embed.set_footer(text=f"Set by {ctx.author.name}")
+    embed.timestamp = discord.utils.utcnow()
+
+    await ctx.send(embed=embed)
+
+@bot.command(name="removecaptain", aliases=["rc"], help="[ADMIN] Remove captain from a team")
+@is_staff_or_admin()
+async def removecaptain_command(ctx, *, team_name: str):
+    """
+    Remove a team's captain
+    Usage: -removecaptain India
+    """
+    # Find the team
+    teams_data = load_players()
+    team_data = None
+    for t in teams_data:
+        if t['team'].lower() == team_name.lower():
+            team_data = t
+            break
+
+    if not team_data:
+        available_teams = ", ".join([t['team'] for t in teams_data])
+        await ctx.send(f"❌ Team '{team_name}' not found.\n\n**Available teams:** {available_teams}")
+        return
+
+    # Check if team has a captain
+    captain_name = get_team_captain(team_data['team'])
+
+    if not captain_name:
+        await ctx.send(f"❌ **{team_data['team']}** doesn't have a captain set.")
+        return
+
+    # Remove captain
+    remove_team_captain(team_data['team'])
+
+    flag = get_team_flag(team_data['team'])
+    embed = discord.Embed(
+        title=f"👑 Captain Removed",
+        description=f"{flag} **{captain_name}** is no longer the captain of **{team_data['team']}**.",
+        color=get_team_color(team_data['team'])
+    )
+
+    embed.set_footer(text=f"Removed by {ctx.author.name}")
+    embed.timestamp = discord.utils.utcnow()
+
+    await ctx.send(embed=embed)
+
+@bot.command(name="captains", aliases=["caps"], help="View all team captains")
+async def captains_command(ctx):
+    """List all teams and their captains"""
+    teams_data = load_players()
+
+    fields = []
+    has_captains = False
+
+    for team_data in teams_data:
+        captain_name = get_team_captain(team_data['team'])
+        flag = get_team_flag(team_data['team'])
+
+        if captain_name:
+            rep_info = get_representative(captain_name)
+            username = rep_info[1] if rep_info else "Unknown"
+            fields.append((f"{flag} {team_data['team']}", f"**{captain_name}**\n@{username}"))
+            has_captains = True
+        else:
+            fields.append((f"{flag} {team_data['team']}", "*No captain set*"))
+
+    # Discord allows max 25 fields per embed — split into pages if needed
+    page_size = 25
+    chunks = [fields[i:i + page_size] for i in range(0, len(fields), page_size)]
+
+    for idx, chunk in enumerate(chunks):
+        embed = discord.Embed(
+            title="👑 Team Captains" if idx == 0 else "👑 Team Captains (cont.)",
+            color=0xFFD700
+        )
+        if not has_captains and idx == 0:
+            embed.description = "No captains have been assigned yet."
+        for name, value in chunk:
+            embed.add_field(name=name, value=value, inline=True)
+        await ctx.send(embed=embed)
+
+@bot.command(name="fixcaptainstable", aliases=["fct"])
+@is_staff_or_admin()
+async def fix_captains_table(ctx): 
+    """[ADMIN] Fix the team_captains table schema"""
+    try:
         conn = sqlite3.connect('players.db')
         c = conn.cursor()
-        c.execute("SELECT user_id, cash + bank as total FROM player_life ORDER BY total DESC LIMIT 10")
+
+        # Drop the old table
+        c.execute("DROP TABLE IF EXISTS team_captains")
+
+        # Create the new table with correct schema
+        c.execute('''CREATE TABLE team_captains
+                     (team_name TEXT PRIMARY KEY, 
+                      player_name TEXT, 
+                      user_id INTEGER, 
+                      username TEXT)''')
+
+        conn.commit()
+        conn.close()
+
+        await ctx.send("✅ Successfully fixed the `team_captains` table schema!")
+    except Exception as e:
+        await ctx.send(f"❌ Error fixing table: {e}")
+
+@bot.command(name="syncplayers", aliases=["sp"], help="[ADMIN] Unclaim players whose representatives have left the server")
+@is_staff_or_admin()
+async def syncplayers_command(ctx):
+    await ctx.send("🔄 Checking for representatives who left the server...")
+
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+
+    # Fetch all current claims
+    c.execute("SELECT player_name, user_id, username FROM player_representatives")
+    all_claims = c.fetchall()
+
+    removed_count = 0
+    removed_list = []
+
+    for player_name, user_id, username in all_claims:
+        # Check if member is still in the server
+        member = ctx.guild.get_member(user_id)
+
+        # If member is None, they are not in the server anymore
+        if member is None:
+            # Remove from representatives
+            c.execute("DELETE FROM player_representatives WHERE player_name = ?", (player_name,))
+
+            # Remove from captains if they were one
+            c.execute("DELETE FROM team_captains WHERE player_name = ?", (player_name,))
+
+            removed_list.append(f"{player_name} (@{username})")
+            removed_count += 1
+
+    conn.commit()
+    conn.close()
+
+    if removed_count > 0:
+        # Create summary embed
+        embed = discord.Embed(
+            title="🗑️ Sync Complete",
+            color=0xFF0000
+        )
+
+        # Chunk list if too long for description
+        description = "\n".join([f"• {p}" for p in removed_list[:50]])
+        if len(removed_list) > 50:
+            description += f"\n...and {len(removed_list) - 50} more."
+
+        embed.description = f"**{removed_count}** players were unclaimed because their representatives left the server.\n\n{description}"
+        embed.set_footer(text=f"Synced by {ctx.author.name}")
+        embed.timestamp = discord.utils.utcnow()
+
+        await ctx.send(embed=embed)
+    else:
+        await ctx.send("✅ All current representatives are still in the server.")
+
+@bot.command(name="forceupload", aliases=["fu"], help="[ADMIN] Force upload emoji for a specific player")
+@is_staff_or_admin()
+async def forceupload_command(ctx, *, player_name: str):
+    """[ADMIN] Force upload emoji for a specific player"""
+
+    # Find the player
+    players, team_names = find_player(player_name)
+
+    if not players:
+        await ctx.send(f"❌ Player '{player_name}' not found.")
+        return
+
+    if len(players) > 1:
+        embed = discord.Embed(
+            title="🔍 Multiple Players Found",
+            description=f"Multiple players match '{player_name}'. Please use the full name:\n\n",
+            color=0xFFA500
+        )
+
+        for i, (player, team) in enumerate(zip(players, team_names), 1):
+            flag = get_team_flag(team)
+            embed.description += f"**{i}.** {flag} **{player['name']}** - {team}\n"
+
+        await ctx.send(embed=embed)
+        return
+
+    player = players[0]
+    await ctx.send(f"🔄 Uploading emoji for **{player['name']}**...")
+
+    # Create emoji name (alphanumeric + underscores only, max 32 chars)
+    emoji_name = ''.join(c if c.isalnum() or c == '_' else '_' for c in player['name'])
+    emoji_name = emoji_name[:32]
+
+    # Check if emoji already exists in any server
+    for guild in get_emoji_guilds(bot):
+        existing_emoji = discord.utils.get(guild.emojis, name=emoji_name)
+        if existing_emoji:
+            await ctx.send(f"✅ Emoji already exists: {existing_emoji} in {guild.name}")
+            return
+
+    # Find a server with available emoji slots
+    target_guild = None
+    for guild in get_emoji_guilds(bot):
+        if len(guild.emojis) < guild.emoji_limit:
+            target_guild = guild
+            break
+
+    if not target_guild:
+        await ctx.send("❌ All emoji servers are full!")
+        return
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            # Download and process image
+            image_data = await download_and_process_image(session, player['image'], player['name'])
+
+            if not image_data:
+                await ctx.send(f"❌ Failed to process image for {player['name']}")
+                return
+
+            # Upload emoji to server
+            emoji = await target_guild.create_custom_emoji(
+                name=emoji_name,
+                image=image_data.read()
+            )
+
+            # Save to emoji mappings
+            player_emojis[player['name']] = emoji.id
+            with open('player_emojis.json', 'w') as f:
+                json.dump(player_emojis, f, indent=2)
+
+            await ctx.send(f"✅ Successfully uploaded emoji: {emoji} for **{player['name']}** in {target_guild.name}")
+
+    except discord.errors.HTTPException as e:
+        await ctx.send(f"❌ HTTP error uploading emoji: {e}")
+    except Exception as e:
+        await ctx.send(f"❌ Error uploading emoji: {e}")
+
+@bot.command(name="syncroles", aliases=["sr"], help="[ADMIN] Sync nationality roles for all members")
+@is_staff_or_admin()
+async def syncroles_command(ctx):
+    await ctx.send("🔄 Syncing nationality roles...")
+
+    teams_data = load_players()
+    all_team_names = [team['team'] for team in teams_data]
+
+    # Build role_ids map
+    role_ids = {
+        team_name: discord.utils.find(lambda r: team_name.lower() in r.name.lower(), ctx.guild.roles)
+        for team_name in all_team_names
+    }
+    all_nationality_roles = [r for r in role_ids.values() if r]
+
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute("SELECT player_name, user_id, username FROM player_representatives")
+    all_claims = c.fetchall()
+    conn.close()
+
+    claimed_user_ids = {user_id: (player_name, username) for player_name, user_id, username in all_claims}
+
+    synced_count = 0
+    removed_count = 0
+    failed_list = []
+    already_had = 0
+    roles_fixed = 0
+
+    # --- Process ALL guild members ---
+    for member in ctx.guild.members:
+        if member.bot:
+            continue
+
+        member_nat_roles = [r for r in member.roles if r in all_nationality_roles]
+
+        if member.id in claimed_user_ids:
+            # Has a claim - ensure they have the correct role only
+            player_name, username = claimed_user_ids[member.id]
+            players, team_names = find_player(player_name)
+
+            if not players or not team_names:
+                failed_list.append(f"{player_name} (@{username}) - Player data not found")
+                continue
+
+            correct_team = team_names[0]
+            correct_role = role_ids.get(correct_team)
+
+            if not correct_role:
+                failed_list.append(f"{player_name} (@{username}) - Role for {correct_team} not found")
+                continue
+
+            has_correct_only = len(member_nat_roles) == 1 and member_nat_roles[0] == correct_role
+
+            if has_correct_only:
+                already_had += 1
+                continue
+
+            try:
+                # Remove wrong nationality roles
+                for role in member_nat_roles:
+                    if role != correct_role:
+                        await member.remove_roles(role, reason="Syncing: removing incorrect nationality role")
+
+                # Add correct role if missing
+                if correct_role not in member.roles:
+                    await member.add_roles(correct_role, reason=f"Synced nationality role for {player_name}")
+                    synced_count += 1
+                else:
+                    roles_fixed += 1
+
+            except discord.Forbidden:
+                failed_list.append(f"{player_name} (@{username}) - No permission")
+            except discord.HTTPException as e:
+                failed_list.append(f"{player_name} (@{username}) - HTTP error: {e}")
+
+        else:
+            # No claim - remove any nationality roles they have
+            if not member_nat_roles:
+                continue
+
+            try:
+                await member.remove_roles(*member_nat_roles, reason="Syncing: member has no claimed player")
+                removed_count += len(member_nat_roles)
+            except discord.Forbidden:
+                failed_list.append(f"{member.name} - No permission to remove roles")
+            except discord.HTTPException as e:
+                failed_list.append(f"{member.name} - HTTP error: {e}")
+
+    embed = discord.Embed(title="🌍 Role Sync Complete", color=0x00FF00)
+
+    summary = (
+        f"✅ **Roles Added:** {synced_count}\n"
+        f"🔧 **Roles Fixed:** {roles_fixed}\n"
+        f"🗑️ **Roles Removed (unclaimed):** {removed_count}\n"
+        f"ℹ️ **Already Correct:** {already_had}\n"
+        f"❌ **Failed:** {len(failed_list)}"
+    )
+    embed.add_field(name="Summary", value=summary, inline=False)
+
+    if failed_list:
+        failures = "\n".join([f"• {f}" for f in failed_list[:10]])
+        if len(failed_list) > 10:
+            failures += f"\n...and {len(failed_list) - 10} more."
+        embed.add_field(name="Failed", value=failures, inline=False)
+
+    embed.set_footer(text=f"Synced by {ctx.author.name}")
+    embed.timestamp = discord.utils.utcnow()
+    await ctx.send(embed=embed)
+
+@bot.command(name="playeremojiremove", aliases=["per"], help="[ADMIN] Remove emoji for a specific player")
+@is_staff_or_admin()
+async def playeremojiremove_command(ctx, *, player_name: str):
+    """[ADMIN] Remove emoji for a specific player"""
+
+    # Find the player
+    players, team_names = find_player(player_name)
+
+    if not players:
+        await ctx.send(f"❌ Player '{player_name}' not found.")
+        return
+
+    if len(players) > 1:
+        embed = discord.Embed(
+            title="🔍 Multiple Players Found",
+            description=f"Multiple players match '{player_name}'. Please use the full name:\n\n",
+            color=0xFFA500
+        )
+
+        for i, (player, team) in enumerate(zip(players, team_names), 1):
+            flag = get_team_flag(team)
+            embed.description += f"**{i}.** {flag} **{player['name']}** - {team}\n"
+
+        await ctx.send(embed=embed)
+        return
+
+    player = players[0]
+    await ctx.send(f"🔄 Removing emoji for **{player['name']}**...")
+
+    # Create emoji name (alphanumeric + underscores only, max 32 chars)
+    emoji_name = ''.join(c if c.isalnum() or c == '_' else '_' for c in player['name'])
+    emoji_name = emoji_name[:32]
+
+    # Search for emoji across all available guilds
+    emoji_found = False
+
+    for guild in get_emoji_guilds(bot):
+        emoji_obj = discord.utils.get(guild.emojis, name=emoji_name)
+        if emoji_obj:
+                try:
+                    await emoji_obj.delete(reason=f"Player emoji removal by {ctx.author}")
+
+                    # Remove from emoji mappings
+                    if player['name'] in player_emojis:
+                        del player_emojis[player['name']]
+                        with open('player_emojis.json', 'w') as f:
+                            json.dump(player_emojis, f, indent=2)
+
+                    await ctx.send(f"✅ Successfully removed emoji for **{player['name']}** from {guild.name}")
+                    emoji_found = True
+                    break
+
+                except discord.Forbidden:
+                    await ctx.send(f"❌ No permission to delete emoji in {guild.name}")
+                    emoji_found = True
+                    break
+                except discord.HTTPException as e:
+                    await ctx.send(f"❌ HTTP error deleting emoji: {e}")
+                    emoji_found = True
+                    break
+
+    if not emoji_found:
+        await ctx.send(f"❌ No emoji found for **{player['name']}** (searched name: `{emoji_name}`)")
+
+@bot.command(name="roleallclaimed", aliases=["rac"], help="[ADMIN] Give all claimed players a specific role")
+@is_staff_or_admin()
+async def roleallclaimed_command(ctx, role: discord.Role):
+    """[ADMIN] Give all claimed players a specific role"""
+    await ctx.send(f"🔄 Adding {role.mention} to all claimed players...")
+
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+
+    # Fetch all current claims
+    c.execute("SELECT user_id, username FROM player_representatives")
+    all_claims = c.fetchall()
+
+    conn.close()
+
+    added_count = 0
+    already_had = 0
+    failed_list = []
+
+    for user_id, username in all_claims:
+        member = ctx.guild.get_member(user_id)
+
+        if not member:
+            failed_list.append(f"@{username} - Not in server")
+            continue
+
+        # Check if member already has the role
+        if role in member.roles:
+            already_had += 1
+            continue
+
+        try:
+            await member.add_roles(role, reason=f"Claimed player role by {ctx.author}")
+            added_count += 1
+        except discord.Forbidden:
+            failed_list.append(f"@{username} - No permission")
+        except discord.HTTPException as e:
+            failed_list.append(f"@{username} - HTTP error")
+
+    # Create summary embed
+    embed = discord.Embed(
+        title="✅ Role Assignment Complete",
+        color=role.color
+    )
+
+    summary = f"**Role:** {role.mention}\n\n"
+    summary += f"✅ **Added:** {added_count}\n"
+    summary += f"ℹ️ **Already Had:** {already_had}\n"
+    summary += f"❌ **Failed:** {len(failed_list)}"
+
+    embed.description = summary
+
+    if failed_list:
+        failures = "\n".join([f"• {f}" for f in failed_list[:10]])
+        if len(failed_list) > 10:
+            failures += f"\n...and {len(failed_list) - 10} more."
+
+        embed.add_field(name="Failed", value=failures, inline=False)
+
+    embed.set_footer(text=f"Executed by {ctx.author.name}")
+    embed.timestamp = discord.utils.utcnow()
+
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="roleallunclaimed", aliases=["rau"], help="[ADMIN] Give unclaimed role to members who haven't claimed")
+@is_staff_or_admin()
+async def roleallunclaimed_command(ctx):
+    """[ADMIN] Give unclaimed role (1461764869282857010) to members with player role (1452028351719014400) who haven't claimed"""
+    await ctx.send("🔄 Adding unclaimed role to members who haven't claimed a player...")
+
+    player_role = ctx.guild.get_role(1452028351719014400)
+    unclaimed_role = ctx.guild.get_role(1461764869282857010)
+
+    if not player_role:
+        await ctx.send("❌ Player role (1452028351719014400) not found!")
+        return
+
+    if not unclaimed_role:
+        await ctx.send("❌ Unclaimed role (1461764869282857010) not found!")
+        return
+
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+
+    # Get all user IDs who have claimed
+    c.execute("SELECT user_id FROM player_representatives")
+    claimed_user_ids = set(row[0] for row in c.fetchall())
+
+    conn.close()
+
+    added_count = 0
+    already_had = 0
+    removed_count = 0
+    failed_list = []
+
+    # Collect all guild members with the unclaimed role for removal check
+    all_unclaimed_members = list(unclaimed_role.members)
+
+    # Remove unclaimed role from members who have it BUT have already claimed a player
+    for member in all_unclaimed_members:
+        if member.id in claimed_user_ids:
+            try:
+                await member.remove_roles(unclaimed_role, reason=f"Player claimed; unclaimed role removed by {ctx.author}")
+                removed_count += 1
+            except discord.Forbidden:
+                failed_list.append(f"{member.name} - No permission (remove)")
+            except discord.HTTPException:
+                failed_list.append(f"{member.name} - HTTP error (remove)")
+
+    # Iterate through all members with the player role
+    for member in player_role.members:
+        # Skip if they have claimed a player
+        if member.id in claimed_user_ids:
+            continue
+
+        # Check if member already has the unclaimed role
+        if unclaimed_role in member.roles:
+            already_had += 1
+            continue
+
+        try:
+            await member.add_roles(unclaimed_role, reason=f"Unclaimed player role by {ctx.author}")
+            added_count += 1
+        except discord.Forbidden:
+            failed_list.append(f"{member.name} - No permission (add)")
+        except discord.HTTPException:
+            failed_list.append(f"{member.name} - HTTP error (add)")
+
+    # Create summary embed
+    embed = discord.Embed(
+        title="✅ Unclaimed Role Assignment Complete",
+        color=unclaimed_role.color
+    )
+
+    summary = f"**Player Role:** {player_role.mention}\n"
+    summary += f"**Unclaimed Role:** {unclaimed_role.mention}\n\n"
+    summary += f"✅ **Added:** {added_count}\n"
+    summary += f"🗑️ **Removed (claimed players):** {removed_count}\n"
+    summary += f"ℹ️ **Already Had:** {already_had}\n"
+    summary += f"❌ **Failed:** {len(failed_list)}"
+
+    embed.description = summary
+
+    if failed_list:
+        failures = "\n".join([f"• {f}" for f in failed_list[:10]])
+        if len(failed_list) > 10:
+            failures += f"\n...and {len(failed_list) - 10} more."
+
+        embed.add_field(name="Failed", value=failures, inline=False)
+
+    embed.set_footer(text=f"Executed by {ctx.author.name}")
+    embed.timestamp = discord.utils.utcnow()
+
+    await ctx.send(embed=embed)
+
+@bot.command(name="rules", help="Display the game rules")
+async def rules_command(ctx):
+    """Display the game rules with well.png image"""
+
+    embed = discord.Embed(
+        title="📋 Rules",
+        color=0x0066CC
+    )
+
+    # Format the rules nicely
+    rules_text = (
+        "`MAXIMUM BOWLING OVERS:`\n\n"
+        "<:ball:1451974295793172547> **BOWLERS:** __4__ Full Overs\n"
+        "<:allrounder:1451978476033671279> **ALL ROUNDERS:** __2__ Overs\n"
+        "<:bat:1451967322146213980> **BATSMEN** / **WICKETKEEPERS:** __1__ Over\n\n"
+        "*(Only ONE batsman / wicketkeeper allowed to bowl 2 overs)*\n\n"
+        "**BATTING INNINGS ORDER:** `WICKETKEEPERS OR BATSMEN --> ALL-ROUNDERS --> BOWLERS`"
+    )
+
+    embed.description = rules_text
+
+    # Set the image
+    try:
+        file = discord.File("well.png", filename="well.png")
+        embed.set_image(url="attachment://well.png")
+        await ctx.send(embed=embed, file=file)
+    except FileNotFoundError:
+        await ctx.send("❌ well.png file not found!")
+    except Exception as e:
+        await ctx.send(f"❌ Error loading image: {e}")
+
+@bot.command(name="replyextract")
+async def reply_extract(ctx):
+    if ctx.message.reference is not None:
+        original_msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
+
+        extracted_text = ""
+
+        # 1. Check for regular text content
+        if original_msg.content:
+            extracted_text += original_msg.content
+
+        # 2. Check for text inside embeds
+        if original_msg.embeds:
+            for embed in original_msg.embeds:
+                # Get description
+                if embed.description:
+                    extracted_text += f"\n{embed.description}"
+                # Get text from fields
+                for field in embed.fields:
+                    extracted_text += f"\n{field.name}: {field.value}"
+
+        # Send the result if text was found
+        if extracted_text.strip():
+            # Discord has a 2000 character limit; we trim to keep it safe
+            safe_text = extracted_text[:1990] 
+            await ctx.send(f"```{safe_text}```")
+        else:
+            await ctx.send("I couldn't find any text or embed descriptions in that message.")
+    else:
+        await ctx.send("Please reply to a message to use this command.")
+
+# ----
+
+
+@bot.command(name='send')
+@is_staff_or_admin()
+async def send_message(ctx, channel_id: int, *, message: str):
+    """
+    Send a message to a specific channel (Administrator only)
+    Usage: !send <channel_id> <message>
+    """
+    # Get the channel by ID
+    channel = bot.get_channel(channel_id)
+
+    if channel is None:
+        await ctx.send("❌ Channel not found. Make sure the bot has access to that channel.")
+        return
+
+    # Check if the channel is a text channel
+    if not isinstance(channel, discord.TextChannel):
+        await ctx.send("❌ That's not a text channel.")
+        return
+
+    try:
+        # Send the message to the specified channel
+        await channel.send(message)
+        await ctx.send(f"✅ Message sent to {channel.mention}")
+    except discord.Forbidden:
+        await ctx.send("❌ I don't have permission to send messages in that channel.")
+    except Exception as e:
+        await ctx.send(f"❌ An error occurred: {e}")
+
+
+#------------
+
+class MatchTimeButtons(discord.ui.View):
+    def __init__(self, requester_id, target_captain_id, requester_team_role_id, target_team_role_id, match_time, captain_id, channel):
+        super().__init__(timeout=172800)  # 2 days in seconds
+        self.requester_id = requester_id
+        self.target_captain_id = target_captain_id
+        self.requester_team_role_id = requester_team_role_id
+        self.target_team_role_id = target_team_role_id
+        self.match_time = match_time
+        self.captain_id = captain_id
+        self.channel = channel
+
+    @discord.ui.button(label="Accept Time", style=discord.ButtonStyle.green, custom_id="accept_time")
+    async def accept_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Only target captain can click
+        if interaction.user.id != self.target_captain_id:
+            await interaction.response.send_message("❌ Only the team captain can accept this request!", ephemeral=True)
+            return
+
+        # Disable all buttons
+        for child in self.children:
+            child.disabled = True
+
+        await interaction.response.edit_message(view=self)
+
+        # Build ping text for roles
+        ping_text = ""
+        if self.requester_team_role_id:
+            ping_text += f"<@&{self.requester_team_role_id}> "
+        if self.target_team_role_id:
+            ping_text += f"<@&{self.target_team_role_id}> "
+
+        # Send ping message first (separate from embed) as regular message
+        await self.channel.send(
+            content=f"{ping_text}**VS** at **{self.match_time}**"
+        )
+
+        # Then send the embed as regular message
+        announce_embed = discord.Embed(
+            title="⚔️ Match Scheduled!",
+            color=0x00FF00
+        )
+
+        announce_embed.add_field(
+            name="🕐 Match Time",
+            value=f"**{self.match_time}**",
+            inline=False
+        )
+
+        announce_embed.set_footer(text="Good luck to both teams!")
+
+        await self.channel.send(embed=announce_embed)
+
+    @discord.ui.button(label="Cancel Request", style=discord.ButtonStyle.red, custom_id="cancel_request")
+    async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Only requester can click
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("❌ Only the person who created this request can cancel it!", ephemeral=True)
+            return
+
+        # Disable all buttons
+        for child in self.children:
+            child.disabled = True
+
+        cancel_embed = discord.Embed(
+            title="❌ Match Request Cancelled",
+            description="The match time request has been cancelled.",
+            color=0xFF0000
+        )
+
+        await interaction.response.edit_message(embed=cancel_embed, view=self)
+
+@bot.tree.command(name="matchtime", description="Schedule a match time with another team")
+@app_commands.describe(
+    opponent="Select the opponent team",
+    time="Select the match time"
+)
+@app_commands.choices(opponent=[
+    app_commands.Choice(name="India", value="1460376137594044567"),
+    app_commands.Choice(name="Pakistan", value="1460376138755866644"),
+    app_commands.Choice(name="Australia", value="1460376139611640025"),
+    app_commands.Choice(name="England", value="1460376141314654424"),
+    app_commands.Choice(name="New Zealand", value="1460376142342000762"),
+    app_commands.Choice(name="South Africa", value="1460376143633846527"),
+    app_commands.Choice(name="West Indies", value="1460376148751028408"),
+    app_commands.Choice(name="Sri Lanka", value="1460376147715166282"),
+    app_commands.Choice(name="Bangladesh", value="1460376144862908523"),
+    app_commands.Choice(name="Afghanistan", value="1460376146163273739"),
+    app_commands.Choice(name="Netherlands", value="1460376154480312370"),
+    app_commands.Choice(name="Scotland", value="1460376151795961897"),
+    app_commands.Choice(name="Ireland", value="1460376149908525191"),
+    app_commands.Choice(name="Zimbabwe", value="1460376157668245545"),
+    app_commands.Choice(name="UAE", value="1460376158985130114"),
+    app_commands.Choice(name="Canada", value="1460376154958725152"),
+    app_commands.Choice(name="USA", value="1460376156250570824")
+])
+@app_commands.choices(time=[
+    app_commands.Choice(name="7:00 PM IST", value="7:00PM IST"),
+    app_commands.Choice(name="7:15 PM IST", value="7:15PM IST"),
+    app_commands.Choice(name="7:30 PM IST", value="7:30PM IST"),
+    app_commands.Choice(name="7:45 PM IST", value="7:45PM IST"),
+    app_commands.Choice(name="8:00 PM IST", value="8:00PM IST"),
+    app_commands.Choice(name="8:15 PM IST", value="8:15PM IST"),
+    app_commands.Choice(name="8:30 PM IST", value="8:30PM IST"),
+    app_commands.Choice(name="8:45 PM IST", value="8:45PM IST"),
+    app_commands.Choice(name="9:00 PM IST", value="9:00PM IST"),
+    app_commands.Choice(name="9:15 PM IST", value="9:15PM IST"),
+    app_commands.Choice(name="9:30 PM IST", value="9:30PM IST")
+])
+async def matchtime(interaction: discord.Interaction, opponent: app_commands.Choice[str], time: app_commands.Choice[str]):
+    # Check if user has the required role
+    required_role = interaction.guild.get_role(1463220065657688285)
+    if required_role not in interaction.user.roles:
+        await interaction.response.send_message("❌ You don't have permission to use this command!", ephemeral=True)
+        return
+
+    # Get user's team role
+    role_ids = {
+        "India": 1460376137594044567,
+        "Pakistan": 1460376138755866644,
+        "Australia": 1460376139611640025,
+        "England": 1460376141314654424,
+        "New Zealand": 1460376142342000762,
+        "South Africa": 1460376143633846527,
+        "West Indies": 1460376148751028408,
+        "Sri Lanka": 1460376147715166282,
+        "Bangladesh": 1460376144862908523,
+        "Afghanistan": 1460376146163273739,
+        "Netherlands": 1460376154480312370,
+        "Scotland": 1460376151795961897,
+        "Ireland": 1460376149908525191,
+        "Zimbabwe": 1460376157668245545,
+        "UAE": 1460376158985130114,
+        "Canada": 1460376154958725152,
+        "USA": 1460376156250570824
+    }
+
+    # Find requester's team
+    requester_team_role = None
+    requester_team_name = None
+    for team_name, role_id in role_ids.items():
+        role = interaction.guild.get_role(role_id)
+        if role in interaction.user.roles:
+            requester_team_role = role
+            requester_team_name = team_name
+            break
+
+    if not requester_team_role:
+        await interaction.response.send_message("❌ You don't have a team role!", ephemeral=True)
+        return
+
+    # Get opponent team role
+    opponent_role = interaction.guild.get_role(int(opponent.value))
+    if not opponent_role:
+        await interaction.response.send_message("❌ Opponent team role not found!", ephemeral=True)
+        return
+
+    # Check if user is trying to challenge their own team
+    if requester_team_role.id == opponent_role.id:
+        await interaction.response.send_message("❌ You cannot challenge your own team!", ephemeral=True)
+        return
+
+    # Get opponent team captain
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute("SELECT user_id, username FROM team_captains WHERE team_name = ?", (opponent.name,))
+    captain_result = c.fetchone()
+    conn.close()
+
+    if not captain_result:
+        await interaction.response.send_message(f"❌ {opponent.name} doesn't have a captain set yet!", ephemeral=True)
+        return
+
+    captain_id, captain_username = captain_result
+    captain = interaction.guild.get_member(captain_id)
+
+    if not captain:
+        await interaction.response.send_message(f"❌ Captain of {opponent.name} is not in the server!", ephemeral=True)
+        return
+
+    # Build ping text for captain
+    ping_text = f"<@{captain_id}>"
+
+    # Send captain ping first as regular message (not reply)
+    await interaction.channel.send(content=f"{ping_text} - Match Time Request")
+
+    # Create request embed
+    request_embed = discord.Embed(
+        title="🏏 Match Time Request",
+        description=f"The captain of **{requester_team_name}** wants to schedule a match!",
+        color=0xFFA500
+    )
+
+    request_embed.add_field(
+        name="Teams",
+        value=f"{requester_team_role.mention} **VS** {opponent_role.mention}",
+        inline=False
+    )
+
+    request_embed.add_field(
+        name="Proposed Time",
+        value=f"**{time.value}**",
+        inline=False
+    )
+
+    request_embed.set_footer(text=f"Requested by {interaction.user.name}")
+
+    # Create view with buttons
+    view = MatchTimeButtons(
+        requester_id=interaction.user.id,
+        target_captain_id=captain_id,
+        requester_team_role_id=requester_team_role.id,
+        target_team_role_id=opponent_role.id,
+        match_time=time.value,
+        captain_id=captain_id,
+        channel=interaction.channel
+    )
+
+    # Send embed as regular message (not reply) with buttons
+    await interaction.channel.send(embed=request_embed, view=view)
+
+    # Send ephemeral confirmation to the slash command user
+    await interaction.response.send_message("✅ Match time request sent!", ephemeral=True)
+
+@bot.command(name="order", aliases=["o"], help="View your team's batting order")
+async def order_command(ctx):
+    """Show the user's team batting order in simplified format"""
+
+    # Get the user's player
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", 
+              (ctx.author.id,))
+    result = c.fetchone()
+    conn.close()
+
+    if not result:
+        await ctx.send("❌ You haven't claimed a player yet! Use `-represent` to claim one.")
+        return
+
+    player_name = result[0]
+
+    # Find which team the user's player belongs to
+    players, team_names = find_player(player_name)
+
+    if not players or not team_names:
+        await ctx.send("❌ Could not find your player's team!")
+        return
+
+    user_team = team_names[0]
+
+    # Load all teams data
+    teams_data = load_players()
+
+    # Find the user's team data
+    team_data = None
+    for t in teams_data:
+        if t['team'] == user_team:
+            team_data = t
+            break
+
+    if not team_data:
+        await ctx.send("❌ Team data not found!")
+        return
+
+    # Categorize players by role and get their representatives
+    batsmen = []
+    wicketkeepers = []
+    allrounders = []
+    bowlers = []
+
+    for player in team_data['players']:
+        rep_info = get_representative(player['name'])
+
+        # Skip unclaimed players
+        if not rep_info:
+            continue
+
+        username = rep_info[1]
+
+        # Categorize by role
+        if "Wicketkeeper" in player['role']:
+            wicketkeepers.append(username)
+        elif "Batsman" in player['role']:
+            batsmen.append(username)
+        elif "All-Rounder" in player['role'] or "All-rounder" in player['role']:
+            allrounders.append(username)
+        elif "Bowler" in player['role']:
+            bowlers.append(username)
+
+    # Build the order text
+    order_text = f"**`WK / BAT -> ALR -> BOWL`**\n\n"
+
+
+    if wicketkeepers:
+        order_text += "**Wicketkeepers:**\n"
+        for username in wicketkeepers:
+            order_text += f"- {username}\n"
+        order_text += "\n"
+
+    if batsmen:
+        order_text += "**Batters:**\n"
+        for username in batsmen:
+            order_text += f"- {username}\n"
+        order_text += "\n"
+
+    if allrounders:
+        order_text += "**All-Rounders:**\n"
+        for username in allrounders:
+            order_text += f"- {username}\n"
+        order_text += "\n"
+
+    if bowlers:
+        order_text += "**Bowlers:**\n"
+        for username in bowlers:
+            order_text += f"- {username}\n"
+
+    await ctx.send(order_text)
+
+
+def format_player_nickname(player_name, custom_nickname):
+    """Format nickname as 'FirstInitial. LastWord ○ CustomNickname'"""
+    parts = player_name.split()
+    if len(parts) == 0:
+        return custom_nickname
+
+    first_initial = parts[0][0]
+    last_word = parts[-1]
+
+    return f"{first_initial}. {last_word} ○ {custom_nickname}"
+
+def get_user_custom_nickname(user_id):
+    """Get user's custom nickname from database"""
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute("SELECT custom_nickname FROM user_nicknames WHERE user_id = ?", (user_id,))
+    result = c.fetchone()
+    conn.close()
+    return result[0] if result else None
+
+def save_original_nickname(user_id, nickname):
+    """Save original nickname before syncing"""
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+
+    # Check if record exists
+    c.execute("SELECT 1 FROM user_nicknames WHERE user_id = ?", (user_id,))
+    exists = c.fetchone()
+
+    if exists:
+        # Update if original_nickname is NULL
+        c.execute("""UPDATE user_nicknames 
+                     SET original_nickname = COALESCE(original_nickname, ?)
+                     WHERE user_id = ?""", (nickname, user_id))
+    else:
+        # Insert new record
+        c.execute("""INSERT INTO user_nicknames (user_id, original_nickname, custom_nickname) 
+                     VALUES (?, ?, ?)""", (user_id, nickname, nickname))
+
+    conn.commit()
+    conn.close()
+
+def update_custom_nickname(user_id, custom_nickname):
+    """Update user's custom nickname"""
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute("""INSERT OR REPLACE INTO user_nicknames (user_id, custom_nickname, last_synced) 
+                 VALUES (?, ?, CURRENT_TIMESTAMP)""", (user_id, custom_nickname))
+    conn.commit()
+    conn.close()
+
+@bot.command(name="syncnicknames", aliases=["sn"], help="[ADMIN] Sync nicknames for all claimed players")
+@is_staff_or_admin()
+async def syncnicknames_command(ctx):
+    """Sync nicknames for all claimed players: Reset first, then re-sync with length limits"""
+    loading_msg = await ctx.send("🔄 **Phase 1:** Resetting all nicknames to default...")
+
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute("SELECT player_name, user_id, username FROM player_representatives")
+    all_claims = c.fetchall()
+    conn.close()
+
+    reset_count = 0
+    synced_count = 0
+    failed_list = []
+
+    # Phase 1: Reset all claimed users' nicknames
+    for _, user_id, username in all_claims:
+        try:
+            member = await ctx.guild.fetch_member(user_id)
+            if member:
+                await member.edit(nick=None, reason="Nickname sync reset phase")
+                reset_count += 1
+        except Exception:
+            continue
+
+    await loading_msg.edit(content=f"🔄 **Phase 2:** Applying formatted nicknames for {len(all_claims)} players...")
+
+    # Phase 2: Apply formatted nicknames
+    for player_name, user_id, username in all_claims:
+        try:
+            member = await ctx.guild.fetch_member(user_id)
+        except (discord.NotFound, discord.HTTPException):
+            member = ctx.guild.get_member(user_id)
+            if not member:
+                failed_list.append(f"{player_name} (@{username}) - Not in server")
+                continue
+
+        # Save original nickname if not already saved
+        current_display = member.display_name
+        save_original_nickname(user_id, current_display)
+
+        # Get custom nickname or use current
+        custom_nickname = get_user_custom_nickname(user_id)
+        if not custom_nickname:
+            custom_nickname = member.name # Use discord username as base
+            update_custom_nickname(user_id, custom_nickname)
+
+        # Format new nickname: "M. Adair ○ customnick"
+        # Discord limit is 32 characters
+        formatted_name = format_player_nickname(player_name, custom_nickname)
+
+        # Ensure it fits 32 chars
+        if len(formatted_name) > 32:
+            # Calculate length of "M. Adair ○ " part
+            parts = player_name.split()
+            if len(parts) > 0:
+                prefix = f"{parts[0][0]}. {parts[-1]} ○ "
+                max_custom_len = 32 - len(prefix)
+                if max_custom_len > 0:
+                    trimmed_custom = custom_nickname[:max_custom_len]
+                    formatted_name = f"{prefix}{trimmed_custom}"
+                else:
+                    # If prefix itself is too long (unlikely), just use first 32 chars
+                    formatted_name = prefix[:32]
+            else:
+                formatted_name = custom_nickname[:32]
+
+        try:
+            await member.edit(nick=formatted_name, reason=f"Nickname sync by {ctx.author}")
+            synced_count += 1
+        except discord.Forbidden:
+            failed_list.append(f"{player_name} (@{username}) - No permission")
+        except discord.HTTPException as e:
+            failed_list.append(f"{player_name} (@{username}) - Error: {e}")
+
+    # Create summary embed
+    embed = discord.Embed(
+        title="✅ Nickname Sync Complete",
+        description=f"Successfully reset {reset_count} and re-synced {synced_count} nicknames.",
+        color=0x00FF00
+    )
+
+    if failed_list:
+        failures = "\n".join([f"• {f}" for f in failed_list[:10]])
+        if len(failed_list) > 10:
+            failures += f"\n...and {len(failed_list) - 10} more."
+        embed.add_field(name="Failed/Skipped", value=failures, inline=False)
+
+    embed.set_footer(text=f"Action by {ctx.author.name}")
+    embed.timestamp = discord.utils.utcnow()
+
+    await loading_msg.delete()
+    await ctx.send(embed=embed)
+
+@bot.tree.command(name="setnickname", description="Set your custom nickname")
+@app_commands.describe(nickname="Your desired nickname")
+async def setnickname_command(interaction: discord.Interaction, nickname: str):
+    """Set custom nickname for claimed player"""
+
+    # Check if user has claimed a player
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", 
+              (interaction.user.id,))
+    result = c.fetchone()
+    conn.close()
+
+    if not result:
+        await interaction.response.send_message(
+            "❌ You haven't claimed a player yet! Use `-represent` to claim one.",
+            ephemeral=True
+        )
+        return
+
+    player_name = result[0]
+
+    # Check nickname length (Discord limit is 32 characters)
+    formatted_nickname = format_player_nickname(player_name, nickname)
+    if len(formatted_nickname) > 32:
+        await interaction.response.send_message(
+            f"❌ Your nickname is too long! The formatted nickname would be:\n`{formatted_nickname}`\n"
+            f"This is {len(formatted_nickname)} characters, but Discord's limit is 32.\n"
+            f"Please choose a shorter nickname.",
+            ephemeral=True
+        )
+        return
+
+    # Update custom nickname in database
+    update_custom_nickname(interaction.user.id, nickname)
+
+    # Update member's nickname
+    try:
+        await interaction.user.edit(nick=formatted_nickname, reason="Custom nickname set by user")
+
+        await interaction.response.send_message(
+            f"✅ Your nickname has been updated to: **{formatted_nickname}**",
+            ephemeral=True
+        )
+    except discord.Forbidden:
+        await interaction.response.send_message(
+            "❌ I don't have permission to change your nickname!",
+            ephemeral=True
+        )
+    except discord.HTTPException as e:
+        await interaction.response.send_message(
+            f"❌ Failed to update nickname: {e}",
+            ephemeral=True
+        )
+
+@bot.command(name="setbacknicknames", aliases=["sbn"], help="[ADMIN] Restore original nicknames")
+@is_staff_or_admin()
+async def setbacknicknames_command(ctx):
+    """Restore original nicknames for all claimed players"""
+    loading_msg = await ctx.send("🔄 Restoring original nicknames...")
+
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+
+    # Get all users with saved nicknames
+    c.execute("""SELECT user_id, original_nickname 
+                 FROM user_nicknames 
+                 WHERE original_nickname IS NOT NULL""")
+    nickname_data = c.fetchall()
+    conn.close()
+
+    restored_count = 0
+    failed_list = []
+    skipped_count = 0
+
+    for user_id, original_nickname in nickname_data:
+        # Try to fetch member
+        try:
+            member = await ctx.guild.fetch_member(user_id)
+        except discord.NotFound:
+            continue
+        except discord.HTTPException:
+            member = ctx.guild.get_member(user_id)
+            if not member:
+                continue
+
+        # Skip if nickname is already the original
+        if member.display_name == original_nickname:
+            skipped_count += 1
+            continue
+
+        try:
+            await member.edit(nick=original_nickname, reason=f"Nickname restore by {ctx.author}")
+            restored_count += 1
+        except discord.Forbidden:
+            failed_list.append(f"<@{user_id}> - No permission")
+        except discord.HTTPException as e:
+            failed_list.append(f"<@{user_id}> - HTTP error")
+
+    # Create summary embed
+    embed = discord.Embed(
+        title="✅ Nicknames Restored",
+        color=0x00FF00
+    )
+
+    summary = f"✅ **Restored:** {restored_count}\n"
+    summary += f"ℹ️ **Already Original:** {skipped_count}\n"
+    summary += f"❌ **Failed:** {len(failed_list)}"
+
+    embed.add_field(name="Summary", value=summary, inline=False)
+
+    if failed_list:
+        failures = "\n".join([f"• {f}" for f in failed_list[:10]])
+        if len(failed_list) > 10:
+            failures += f"\n...and {len(failed_list) - 10} more."
+
+        embed.add_field(name="Failed", value=failures, inline=False)
+
+    embed.set_footer(text=f"Restored by {ctx.author.name}")
+    embed.timestamp = discord.utils.utcnow()
+
+    await loading_msg.delete()
+    await ctx.send(embed=embed)
+
+# Optional: Command to check current nickname status
+@bot.command(name="mynickname", aliases=["mn"], help="Check your current nickname status")
+async def mynickname_command(ctx):
+    """Check current nickname information"""
+
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+
+    # Get player info
+    c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", 
+              (ctx.author.id,))
+    player_result = c.fetchone()
+
+    if not player_result:
+        await ctx.send("❌ You haven't claimed a player yet!")
+        conn.close()
+        return
+
+    player_name = player_result[0]
+
+    # Get nickname info
+    c.execute("""SELECT original_nickname, custom_nickname, last_synced 
+                 FROM user_nicknames WHERE user_id = ?""", (ctx.author.id,))
+    nickname_result = c.fetchone()
+    conn.close()
+
+    embed = discord.Embed(
+        title="📝 Your Nickname Status",
+        color=0x0066CC
+    )
+
+    embed.add_field(name="Player", value=player_name, inline=False)
+    embed.add_field(name="Current Display Name", value=ctx.author.display_name, inline=False)
+
+    if nickname_result:
+        original, custom, last_synced = nickname_result
+        embed.add_field(name="Original Nickname", value=original or "Not saved", inline=True)
+        embed.add_field(name="Custom Nickname", value=custom or "Not set", inline=True)
+
+        if last_synced:
+            embed.add_field(
+                name="Last Synced",
+                value=f"<t:{int(datetime.strptime(last_synced, '%Y-%m-%d %H:%M:%S').timestamp())}:R>",
+                inline=False
+            )
+    else:
+        embed.add_field(name="Status", value="Not synced yet", inline=False)
+
+    embed.set_footer(text="Use /setnickname to change your custom nickname")
+
+    await ctx.send(embed=embed)
+
+@bot.command(name="playm", help="[ADMIN] Play national anthems in voice channel")
+@is_staff_or_admin()
+async def playm_command(ctx):
+    """Play pak.mp3 and ind.mp3 in voice channel with intervals"""
+
+    # Get the voice channel
+    VOICE_CHANNEL_ID = 1464599261336567933
+    voice_channel = bot.get_channel(VOICE_CHANNEL_ID)
+
+    if not voice_channel:
+        await ctx.send("❌ Voice channel not found!")
+        return
+
+    if not isinstance(voice_channel, discord.VoiceChannel):
+        await ctx.send("❌ The specified channel is not a voice channel!")
+        return
+
+    # Check if already connected and disconnect first
+    for vc in bot.voice_clients:
+        if vc.guild == ctx.guild:
+            await vc.disconnect(force=True)
+            await asyncio.sleep(1)
+
+    voice_client = None
+
+    try:
+        # Send initial message
+        status_msg = await ctx.send("🔄 Connecting to voice channel...")
+
+        # Try to connect with a timeout
+        try:
+            voice_client = await asyncio.wait_for(
+                voice_channel.connect(timeout=60, reconnect=False),
+                timeout=30.0
+            )
+        except asyncio.TimeoutError:
+            await status_msg.edit(content="❌ Connection timed out. Voice connections may not be supported on this hosting platform (Replit).")
+            return
+        except discord.errors.ConnectionClosed as e:
+            await status_msg.edit(content=f"❌ Connection failed with error code {e.code}.\n"
+                                         f"**Note:** Voice connections often don't work on Replit due to network restrictions.\n"
+                                         f"Consider hosting on a VPS or local machine for voice features.")
+            return
+
+        await status_msg.edit(content="✅ Connected! Starting playback in 7 seconds...")
+
+        # Wait 7 seconds before starting
+        await asyncio.sleep(7)
+
+        # Define a helper function to play audio and wait
+        async def play_audio(file_path, name):
+            if not voice_client or not voice_client.is_connected():
+                raise Exception("Voice client disconnected")
+
+            # Check if file exists
+            import os
+            if not os.path.exists(file_path):
+                raise FileNotFoundError(f"{file_path} not found")
+
+            await status_msg.edit(content=f"🎵 Now playing: {name}")
+
+            # Create audio source
+            audio_source = discord.FFmpegPCMAudio(file_path)
+            voice_client.play(audio_source)
+
+            # Wait for audio to finish
+            while voice_client.is_playing():
+                await asyncio.sleep(0.5)
+
+        # Play pak.mp3
+        await play_audio("pak.mp3", "pak.mp3")
+
+        # Wait 15 seconds interval
+        await status_msg.edit(content="⏸️ 15 second interval...")
+        await asyncio.sleep(15)
+
+        # Play ind.mp3
+        await play_audio("ind.mp3", "ind.mp3")
+
+        # Disconnect from voice channel
+        await status_msg.edit(content="✅ Playback finished! Leaving voice channel...")
+        await voice_client.disconnect()
+
+    except FileNotFoundError as e:
+        await ctx.send(f"❌ Audio file not found: {e}\nMake sure pak.mp3 and ind.mp3 are in the bot's directory.")
+        if voice_client:
+            await voice_client.disconnect()
+    except discord.ClientException as e:
+        await ctx.send(f"❌ Discord client error: {e}")
+        if voice_client:
+            await voice_client.disconnect()
+    except Exception as e:
+        await ctx.send(f"❌ An error occurred: {e}")
+        if voice_client:
+            try:
+                await voice_client.disconnect()
+            except:
+                pass
+
+# Alternative command if voice doesn't work
+@bot.command(name="checkvoice", help="[ADMIN] Check if voice is supported")
+@is_staff_or_admin()
+async def checkvoice_command(ctx):
+    """Check if voice features are available"""
+
+    embed = discord.Embed(
+        title="🔊 Voice Support Check",
+        color=0x0066CC
+    )
+
+    # Check intents
+    has_voice_intent = bot.intents.voice_states
+    has_guilds_intent = bot.intents.guilds
+
+    embed.add_field(
+        name="Required Intents",
+        value=f"Voice States: {'✅' if has_voice_intent else '❌'}\n"
+              f"Guilds: {'✅' if has_guilds_intent else '❌'}",
+        inline=False
+    )
+
+    # Check PyNaCl
+    try:
+        import nacl
+        pynacl_installed = "✅ Installed"
+    except ImportError:
+        pynacl_installed = "❌ Not installed (run: pip install PyNaCl)"
+
+    embed.add_field(name="PyNaCl", value=pynacl_installed, inline=False)
+
+    # Check FFmpeg
+    import subprocess
+    try:
+        subprocess.run(['ffmpeg', '-version'], capture_output=True, check=True)
+        ffmpeg_installed = "✅ Installed"
+    except:
+        ffmpeg_installed = "❌ Not installed or not in PATH"
+
+    embed.add_field(name="FFmpeg", value=ffmpeg_installed, inline=False)
+
+    # Platform warning
+    import platform
+    system_info = f"{platform.system()} {platform.release()}"
+    embed.add_field(name="System", value=system_info, inline=False)
+
+    embed.add_field(
+        name="⚠️ Important Note",
+        value="Voice features often don't work on Replit or similar cloud platforms due to network restrictions. "
+              "For reliable voice support, host the bot on a VPS or local machine.",
+        inline=False
+    )
+
+    await ctx.send(embed=embed)
+
+@bot.command(name="rulesall", help="[ADMIN] DM rules to all claimed bowlers")
+@is_staff_or_admin()
+async def rulesall_command(ctx):
+    """DM rules embed to all claimed bowlers"""
+
+    loading_msg = await ctx.send("🔄 Sending rules to all bowlers...")
+
+    # Load teams data
+    teams_data = load_players()
+
+    # Get all bowlers
+    bowler_users = []
+
+    for team_data in teams_data:
+        for player in team_data['players']:
+            # Check if player is a bowler
+            if "Bowler" in player['role']:
+                # Get representative info
+                rep_info = get_representative(player['name'])
+
+                if rep_info:
+                    user_id, username = rep_info
+                    member = ctx.guild.get_member(user_id)
+
+                    if member:
+                        bowler_users.append({
+                            'member': member,
+                            'player_name': player['name'],
+                            'team': team_data['team']
+                        })
+
+    if not bowler_users:
+        await loading_msg.edit(content="❌ No claimed bowlers found!")
+        return
+
+    # Send DMs to all bowlers
+    sent_count = 0
+    failed_list = []
+
+    for bowler_info in bowler_users:
+        member = bowler_info['member']
+        player_name = bowler_info['player_name']
+        team = bowler_info['team']
+
+        try:
+            # Create embed
+            embed = discord.Embed(
+                title="🏏 CWC26 TFH HC Nations - Bowler Rules",
+                description=(
+                    f"You are playing as a **Bowler** in the CWC26 TFH HC Nations.\n\n"
+                    f"Welcome. You will need to follow THIS ONE SIMPLE RULE **DURING YOUR BATTING**"
+                ),
+                color=0x0066CC
+            )
+
+            # Add player info
+            flag = get_team_flag(team)
+            embed.add_field(
+                name="Your Player",
+                value=f"{flag} **{player_name}** ({team})",
+                inline=False
+            )
+
+            # Set image
+            file = discord.File("well.png", filename="well.png")
+            embed.set_image(url="attachment://well.png")
+
+            embed.set_footer(text="CWC26 TFH HC Nations")
+
+            # Send DM
+            await member.send(embed=embed, file=file)
+            sent_count += 1
+
+            # Small delay to avoid rate limits
+            await asyncio.sleep(1)
+
+        except discord.Forbidden:
+            failed_list.append(f"{player_name} (@{member.name}) - DMs disabled")
+        except discord.HTTPException as e:
+            failed_list.append(f"{player_name} (@{member.name}) - HTTP error")
+        except FileNotFoundError:
+            await loading_msg.edit(content="❌ well.png file not found!")
+            return
+        except Exception as e:
+            failed_list.append(f"{player_name} (@{member.name}) - {str(e)}")
+
+    # Create summary embed
+    summary_embed = discord.Embed(
+        title="✅ Rules DM Complete",
+        color=0x00FF00
+    )
+
+    summary = f"✅ **Sent:** {sent_count}\n"
+    summary += f"❌ **Failed:** {len(failed_list)}\n"
+    summary += f"📊 **Total Bowlers:** {len(bowler_users)}"
+
+    summary_embed.add_field(name="Summary", value=summary, inline=False)
+
+    if failed_list:
+        failures = "\n".join([f"• {f}" for f in failed_list[:10]])
+        if len(failed_list) > 10:
+            failures += f"\n...and {len(failed_list) - 10} more."
+
+        summary_embed.add_field(name="Failed", value=failures, inline=False)
+
+    summary_embed.set_footer(text=f"Executed by {ctx.author.name}")
+    summary_embed.timestamp = discord.utils.utcnow()
+
+    await loading_msg.delete()
+    await ctx.send(embed=summary_embed)
+
+@bot.command(name="deletereal", aliases=["dr"], help="[ADMIN] Permanently delete a player from all databases")
+@is_staff_or_admin()
+async def deletereal_command(ctx, *, player_name: str):
+    """
+    Permanently delete a player from all databases
+    Usage: -deletereal player name
+    """
+    # Search for player in database
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+
+    # Search in player_representatives table
+    c.execute("SELECT player_name, user_id, username FROM player_representatives WHERE player_name LIKE ?", 
+              (f"%{player_name}%",))
+    results = c.fetchall()
+
+    if not results:
+        await ctx.send(f"❌ Player '{player_name}' not found in database.")
+        conn.close()
+        return
+
+    if len(results) > 1:
+        embed = discord.Embed(
+            title="🔍 Multiple Players Found",
+            description=f"Multiple players match '{player_name}'. Please use the exact name:\n\n",
+            color=0xFFA500
+        )
+
+        for i, (name, user_id, username) in enumerate(results, 1):
+            embed.description += f"**{i}.** **{name}** (@{username})\n"
+
+        await ctx.send(embed=embed)
+        conn.close()
+        return
+
+    # Single match found
+    exact_player_name, user_id, username = results[0]
+    conn.close()
+
+    # Confirmation embed
+    confirm_embed = discord.Embed(
+        title="⚠️ Confirm Permanent Deletion",
+        description=f"Are you sure you want to **permanently delete** this player?\n\n"
+                    f"**Player:** {exact_player_name}\n"
+                    f"**Representative:** @{username}\n"
+                    f"**User ID:** {user_id}\n\n"
+                    f"This will remove them from:\n"
+                    f"• Player representatives\n"
+                    f"• Team captains\n"
+                    f"• Match stats\n"
+                    f"• Elite players\n"
+                    f"• Player emojis\n"
+                    f"• User nicknames\n\n"
+                    f"**This action cannot be undone!**",
+        color=0xFF0000
+    )
+
+    confirm_msg = await ctx.send(embed=confirm_embed)
+    await confirm_msg.add_reaction("✅")
+    await confirm_msg.add_reaction("❌")
+
+    def check(reaction, user):
+        return user == ctx.author and str(reaction.emoji) in ["✅", "❌"] and reaction.message.id == confirm_msg.id
+
+    try:
+        reaction, user = await bot.wait_for('reaction_add', timeout=30.0, check=check)
+    except asyncio.TimeoutError:
+        await confirm_msg.edit(embed=discord.Embed(
+            title="❌ Deletion Cancelled",
+            description="Confirmation timed out.",
+            color=0x808080
+        ))
+        await confirm_msg.clear_reactions()
+        return
+
+    if str(reaction.emoji) == "❌":
+        await confirm_msg.edit(embed=discord.Embed(
+            title="❌ Deletion Cancelled",
+            description=f"**{exact_player_name}** was not deleted.",
+            color=0x808080
+        ))
+        await confirm_msg.clear_reactions()
+        return
+
+    # User confirmed - proceed with deletion
+    await confirm_msg.clear_reactions()
+    await confirm_msg.edit(embed=discord.Embed(
+        title="🔄 Deleting Player...",
+        description="Please wait...",
+        color=0xFFA500
+    ))
+
+    deletion_log = []
+
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+
+    # 1. Remove from player_representatives
+    c.execute("DELETE FROM player_representatives WHERE player_name = ?", (exact_player_name,))
+    if c.rowcount > 0:
+        deletion_log.append(f"✅ Removed from player representatives")
+    conn.commit()
+
+    # 2. Remove from team_captains
+    c.execute("DELETE FROM team_captains WHERE player_name = ?", (exact_player_name,))
+    if c.rowcount > 0:
+        deletion_log.append(f"✅ Removed from team captains")
+    conn.commit()
+
+    # 3. Remove from match_stats (using user_id)
+    c.execute("DELETE FROM match_stats WHERE user_id = ?", (user_id,))
+    if c.rowcount > 0:
+        deletion_log.append(f"✅ Removed {c.rowcount} match stat entries")
+    conn.commit()
+
+    # 4. Remove from user_nicknames
+    c.execute("DELETE FROM user_nicknames WHERE user_id = ?", (user_id,))
+    if c.rowcount > 0:
+        deletion_log.append(f"✅ Removed from user nicknames")
+    conn.commit()
+
+    conn.close()
+
+    # 5. Remove from elite players
+    if exact_player_name in elite_players:
+        elite_players.remove(exact_player_name)
+        save_elite_players()
+        deletion_log.append(f"✅ Removed from elite players")
+
+    # 6. Remove player emoji
+    emoji_name = ''.join(c if c.isalnum() or c == '_' else '_' for c in exact_player_name)[:32]
+    emoji_removed = False
+
+    for guild in get_emoji_guilds(bot):
+        emoji_obj = discord.utils.get(guild.emojis, name=emoji_name)
+        if emoji_obj:
+            try:
+                await emoji_obj.delete(reason=f"Player deletion by {ctx.author}")
+                deletion_log.append(f"✅ Removed emoji from {guild.name}")
+                emoji_removed = True
+            except:
+                deletion_log.append(f"⚠️ Failed to remove emoji from {guild.name}")
+
+    # Remove from emoji mappings
+    if exact_player_name in player_emojis:
+        del player_emojis[exact_player_name]
+        with open('player_emojis.json', 'w') as f:
+            json.dump(player_emojis, f, indent=2)
+        if not emoji_removed:
+            deletion_log.append(f"✅ Removed from emoji mappings")
+
+    # Create final embed
+    final_embed = discord.Embed(
+        title="✅ Player Permanently Deleted",
+        description=f"**{exact_player_name}** (@{username}) has been permanently deleted from all databases.",
+        color=0xFF0000
+    )
+
+    if deletion_log:
+        final_embed.add_field(
+            name="Deletion Log",
+            value="\n".join(deletion_log),
+            inline=False
+        )
+
+    final_embed.set_footer(text=f"Deleted by {ctx.author.name}")
+    final_embed.timestamp = discord.utils.utcnow()
+
+    await confirm_msg.edit(embed=final_embed)
+
+def get_team_color_rgb(team_name):
+    """Get team color as RGB tuple for image generation"""
+    colors = {
+        "India": (0, 102, 204),
+        "Pakistan": (0, 100, 0),
+        "Australia": (255, 215, 0),
+        "England": (1, 33, 105),
+        "New Zealand": (0, 0, 0),
+        "South Africa": (0, 107, 63),
+        "West Indies": (123, 0, 65),
+        "Sri Lanka": (0, 61, 165),
+        "Bangladesh": (0, 106, 78),
+        "Afghanistan": (83, 99, 237),
+        "Netherlands": (255, 54, 0),
+        "Scotland": (161, 0, 242),
+        "Ireland": (157, 255, 46),
+        "Zimbabwe": (255, 33, 33),
+        "UAE": (252, 68, 68),
+        "Canada": (255, 0, 0),
+        "USA": (8, 0, 38)
+    }
+    return colors.get(team_name, (128, 128, 128))
+
+
+@bot.tree.command(name="dom", description="[ADMIN] Create Player of the Match graphic")
+@app_commands.describe(
+    text="Achievement text to display",
+    user="Discord user to feature"
+)
+@is_staff_or_admin_slash()
+async def dom_command(interaction: discord.Interaction, text: str, user: discord.Member):
+    """Generate a Player of the Match graphic"""
+
+    # ========================================
+    # 🎯 EASY COORDINATE CONFIGURATION
+    # ========================================
+    # Just edit these coordinates to move elements around!
+
+    LAYOUT = {
+        # Flag position (top left)
+        'flag_x': 5,
+        'flag_y': 0,
+        'flag_size': 140,
+
+        # User avatar position (top right area)
+        'avatar_x': 220,
+        'avatar_y': 100,
+        'avatar_size': 100,
+
+        # Player image position (right side)
+        'player_x': -25,
+        'player_y': 24,
+        'player_size': 350,
+
+        # Text positions - each with independent X coordinate
+        'player_name_x': 190,
+        'player_name_y': 20,
+        'player_name_size': 50,
+        'player_name_max_width': 300,  # Max width before scaling down
+
+        'username_x': 330,
+        'username_y': 130,
+        'username_size': 20,
+        'username_max_width': 300,  # Max width before scaling down
+
+        'achievement_x': 230,
+        'achievement_y': 270,
+        'achievement_size': 20,
+        'achievement_max_width': 300,  # Max width for achievement text
+
+        'team_name_x': 1000,
+        'team_name_y': None,  # Will auto-calculate below achievement text
+        'team_name_size': 40,
+        'team_name_spacing': 60,
+
+        # Text styling
+        'text_outline_width': 3,
+        'text_color': (255, 255, 255),      # White
+        'text_outline_color': (0, 0, 0),    # Black
+    }
+
+    # ========================================
+    # END OF EASY CONFIGURATION
+    # ========================================
+
+    await interaction.response.defer(ephemeral=True)
+
+    # Get player info from database
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (user.id,))
+    result = c.fetchone()
+    conn.close()
+
+    if not result:
+        await interaction.followup.send("❌ This user hasn't claimed a player yet!", ephemeral=True)
+        return
+
+    player_name = result[0]
+
+    # Get player data
+    players, team_names = find_player(player_name)
+
+    if not players:
+        await interaction.followup.send("❌ Player data not found!", ephemeral=True)
+        return
+
+    player_data = players[0]
+    team_name = team_names[0]
+
+    try:
+        # Load background
+        bg = Image.open("starbackground.png").convert('RGBA')
+        width, height = bg.size
+
+        print(f"Image size: {width}x{height}")
+
+        # ========================================
+        # CREATE GRADIENT OVERLAY
+        # ========================================
+        # Get team color
+        team_color = get_team_color_rgb(team_name)
+
+        # Create overlay for gradient
+        overlay = Image.new('RGBA', (width, height), (0, 0, 0, 0))
+        draw_overlay = ImageDraw.Draw(overlay, 'RGBA')
+
+        # Create smooth fading gradient from left side with team color
+        for x in range(width // 2):
+            progress = x / (width // 2)
+            alpha = int(150 * (1 - progress))  # Fade from left to transparent
+
+            for y in range(height):
+                draw_overlay.point((x, y), fill=team_color + (alpha,))
+
+        # Composite overlay onto background
+        img = Image.alpha_composite(bg, overlay)
+
+        # Load fonts
+        try:
+            player_name_font = ImageFont.truetype("nor.otf", LAYOUT['player_name_size'])
+            username_font = ImageFont.truetype("nor.otf", LAYOUT['username_size'])
+            text_font = ImageFont.truetype("nor.otf", LAYOUT['achievement_size'])
+            team_font = ImageFont.truetype("nor.otf", LAYOUT['team_name_size'])
+            print("✅ Loaded fonts")
+        except Exception as e:
+            print(f"❌ Failed to load fonts: {e}")
+            try:
+                player_name_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", LAYOUT['player_name_size'])
+                username_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", LAYOUT['username_size'])
+                text_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", LAYOUT['achievement_size'])
+                team_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", LAYOUT['team_name_size'])
+                print("✅ Loaded DejaVu fonts")
+            except Exception as e2:
+                print(f"❌ Failed to load DejaVu fonts: {e2}")
+                player_name_font = ImageFont.load_default()
+                username_font = ImageFont.load_default()
+                text_font = ImageFont.load_default()
+                team_font = ImageFont.load_default()
+                print("⚠️ Using default font")
+
+        async with aiohttp.ClientSession() as session:
+            # ========================================
+            # PLACE FLAG
+            # ========================================
+            flag_x = LAYOUT['flag_x']
+            flag_y = LAYOUT['flag_y']
+            flag_size = LAYOUT['flag_size']
+
+            if team_name.lower() == "west indies":
+                try:
+                    flag_img = Image.open("westindies.jpg").convert('RGBA')
+                    flag_img = flag_img.resize((flag_size, flag_size), Image.Resampling.LANCZOS)
+
+                    mask = Image.new('L', (flag_size, flag_size), 0)
+                    mask_draw = ImageDraw.Draw(mask)
+                    mask_draw.ellipse((0, 0, flag_size, flag_size), fill=255)
+
+                    circular_flag = Image.new('RGBA', (flag_size, flag_size), (0, 0, 0, 0))
+                    circular_flag.paste(flag_img, (0, 0), mask)
+
+                    img.paste(circular_flag, (flag_x, flag_y), circular_flag)
+                    print(f"✅ Pasted West Indies flag at ({flag_x}, {flag_y})")
+                except Exception as e:
+                    print(f"❌ Error loading West Indies flag: {e}")
+            else:
+                flag_url = get_team_flag_url(team_name)
+                if flag_url:
+                    try:
+                        async with session.get(flag_url) as resp:
+                            if resp.status == 200:
+                                flag_data = await resp.read()
+                                flag_img = Image.open(io.BytesIO(flag_data)).convert('RGBA')
+                                flag_img = flag_img.resize((flag_size, flag_size), Image.Resampling.LANCZOS)
+
+                                mask = Image.new('L', (flag_size, flag_size), 0)
+                                mask_draw = ImageDraw.Draw(mask)
+                                mask_draw.ellipse((0, 0, flag_size, flag_size), fill=255)
+
+                                circular_flag = Image.new('RGBA', (flag_size, flag_size), (0, 0, 0, 0))
+                                circular_flag.paste(flag_img, (0, 0), mask)
+
+                                img.paste(circular_flag, (flag_x, flag_y), circular_flag)
+                                print(f"✅ Pasted {team_name} flag at ({flag_x}, {flag_y})")
+                    except Exception as e:
+                        print(f"❌ Error loading team flag: {e}")
+
+            # ========================================
+            # PLACE USER AVATAR
+            # ========================================
+            avatar_x = LAYOUT['avatar_x']
+            avatar_y = LAYOUT['avatar_y']
+            avatar_size = LAYOUT['avatar_size']
+
+            if user.avatar:
+                try:
+                    async with session.get(str(user.avatar.url)) as resp:
+                        if resp.status == 200:
+                            avatar_data = await resp.read()
+                            avatar_img = Image.open(io.BytesIO(avatar_data)).convert('RGBA')
+                        else:
+                            avatar_img = Image.new('RGBA', (avatar_size, avatar_size), (128, 128, 128, 255))
+                except:
+                    avatar_img = Image.new('RGBA', (avatar_size, avatar_size), (128, 128, 128, 255))
+            else:
+                avatar_img = Image.new('RGBA', (avatar_size, avatar_size), (128, 128, 128, 255))
+
+            avatar_img = avatar_img.resize((avatar_size, avatar_size), Image.Resampling.LANCZOS)
+
+            mask = Image.new('L', (avatar_size, avatar_size), 0)
+            mask_draw = ImageDraw.Draw(mask)
+            mask_draw.ellipse((0, 0, avatar_size, avatar_size), fill=255)
+
+            border_thickness = 6
+            bordered_size = avatar_size + (border_thickness * 2)
+            bordered_avatar = Image.new('RGBA', (bordered_size, bordered_size), (255, 255, 255, 255))
+
+            border_mask = Image.new('L', (bordered_size, bordered_size), 0)
+            border_mask_draw = ImageDraw.Draw(border_mask)
+            border_mask_draw.ellipse((0, 0, bordered_size, bordered_size), fill=255)
+
+            bordered_avatar.paste(avatar_img, (border_thickness, border_thickness), mask)
+
+            img.paste(bordered_avatar, (avatar_x - border_thickness, avatar_y - border_thickness), border_mask)
+            print(f"✅ Pasted user avatar at ({avatar_x}, {avatar_y})")
+
+            # ========================================
+            # PLACE PLAYER IMAGE
+            # ========================================
+            player_x = LAYOUT['player_x']
+            player_y = LAYOUT['player_y']
+            player_size = LAYOUT['player_size']
+
+            player_img = None
+            if player_data.get('image'):
+                try:
+                    async with session.get(player_data['image']) as resp:
+                        if resp.status == 200:
+                            img_data = await resp.read()
+                            player_img = Image.open(io.BytesIO(img_data)).convert('RGBA')
+                            print("✅ Downloaded player image")
+                except Exception as e:
+                    print(f"❌ Error downloading player image: {e}")
+
+            if not player_img:
+                try:
+                    player_img = Image.open("fallback.webp").convert('RGBA')
+                    print("✅ Using fallback image")
+                except:
+                    await interaction.followup.send("❌ Could not load player image!", ephemeral=True)
+                    return
+
+            player_img = player_img.resize((player_size, player_size), Image.Resampling.LANCZOS)
+            img.paste(player_img, (player_x, player_y), player_img)
+            print(f"✅ Pasted player image at ({player_x}, {player_y})")
+
+        # ========================================
+        # DRAW ALL TEXT
+        # ========================================
+        img = img.convert('RGB')
+        draw = ImageDraw.Draw(img)
+
+        text_color = LAYOUT['text_color']
+        outline_color = LAYOUT['text_outline_color']
+        outline_width = LAYOUT['text_outline_width']
+
+        # ========================================
+        # Draw Player Name (WITH OUTLINE)
+        # ========================================
+        player_name_x = LAYOUT['player_name_x']
+        player_name_y = LAYOUT['player_name_y']
+
+        # Check if player name is too wide
+        current_font = player_name_font
+        bbox = draw.textbbox((0, 0), player_name, font=current_font)
+        text_width = bbox[2] - bbox[0]
+
+        # Scale down font if text is too wide
+        if text_width > LAYOUT['player_name_max_width']:
+            scale_factor = LAYOUT['player_name_max_width'] / text_width
+            new_size = int(LAYOUT['player_name_size'] * scale_factor)
+            try:
+                current_font = ImageFont.truetype("nor.otf", new_size)
+            except:
+                try:
+                    current_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", new_size)
+                except:
+                    current_font = ImageFont.load_default()
+
+        print(f"Drawing player name '{player_name}' at ({player_name_x}, {player_name_y})")
+
+        # Draw outline
+        for adj_x in range(-outline_width, outline_width + 1):
+            for adj_y in range(-outline_width, outline_width + 1):
+                draw.text((player_name_x + adj_x, player_name_y + adj_y), player_name, font=current_font, fill=outline_color)
+        # Draw main text
+        draw.text((player_name_x, player_name_y), player_name, font=current_font, fill=text_color)
+
+        # ========================================
+        # Draw Username (NO OUTLINE)
+        # ========================================
+        username_text = f"@{user.name}"
+        username_x = LAYOUT['username_x']
+        username_y = LAYOUT['username_y']
+
+        # Check if username is too wide
+        current_username_font = username_font
+        bbox = draw.textbbox((0, 0), username_text, font=current_username_font)
+        text_width = bbox[2] - bbox[0]
+
+        # Scale down font if text is too wide
+        if text_width > LAYOUT['username_max_width']:
+            scale_factor = LAYOUT['username_max_width'] / text_width
+            new_size = int(LAYOUT['username_size'] * scale_factor)
+            try:
+                current_username_font = ImageFont.truetype("nor.otf", new_size)
+            except:
+                try:
+                    current_username_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", new_size)
+                except:
+                    current_username_font = ImageFont.load_default()
+
+        print(f"Drawing username '{username_text}' at ({username_x}, {username_y})")
+        draw.text((username_x, username_y), username_text, font=current_username_font, fill=text_color)
+
+        # ========================================
+        # Draw Achievement Text (NO OUTLINE, NO WORD WRAP)
+        # ========================================
+        achievement_x = LAYOUT['achievement_x']
+        achievement_y = LAYOUT['achievement_y']
+
+        # Check if achievement text is too wide
+        current_achievement_font = text_font
+        bbox = draw.textbbox((0, 0), text, font=current_achievement_font)
+        text_width = bbox[2] - bbox[0]
+
+        # Scale down font if text is too wide
+        if text_width > LAYOUT['achievement_max_width']:
+            scale_factor = LAYOUT['achievement_max_width'] / text_width
+            new_size = int(LAYOUT['achievement_size'] * scale_factor)
+            try:
+                current_achievement_font = ImageFont.truetype("nor.otf", new_size)
+            except:
+                try:
+                    current_achievement_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", new_size)
+                except:
+                    current_achievement_font = ImageFont.load_default()
+
+        print(f"Drawing achievement text '{text}' at ({achievement_x}, {achievement_y})")
+        draw.text((achievement_x, achievement_y), text, font=current_achievement_font, fill=text_color)
+
+        # ========================================
+        # Draw Team Name (NO OUTLINE)
+        # ========================================
+        team_name_x = LAYOUT['team_name_x']
+        team_name_y = achievement_y + LAYOUT['team_name_spacing']
+
+        print(f"Drawing team name '{team_name}' at ({team_name_x}, {team_name_y})")
+        draw.text((team_name_x, team_name_y), team_name, font=team_font, fill=text_color)
+
+        # ========================================
+        # SAVE AND SEND
+        # ========================================
+        output = io.BytesIO()
+        img.save(output, format='PNG', quality=95)
+        output.seek(0)
+
+        embed = discord.Embed(
+            title="🎗️ SPOTLIGHT Perfomance",
+            color=get_team_color(team_name)
+        )
+
+        embed.set_image(url="attachment://player_of_match.png")
+        embed.set_footer(text="CWC HEROES™")
+
+        file = discord.File(output, filename="player_of_match.png")
+        message = await interaction.channel.send(embed=embed, file=file)
+
+        # Add fire emoji reaction
+        await message.add_reaction("🔥")
+
+        print("✅ Sent image to channel")
+
+        await interaction.followup.send("✅ Player of the Match graphic sent!", ephemeral=True)
+
+    except FileNotFoundError as e:
+        error_msg = f"❌ File not found: {e}\nMake sure starbackground.png and fonts are in the bot's directory!"
+        await interaction.followup.send(error_msg, ephemeral=True)
+        print(error_msg)
+    except Exception as e:
+        error_msg = f"❌ Error creating graphic: {e}"
+        await interaction.followup.send(error_msg, ephemeral=True)
+        print(error_msg)
+        import traceback
+        traceback.print_exc()
+
+@dom_command.error
+async def dom_error(interaction: discord.Interaction, error):
+    if isinstance(error, app_commands.MissingPermissions):
+        await interaction.response.send_message("❌ You need administrator permissions to use this command!", ephemeral=True)
+
+# ========================================
+# COMMENTATOR SYSTEM
+# ========================================
+commentator_assignments = {}  # Format: {user_id: "Commentator Name"}
+
+@bot.command(name='commentator')
+@is_staff_or_admin()
+async def assign_commentator(ctx, member: discord.Member, *, commentator_name: str):
+    """Assign a commentator role to a user"""
+    commentator_assignments[member.id] = commentator_name
+    await ctx.send(f"✅ {member.mention} has been assigned as **{commentator_name}**!")
+
+@bot.tree.command(name="commentate", description="Post a commentary message")
+@app_commands.describe(text="Your commentary text")
+async def commentate(interaction: discord.Interaction, text: str):
+    """Post commentary if user is assigned as a commentator"""
+    user_id = interaction.user.id
+
+    # Check if user is assigned as a commentator
+    if user_id not in commentator_assignments:
+        await interaction.response.send_message("❌ You are not assigned as a commentator!", ephemeral=True)
+        return
+
+    commentator_name = commentator_assignments[user_id]
+
+    # Determine thumbnail based on commentator name
+    thumbnail_url = None
+    if "Ravi Shastri" in commentator_name:
+        thumbnail_url = "https://i.ibb.co/Q7D7Gfp1/shastri.jpg"
+    elif "Grant Elliot" in commentator_name:
+        thumbnail_url = "https://i.ibb.co/7J6jZcrZ/images-2.jpg"
+
+    # Create embed
+    embed = discord.Embed(
+        title="LIVE MATCH",
+        description=f'*"{text}"*',
+        color=discord.Color.blue()
+    )
+
+    # Set author with commentator info and user's avatar
+    embed.set_author(
+        name=f"Commentator: {commentator_name} (@{interaction.user.name})",
+        icon_url=interaction.user.display_avatar.url
+    )
+
+    # Set thumbnail if available
+    if thumbnail_url:
+        embed.set_thumbnail(url=thumbnail_url)
+
+    # Set footer
+    embed.set_footer(
+        text="TFH CWC26 FINALS",
+        icon_url="https://i.ibb.co/dsLVTTYb/HC-Nations-CWC-Pakistan-2026.png"
+    )
+
+    # Send hidden response to user
+    await interaction.response.send_message("✅ Commentary posted!", ephemeral=True)
+
+    # Send the embed to the channel
+    message = await interaction.channel.send(embed=embed)
+
+    # Add reaction emojis
+    await message.add_reaction("🔥")
+    await message.add_reaction("😭")
+    await message.add_reaction("🤯")
+    await message.add_reaction("👍")
+    await message.add_reaction("🥱")
+
+@assign_commentator.error
+async def assign_commentator_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("❌ You need administrator permissions to assign commentators!")
+
+    @bot.command(name="oldreps", help="View all players you previously represented")
+    async def oldreps_command(ctx, member: discord.Member = None):
+        target = member or ctx.author
+
+        conn = sqlite3.connect('players.db')
+        c = conn.cursor()
+
+        c.execute('''CREATE TABLE IF NOT EXISTS old_representatives
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      user_id INTEGER,
+                      player_name TEXT,
+                      removed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+
+        c.execute("""SELECT player_name, removed_at FROM old_representatives 
+                     WHERE user_id = ? ORDER BY removed_at DESC""", (target.id,))
         results = c.fetchall()
         conn.close()
 
-        embed = discord.Embed(title="💰 Richest Cricket Players", color=0xFFD700)
-        medals = ["🥇", "🥈", "🥉"] + ["🏅"] * 7
-        for i, (uid, total) in enumerate(results):
-            member = ctx.guild.get_member(uid)
-            name = get_player_name(uid) or (member.display_name if member else f"User {uid}")
-            embed.add_field(name=f"{medals[i]} {name}", value=format_money(total), inline=False)
+        if not results:
+            await ctx.send(f"❌ {'You have' if target == ctx.author else f'{target.name} has'} no previous player history.")
+            return
+
+        embed = discord.Embed(
+            title=f"📜 {target.name}'s Player History",
+            description=f"All players previously represented by {target.mention}:",
+            color=0x0066CC
+        )
+
+        history_text = ""
+        for player_name, removed_at in results:
+            players, team_names = find_player(player_name)
+            flag = get_team_flag(team_names[0]) if team_names else "🏳️"
+            try:
+                dt = datetime.strptime(removed_at, '%Y-%m-%d %H:%M:%S')
+                timestamp = f"<t:{int(dt.timestamp())}:D>"
+            except:
+                timestamp = removed_at
+
+            history_text += f"{flag} **{player_name}** — left {timestamp}\n"
+
+        embed.description = history_text
+        embed.set_thumbnail(url=target.display_avatar.url)
         await ctx.send(embed=embed)
 
-    @commands.command(name="fanlist", aliases=["fl"], help="View most popular players by fans")
-    async def fanlist_command(self, ctx):
-        conn = sqlite3.connect('players.db')
-        c = conn.cursor()
-        c.execute("SELECT user_id, fans FROM player_life ORDER BY fans DESC LIMIT 10")
-        results = c.fetchall()
-        conn.close()
+@bot.command(name="fetchonline")
+async def fetchonline(ctx):
+    if ctx.guild is None:
+        await ctx.send("This command can only be used inside a server!")
+        return
 
-        embed = discord.Embed(title="👥 Most Popular Players", color=0xFF69B4)
-        medals = ["🥇", "🥈", "🥉"] + ["⭐"] * 7
-        for i, (uid, fans) in enumerate(results):
-            member = ctx.guild.get_member(uid)
-            name = get_player_name(uid) or (member.display_name if member else f"User {uid}")
-            tier = self._fan_tier(fans)
-            embed.add_field(name=f"{medals[i]} {name}", value=f"{fans:,} fans — {tier}", inline=False)
-        await ctx.send(embed=embed)
+    online_members = []
+    offline_members = []
 
-    @commands.command(name="daily", help="Claim your daily reward")
-    async def daily_command(self, ctx):
-        ensure_life(ctx.author.id)
-        life = get_life(ctx.author.id)
-        can, mins = cooldown_check(life["last_rest"], 20)  # Using rest as daily tracker
+    # Sort members into online and offline lists
+    for member in ctx.guild.members:
+        # We use display_name to get their server nickname, or their username if they don't have one
+        if member.status != discord.Status.offline:
+            online_members.append(member.display_name)
+        else:
+            offline_members.append(member.display_name)
 
-        cash_reward = random.randint(2000, 10000)
-        fan_reward = random.randint(100, 1000)
-        new_cash = life["cash"] + cash_reward
-        new_fans = life["fans"] + fan_reward
-        new_energy = min(100, life["energy"] + 20)
-        update_life(ctx.author.id, cash=new_cash, fans=new_fans, energy=new_energy)
+    # Helper function to prevent the bot from crashing if the list of names is too long
+    def format_names(name_list):
+        if not name_list:
+            return "None"
 
-        embed = discord.Embed(title="🎁 Daily Reward Claimed!", color=0x00FF00,
-                              description=f"Another day in the cricket life!")
-        embed.add_field(name="Rewards", value=f"💵 +{format_money(cash_reward)}\n👥 +{fan_reward:,} fans\n⚡ +20 Energy", inline=False)
-        embed.set_footer(text="Come back tomorrow for more!")
-        await ctx.send(embed=embed)
+        full_string = ", ".join(name_list)
 
-    @commands.command(name="crickethelp", aliases=["ch"], help="View all Player Life commands")
-    async def crickethelp_command(self, ctx):
-        embed = discord.Embed(title="🏏 Player Life — Command List", color=0xFFD700,
-                              description="Build your cricket career on AND off the field!")
-        embed.add_field(name="📊 Profile", value="`-profile` `-networth` `-balance` `-mycars` `-myhouse`", inline=False)
-        embed.add_field(name="💪 Fitness", value="`-train` `-rest` `-rehab`", inline=False)
-        embed.add_field(name="📱 Social Media", value="`-feed` `-feed english` `-feed hinglish` `-socialmedia` `-post` `-setbio` `-verify`", inline=False)
-        embed.add_field(name="⚔️ Rivals", value="`-rival @user` `-trashtalk @user` `-rivals`", inline=False)
-        embed.add_field(name="🎤 Events", value="`-press` `-scandal` `-lockerroom`", inline=False)
-        embed.add_field(name="👥 Fans", value="`-fans` `-fanlist`", inline=False)
-        embed.add_field(name="💑 Relationships", value="`-relationship` `-propose` `-marry` `-breakup`", inline=False)
-        embed.add_field(name="🚗 Lifestyle", value="`-showroom` `-buycar` `-buyhouse`", inline=False)
-        embed.add_field(name="🤝 Sponsors", value="`-getsponsor` `-collect`", inline=False)
-        embed.add_field(name="💰 Money", value="`-deposit` `-withdraw` `-pay` `-gamble` `-daily` `-richlist`", inline=False)
-        embed.set_footer(text="Admin: -addcash -setstat -awardfans -awardtrophy")
-        await ctx.send(embed=embed)
+        # If the string is safely under Discord's 1024 character limit, return it
+        if len(full_string) <= 1000:
+            return full_string
+
+        # If it's too long, truncate it safely
+        truncated_string = ""
+        added_count = 0
+        for name in name_list:
+            # Leave room for the "... and X more" text
+            if len(truncated_string) + len(name) + 2 > 900: 
+                break
+            truncated_string += name + ", "
+            added_count += 1
+
+        remaining = len(name_list) - added_count
+        return truncated_string + f"**...and {remaining} more**"
+
+    # Create the embed
+    embed = discord.Embed(
+        title=f"👥 Member Status in {ctx.guild.name}",
+        color=discord.Color.blue()
+    )
+
+    # Add the online and offline fields
+    embed.add_field(
+        name=f"🟢 Online ({len(online_members)})", 
+        value=format_names(online_members), 
+        inline=False
+    )
+    embed.add_field(
+        name=f"⚪ Offline ({len(offline_members)})", 
+        value=format_names(offline_members), 
+        inline=False
+    )
+
+    await ctx.send(embed=embed)
+
+@bot.command(name="allunc", help="[OWNER] DM all members with the unclaimed role")
+async def allunc_command(ctx):
+    OWNER_ID = 765965975761715241
+    TARGET_ROLE_ID = 1461764869282857010
+
+    if ctx.author.id != OWNER_ID:
+        return
+
+    role = ctx.guild.get_role(TARGET_ROLE_ID)
+    if not role:
+        await ctx.send("❌ Could not find the target role.")
+        return
+
+    members = [m for m in role.members if not m.bot]
+    if not members:
+        await ctx.send("❌ No members found with that role.")
+        return
+
+    status_msg = await ctx.send(f"⏳ Sending DMs to **{len(members)}** members…")
+
+    embed = discord.Embed(
+        title="Join FIRST EVER ODI WC with 30 TEAMS! ⭐",
+        description=(
+            "**SAY -rep in https://discord.com/channels/1451591563078533292/1452997837330714704 "
+            "to REPRESENT A PLAYER AND GET STARTED!**\n\n"
+            "Or captain a nation"
+        ),
+        color=0xFFD700
+    )
+    embed.set_image(url="https://i.ibb.co/Fb3fz5Ld/LET-S-PLAY-13.png")
+
+    sent = 0
+    failed = 0
+    for member in members:
+        try:
+            await member.send(embed=embed)
+            sent += 1
+            await asyncio.sleep(1.0)
+        except Exception:
+            failed += 1
+
+    await status_msg.edit(
+        content=f"✅ Done! Sent: **{sent}** | Failed (DMs closed): **{failed}**"
+    )
 
 
-async def setup(bot):
-    init_playerlife_db()
-    await bot.add_cog(PlayerLife(bot))
+# ══════════════════════════════════════════════════════════════
+# EMBED MANAGER  (owner-only: 765965975761715241)
+# ══════════════════════════════════════════════════════════════
+_EMBED_OWNER_ID = 765965975761715241
+
+def _init_embeds_table():
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS user_embeds (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id     INTEGER NOT NULL,
+        title       TEXT    DEFAULT '',
+        description TEXT    DEFAULT '',
+        image_url   TEXT    DEFAULT '',
+        color       INTEGER DEFAULT 5814143,
+        footer      TEXT    DEFAULT '',
+        created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )''')
+    conn.commit()
+    conn.close()
+
+
+# ── DB helpers ────────────────────────────────────────────────
+def _em_save(user_id, title, description, image_url, color, footer):
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute(
+        "INSERT INTO user_embeds (user_id,title,description,image_url,color,footer) "
+        "VALUES (?,?,?,?,?,?)",
+        (user_id, title, description, image_url, color, footer)
+    )
+    conn.commit()
+    eid = c.lastrowid
+    conn.close()
+    return eid
+
+def _em_list(user_id):
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute(
+        "SELECT id,title,description,image_url,color,footer,created_at "
+        "FROM user_embeds WHERE user_id=? ORDER BY created_at DESC",
+        (user_id,)
+    )
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+def _em_get(embed_id):
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute(
+        "SELECT id,title,description,image_url,color,footer "
+        "FROM user_embeds WHERE id=?",
+        (embed_id,)
+    )
+    row = c.fetchone()
+    conn.close()
+    return row
+
+def _em_update(embed_id, title, description, image_url, color, footer):
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute(
+        "UPDATE user_embeds SET title=?,description=?,image_url=?,color=?,footer=? "
+        "WHERE id=?",
+        (title, description, image_url, color, footer, embed_id)
+    )
+    conn.commit()
+    conn.close()
+
+def _em_build(row) -> discord.Embed:
+    """Turn a DB row (id,title,desc,image,color,footer) into a discord.Embed."""
+    _, title, description, image_url, color, footer = row
+    embed = discord.Embed(color=color or 0x58B9FF)
+    if title:       embed.title       = title
+    if description: embed.description = description
+    if image_url:   embed.set_image(url=image_url)
+    if footer:      embed.set_footer(text=footer)
+    return embed
+
+
+# ── Modify modal (5 fields: title / description / image / color / footer) ──
+class EmbedModifyModal(discord.ui.Modal, title="✏️ Modify Embed"):
+    m_title = discord.ui.TextInput(
+        label="Title", required=False, max_length=256,
+        placeholder="Leave blank to have no title"
+    )
+    m_description = discord.ui.TextInput(
+        label="Description", required=False,
+        style=discord.TextStyle.paragraph, max_length=4000,
+        placeholder="Main body of the embed"
+    )
+    m_image = discord.ui.TextInput(
+        label="Image URL", required=False, max_length=512,
+        placeholder="https://… (leave blank to remove)"
+    )
+    m_color = discord.ui.TextInput(
+        label="Color (hex, e.g. #FF5733)", required=False, max_length=7,
+        placeholder="#58B9FF"
+    )
+    m_footer = discord.ui.TextInput(
+        label="Footer text", required=False, max_length=2048,
+        placeholder="Leave blank to remove footer"
+    )
+
+    def __init__(self, embed_id: int, row):
+        super().__init__()
+        self.embed_id = embed_id
+        _, title, desc, img, color, footer = row
+        if title:   self.m_title.default       = title
+        if desc:    self.m_description.default  = desc
+        if img:     self.m_image.default        = img
+        if color:   self.m_color.default        = f"#{color:06X}"
+        if footer:  self.m_footer.default       = footer
+
+    async def on_submit(self, interaction: discord.Interaction):
+        title       = self.m_title.value.strip()
+        description = self.m_description.value.strip()
+        image_url   = self.m_image.value.strip()
+        footer      = self.m_footer.value.strip()
+        raw_color   = self.m_color.value.strip().lstrip('#')
+        try:
+            color = int(raw_color, 16) if raw_color else 0x58B9FF
+        except ValueError:
+            color = 0x58B9FF
+
+        _em_update(self.embed_id, title, description, image_url, color, footer)
+        new_row   = _em_get(self.embed_id)
+        new_embed = _em_build(new_row)
+        new_embed.set_author(name=f"✅ Embed #{self.embed_id} updated — preview:")
+        view = EmbedActionView(self.embed_id, interaction.user.id)
+        await interaction.response.send_message(embed=new_embed, view=view)
+
+
+# ── Confirm-before-DM view ────────────────────────────────────
+class ConfirmDMSendView(discord.ui.View):
+    def __init__(self, embed_id: int, owner_id: int, guild: discord.Guild):
+        super().__init__(timeout=60)
+        self.embed_id = embed_id
+        self.owner_id = owner_id
+        self.guild    = guild
+
+    @discord.ui.button(label="✅ Yes, send to everyone", style=discord.ButtonStyle.danger)
+    async def confirm_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.owner_id:
+            return await interaction.response.send_message("❌ Not your button.", ephemeral=True)
+        row = _em_get(self.embed_id)
+        if not row:
+            return await interaction.response.send_message("❌ Embed not found.", ephemeral=True)
+        embed   = _em_build(row)
+        members = [m for m in self.guild.members if not m.bot]
+        channel = interaction.channel
+        await interaction.response.edit_message(
+            content=f"⏳ Sending to **{len(members)}** members…", embed=None, view=None
+        )
+        sent = failed = 0
+        for member in members:
+            try:
+                await member.send(embed=embed)
+                sent += 1
+                await asyncio.sleep(0.8)
+            except Exception:
+                failed += 1
+        # Use channel.send instead of edit_original_response —
+        # the interaction token expires after 15 min and the DM loop
+        # can easily exceed that for large servers.
+        await channel.send(
+            f"✅ Done! Sent: **{sent}** | Failed (DMs closed): **{failed}**"
+        )
+        self.stop()
+
+    @discord.ui.button(label="✖ Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.owner_id:
+            return await interaction.response.send_message("❌ Not your button.", ephemeral=True)
+        await interaction.response.edit_message(content="❌ Cancelled.", embed=None, view=None)
+        self.stop()
+
+
+# ── Action view shown under every embed preview ───────────────
+class EmbedActionView(discord.ui.View):
+    def __init__(self, embed_id: int, owner_id: int):
+        super().__init__(timeout=300)
+        self.embed_id = embed_id
+        self.owner_id = owner_id
+
+    @discord.ui.button(label="✏️ Modify", style=discord.ButtonStyle.primary)
+    async def modify_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.owner_id:
+            return await interaction.response.send_message("❌ Not your button.", ephemeral=True)
+        row = _em_get(self.embed_id)
+        if not row:
+            return await interaction.response.send_message("❌ Embed not found.", ephemeral=True)
+        await interaction.response.send_modal(EmbedModifyModal(self.embed_id, row))
+
+    @discord.ui.button(label="📨 Send to All DMs", style=discord.ButtonStyle.danger)
+    async def send_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.owner_id:
+            return await interaction.response.send_message("❌ Not your button.", ephemeral=True)
+        members = [m for m in interaction.guild.members if not m.bot]
+        view    = ConfirmDMSendView(self.embed_id, self.owner_id, interaction.guild)
+        await interaction.response.send_message(
+            content=(
+                f"⚠️ This will DM **{len(members)}** members in **{interaction.guild.name}**.\n"
+                f"Are you sure you want to send this embed to everyone?"
+            ),
+            view=view
+        )
+
+
+# ── -myembeds Select ──────────────────────────────────────────
+class MyEmbedsSelect(discord.ui.Select):
+    def __init__(self, owner_id: int, rows):
+        self.owner_id = owner_id
+        options = []
+        for r in rows[:25]:
+            eid, title, desc, *_ = r
+            label   = (title or "Untitled embed")[:100]
+            preview = (desc  or "")[:50]
+            options.append(discord.SelectOption(
+                label       = label,
+                description = (preview + "…") if len(desc or "") > 50 else (preview or "No description"),
+                value       = str(eid),
+            ))
+        super().__init__(placeholder="📋 Pick an embed to preview…", options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.owner_id:
+            return await interaction.response.send_message("❌ Not your menu.", ephemeral=True)
+        embed_id = int(self.values[0])
+        row = _em_get(embed_id)
+        if not row:
+            return await interaction.response.send_message("❌ Embed not found.", ephemeral=True)
+        embed = _em_build(row)
+        embed.set_author(name=f"Embed #{embed_id}")
+        await interaction.response.send_message(
+            embed=embed, view=EmbedActionView(embed_id, self.owner_id)
+        )
+
+class MyEmbedsView(discord.ui.View):
+    def __init__(self, owner_id: int, rows):
+        super().__init__(timeout=120)
+        self.add_item(MyEmbedsSelect(owner_id, rows))
+
+
+# ── Commands ──────────────────────────────────────────────────
+@bot.command(name="convertembed")
+async def convertembed_command(ctx):
+    """Reply to any message to convert it into a stored embed."""
+    if ctx.author.id != _EMBED_OWNER_ID:
+        return
+
+    if not ctx.message.reference:
+        return await ctx.send("❌ **Reply** to a message to convert it into an embed.")
+
+    try:
+        ref = await ctx.channel.fetch_message(ctx.message.reference.message_id)
+    except Exception:
+        return await ctx.send("❌ Could not fetch the referenced message.")
+
+    # Pull content from the referenced message
+    description = ref.content or ""
+    image_url   = ""
+    title       = ""
+    footer      = ""
+
+    # Image from attachments
+    for att in ref.attachments:
+        if att.content_type and att.content_type.startswith("image/"):
+            image_url = att.url
+            break
+
+    # If the message itself had embeds, prefer those fields
+    if ref.embeds:
+        first = ref.embeds[0]
+        if first.title:                      title       = first.title
+        if first.description:                description = first.description
+        if first.footer and first.footer.text: footer    = first.footer.text
+        # Image from embed if not already found in attachments
+        if not image_url:
+            if first.image and first.image.url:
+                image_url = first.image.url
+            elif first.thumbnail and first.thumbnail.url:
+                image_url = first.thumbnail.url
+
+    color = 0x58B9FF
+    eid   = _em_save(ctx.author.id, title, description, image_url, color, footer)
+
+    preview = _em_build((eid, title, description, image_url, color, footer))
+    preview.set_author(name=f"✅ Saved as Embed #{eid}  •  use -myembeds to find it later")
+    await ctx.send(embed=preview, view=EmbedActionView(eid, ctx.author.id))
+
+
+@bot.command(name="myembeds")
+async def myembeds_command(ctx):
+    """View, modify, and send your saved embeds."""
+    if ctx.author.id != _EMBED_OWNER_ID:
+        return
+
+    rows = _em_list(ctx.author.id)
+    if not rows:
+        return await ctx.send(
+            "📭 No saved embeds yet. Use **-convertembed** by replying to any message."
+        )
+
+    list_embed = discord.Embed(
+        title       = "📋 Your Saved Embeds",
+        description = f"**{len(rows)}** embed(s). Pick one from the dropdown to preview it.",
+        color       = 0x58B9FF,
+    )
+    for r in rows[:10]:
+        eid, title, desc, img, color, footer, created = r
+        snippet = (desc[:80] + "…") if desc and len(desc) > 80 else (desc or "*(no description)*")
+        list_embed.add_field(
+            name  = f"#{eid} — {title or 'Untitled'}",
+            value = snippet,
+            inline= False,
+        )
+    if len(rows) > 10:
+        list_embed.set_footer(text=f"Showing first 10 of {len(rows)}. All {len(rows)} are in the dropdown.")
+
+    await ctx.send(embed=list_embed, view=MyEmbedsView(ctx.author.id, rows))
+
+
+# ══════════════════════════════════════════════════════════════
+
+_DMALLROLE_OWNER_ID = 765965975761715241
+
+@bot.command(name="doublesync", help="[OWNER ONLY] Remove unclaimed role from members who have a specific role")
+async def doublesync_command(ctx):
+    """Remove unclaimed role (1461764869282857010) from members who also have role 1530242270186704997. Only usable by user 765965975761715241."""
+    if ctx.author.id != _DMALLROLE_OWNER_ID:
+        return
+
+    unclaimed_role = ctx.guild.get_role(1461764869282857010)
+    target_role = ctx.guild.get_role(1530242270186704997)
+
+    if not unclaimed_role:
+        await ctx.send("❌ Unclaimed role (1461764869282857010) not found!")
+        return
+    if not target_role:
+        await ctx.send("❌ Target role (1530242270186704997) not found!")
+        return
+
+    await ctx.send(f"🔄 Removing unclaimed role from members who have **{target_role.name}**...")
+
+    removed_count = 0
+    skipped_count = 0
+    failed_list = []
+
+    for member in target_role.members:
+        if unclaimed_role not in member.roles:
+            skipped_count += 1
+            continue
+        try:
+            await member.remove_roles(unclaimed_role, reason=f"doublesync by {ctx.author}")
+            removed_count += 1
+        except discord.Forbidden:
+            failed_list.append(f"{member.name} - No permission")
+        except discord.HTTPException:
+            failed_list.append(f"{member.name} - HTTP error")
+
+    embed = discord.Embed(
+        title="✅ Double Sync Complete",
+        color=unclaimed_role.color or 0x5865F2
+    )
+    embed.description = (
+        f"**Target Role:** {target_role.mention}\n"
+        f"**Unclaimed Role:** {unclaimed_role.mention}\n\n"
+        f"🗑️ **Removed:** {removed_count}\n"
+        f"ℹ️ **Didn't have unclaimed role:** {skipped_count}\n"
+        f"❌ **Failed:** {len(failed_list)}"
+    )
+    if failed_list:
+        failures = "\n".join([f"• {f}" for f in failed_list[:10]])
+        if len(failed_list) > 10:
+            failures += f"\n...and {len(failed_list) - 10} more."
+        embed.add_field(name="Failed", value=failures, inline=False)
+    embed.set_footer(text=f"Executed by {ctx.author.name}")
+    embed.timestamp = discord.utils.utcnow()
+
+    await ctx.send(embed=embed)
+
+@bot.command(name="dmallrole", help="[OWNER ONLY] DM all users with a given role")
+async def dmallrole_command(ctx, role_id: int, *, message: str):
+    """DM all members with the specified role. Only usable by user 765965975761715241."""
+    if ctx.author.id != _DMALLROLE_OWNER_ID:
+        return  # Silently ignore unauthorized users
+
+    role = ctx.guild.get_role(role_id)
+    if not role:
+        await ctx.send(f"❌ Role with ID `{role_id}` not found.")
+        return
+
+    await ctx.send(f"📨 Sending DMs to all members with **{role.name}**...")
+
+    sent_count = 0
+    failed_count = 0
+    failed_list = []
+
+    for member in role.members:
+        if member.bot:
+            continue
+        try:
+            await member.send(message)
+            sent_count += 1
+        except discord.Forbidden:
+            failed_count += 1
+            failed_list.append(f"{member.name} - DMs closed")
+        except discord.HTTPException:
+            failed_count += 1
+            failed_list.append(f"{member.name} - HTTP error")
+
+    embed = discord.Embed(
+        title="📨 DM Blast Complete",
+        color=role.color or 0x5865F2
+    )
+    embed.description = (
+        f"**Role:** {role.mention}\n\n"
+        f"✅ **Sent:** {sent_count}\n"
+        f"❌ **Failed:** {failed_count}"
+    )
+    if failed_list:
+        failures = "\n".join([f"• {f}" for f in failed_list[:10]])
+        if len(failed_list) > 10:
+            failures += f"\n...and {len(failed_list) - 10} more."
+        embed.add_field(name="Failed", value=failures, inline=False)
+    embed.set_footer(text=f"Executed by {ctx.author.name}")
+    embed.timestamp = discord.utils.utcnow()
+
+    await ctx.send(embed=embed)
+
+# ══════════════════════════════════════════════════════════════
+token = os.getenv('TOKEN')
+if token:
+    keep_alive()
+    bot.run(token)
