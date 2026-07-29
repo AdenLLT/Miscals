@@ -45,6 +45,19 @@ _last_timeline_key: str = ""
 _last_wicket_id:    str = ""
 _last_commentator:  str = "doull"  # alternate from this
 
+# ── Fixed exclamation openers for big moments (guarantees the format/tone) ───
+_SIX_OPENERS = [
+    "6️⃣ SIX!", "6️⃣ SIX! Maximum!", "6️⃣ MASSIVE SIX!", "6️⃣ SIX! Into the stands!",
+    "6️⃣ HUGE SIX!", "6️⃣ SIX! Gone all the way!", "6️⃣ SIX! That's out of here!",
+]
+_FOUR_OPENERS = [
+    "4️⃣ FOUR!", "4️⃣ FOUR! Races away!", "4️⃣ CRACKING FOUR!", "4️⃣ FOUR! Finds the gap!",
+    "4️⃣ BEAUTIFUL FOUR!", "4️⃣ FOUR! Timed to perfection!", "4️⃣ FOUR! Superb shot!",
+]
+_WICKET_OPENERS = [
+    "🚨 OUT!", "🎯 WICKET!", "❌ GONE!", "🔥 THAT'S OUT!", "🚨 WICKET!", "💥 GOT HIM!",
+]
+
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -63,13 +76,23 @@ def _get_player_emoji(full_name: str, bot) -> str:
     return ""
 
 
-def _format_player(discord_username: str, full_name: str, bot) -> str:
-    """Return: emoji **FirstName** (@discord)"""
-    first = (full_name or discord_username).split()[0] if (full_name or discord_username) else discord_username
+def _format_player(user_id, discord_username: str, full_name: str, guild, bot) -> str:
+    """Return: emoji **FirstName** **__DisplayName__** using the member's live Discord display name."""
+    base = full_name or discord_username or "Player"
+    first = base.split()[0] if base else "Player"
     emoji = _get_player_emoji(full_name or discord_username, bot)
-    if emoji:
-        return f"{emoji} **{first}** (@{discord_username})"
-    return f"**{first}** (@{discord_username})"
+
+    display_name = discord_username or first
+    if user_id and guild:
+        try:
+            member = guild.get_member(int(user_id))
+            if member:
+                display_name = member.display_name
+        except Exception:
+            pass
+
+    tag = f"**{first}** **__{display_name}__**"
+    return f"{emoji} {tag}" if emoji else tag
 
 
 async def _get_webhooks(channel, bot) -> dict:
@@ -104,37 +127,59 @@ async def _get_webhooks(channel, bot) -> dict:
 
 
 def _build_match_block(state: dict, bot) -> str:
-    """Build a concise match-situation string for the AI prompt."""
+    """Build a concise, fact-grounded match-situation string for the AI prompt."""
     lines = []
+
+    channel = bot.get_channel(state.get('channel_id'))
+    guild = channel.guild if channel else None
 
     team_a   = state.get('team_a_name', '')
     team_b   = state.get('team_b_name', '')
     batting  = state.get('batting_team', '') or team_a
     score    = state.get('team_a_score', '')
     overs    = state.get('overs', '')
-    target   = state.get('target', '')
+    innings    = state.get('innings', 'ONE')
+    target_str = state.get('target', '')
 
     if score:
         lines.append(f"Score: {batting} {score} ({overs} ov)")
-    if target:
-        lines.append(str(target))
     if team_a and team_b:
         lines.append(f"Match: {team_a} vs {team_b}")
+
+    # Ground the innings/target facts explicitly — this is what stops the AI
+    # from hallucinating a run-chase during the 1st innings.
+    if innings == "TWO" and target_str:
+        tm = re.search(r'(\d+)', str(target_str))
+        sm = re.match(r'\s*(\d+)', score)
+        lines.append(f"Innings: 2nd innings — {target_str}.")
+        if tm and sm:
+            runs_needed = int(tm.group(1)) - int(sm.group(1))
+            lines.append(
+                f"Needs {runs_needed} more runs to win. "
+                "(Do NOT state balls remaining or required run rate — not available.)"
+            )
+    else:
+        lines.append(
+            "Innings: 1st innings — there is NO target yet. Do NOT mention chasing, "
+            "a target, required run rate, or \"runs/balls needed\"."
+        )
 
     on_strike = state.get('on_strike')
     for idx, prefix in enumerate(['batsman1', 'batsman2'], start=1):
         uname = state.get(f'{prefix}_username', '')
         fname = state.get(f'{prefix}_full_name', '') or uname
+        uid   = state.get(f'{prefix}_user_id')
         sc    = state.get(f'{prefix}_score', '')
         if uname:
             mark = " [ON STRIKE]" if on_strike == idx else ""
-            lines.append(f"Batter: {_format_player(uname, fname, bot)} — {sc}{mark}")
+            lines.append(f"Batter: {_format_player(uid, uname, fname, guild, bot)} — {sc}{mark}")
 
     buname = state.get('bowler_username', '')
     bfname = state.get('bowler_full_name', '') or buname
+    buid   = state.get('bowler_user_id')
     bstats = state.get('bowler_stats', '')
     if buname:
-        lines.append(f"Bowler: {_format_player(buname, bfname, bot)} — {bstats}")
+        lines.append(f"Bowler: {_format_player(buid, buname, bfname, guild, bot)} — {bstats}")
 
     # Current over balls
     timeline = state.get('timeline', [])
@@ -161,8 +206,17 @@ async def _generate_commentary(state: dict, event: str, bot) -> dict:
         this_c  = COMMENTATORS[0]  # pommie
         other_c = COMMENTATORS[1]
 
-    # 35% chance of replying to the other commentator
-    is_reply = bool(_history) and random.random() < 0.35
+    # Fixed punchy opener for big moments — deterministic, not left to the AI
+    opener = None
+    if event == 'boundary_6':
+        opener = random.choice(_SIX_OPENERS)
+    elif event == 'boundary_4':
+        opener = random.choice(_FOUR_OPENERS)
+    elif event == 'wicket':
+        opener = random.choice(_WICKET_OPENERS)
+
+    # 35% chance of replying to the other commentator (skip during big-moment openers)
+    is_reply = opener is None and bool(_history) and random.random() < 0.35
 
     hist_block = ""
     if _history:
@@ -182,8 +236,13 @@ async def _generate_commentary(state: dict, event: str, bot) -> dict:
     wicket_detail = ""
     if event == 'wicket' and state.get('pending_wicket'):
         wd = state['pending_wicket']
+        channel = bot.get_channel(state.get('channel_id'))
+        guild = channel.guild if channel else None
+        out_mention = _format_player(
+            wd.get('out_user_id'), wd.get('out_username', ''), wd.get('out_full_name', ''), guild, bot
+        )
         wicket_detail = (
-            f"\nDismissal: {wd.get('out_player_name', '')} out for "
+            f"\nDismissal: {out_mention} out for "
             f"{wd.get('runs', '?')} ({wd.get('balls', '?')} balls) — "
             f"{wd.get('dismissal_text', '')}."
         )
@@ -191,24 +250,28 @@ async def _generate_commentary(state: dict, event: str, bot) -> dict:
     reply_instr = (
         f"You are REPLYING to {other_c['name']} who just said: \"{_history[-1]['text']}\". "
         "Acknowledge briefly then add your own angle."
-        if is_reply and _history
+        if is_reply
         else "Give your own live commentary for this moment."
     )
 
-    # Flavour for sixes/fours/deliveries
-    flavour = ""
-    if event == 'boundary_6':
-        metres = random.randint(82, 120)
-        flavour = f"Mention the six travelled around {metres} metres."
-    elif event == 'boundary_4':
-        flavour = "Describe briefly how the ball reached the boundary — placement or timing."
-    elif event in ('ball', 'over_end'):
-        kmh = random.randint(118, 148)
-        flavour = f"You may reference the delivery speed was around {kmh} km/h if it fits."
+    if opener:
+        # The exclamation itself is fixed in code — the AI only writes the elaboration after it.
+        task_block = (
+            f'Your line will be shown to viewers starting with the fixed call "{opener}" — that part is '
+            'already handled, do NOT repeat or rephrase SIX / FOUR / OUT / WICKET / GONE yourself. '
+            'Write ONLY a short, punchy follow-up (max 140 characters) describing HOW it happened — '
+            'shot type, direction, fielding effort, a plausible distance/speed if it fits.'
+        )
+    else:
+        flavour = ""
+        if event in ('ball', 'over_end'):
+            kmh = random.randint(118, 148)
+            flavour = f"You may reference the delivery speed was around {kmh} km/h if it fits."
+        task_block = f"{reply_instr}\n{flavour}\nHARD max 200 characters."
 
     prompt = f"""{this_c['style']}
 
-=== LIVE MATCH SITUATION ===
+=== LIVE MATCH SITUATION (ONLY use facts listed here — never invent scores, targets, run rates, or balls remaining) ===
 {match_block}
 
 {hist_block}
@@ -217,15 +280,14 @@ async def _generate_commentary(state: dict, event: str, bot) -> dict:
 {event_desc}{wicket_detail}
 
 === YOUR LINE ===
-{reply_instr}
-{flavour}
+{task_block}
 
 Strict rules:
-- Write exactly 1–3 sentences of live TV commentary. HARD max 200 characters total.
-- When mentioning a player, use ONLY their FIRST NAME with this EXACT format as shown in the match block: emoji **FirstName** (@discordusername). Do not invent players not listed.
+- When mentioning a player, copy their EXACT mention format from the match situation block above (emoji + bold first name + bold-underlined display name). Do not invent players not listed there.
 - Sound like a real broadcast commentator — natural pacing, no hashtags, no excessive emojis.
 - Wicket / six = excited energy. Dot ball = analytical. Over end = summary feel.
 - Do NOT use filler phrases like "indeed", "certainly", "absolutely", "well there we have it".
+- Never mention a target, chase, required run rate, or "X off Y needed" unless the match situation block explicitly states it.
 
 Return ONLY valid JSON, no markdown fences:
 {{"text": "your commentary line here"}}"""
@@ -237,10 +299,13 @@ Return ONLY valid JSON, no markdown fences:
         raw = raw[s:e+1]
     raw = re.sub(r',\s*([}\]])', r'\1', raw)
     data = json.loads(raw)
+    ai_text = data.get("text", "").strip()
+    final_text = f"{opener} {ai_text}".strip() if opener else ai_text
+
     return {
         "key":  this_c["key"],
         "name": this_c["name"],
-        "text": data.get("text", "").strip()
+        "text": final_text
     }
 
 

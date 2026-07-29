@@ -596,6 +596,7 @@ def parse_embed_fields(embed, guild=None):
         # --- 1. CHECK INNINGS NUMBER ---
         innings_match = re.search(r'Innings:\s*\*\*(ONE|TWO)\*\*', full_text)
         innings = innings_match.group(1) if innings_match else "ONE"
+        data['innings'] = innings
         print(f"   📍 Innings: {innings}")
 
         # --- 2. EXTRACT ALL TEAM SCORES ---
@@ -672,13 +673,14 @@ def parse_embed_fields(embed, guild=None):
                     conn = sqlite3.connect('players.db')
                     c = conn.cursor()
 
+                    resolved_uid = None
                     if user_id_str:
-                        user_id = int(user_id_str)
-                        c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (user_id,))
+                        resolved_uid = int(user_id_str)
+                        c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (resolved_uid,))
                     else:
-                        resolved_id = resolve_user_id_by_username(guild, username)
-                        if resolved_id:
-                            c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (resolved_id,))
+                        resolved_uid = resolve_user_id_by_username(guild, username)
+                        if resolved_uid:
+                            c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (resolved_uid,))
                         else:
                             c.execute("SELECT player_name FROM player_representatives WHERE username = ?", (username,))
 
@@ -690,6 +692,7 @@ def parse_embed_fields(embed, guild=None):
                     team = find_player_team(full_name)
 
                     data[f'{prefix}_username'] = username
+                    data[f'{prefix}_user_id'] = resolved_uid
                     data[f'{prefix}_name'] = last_name
                     data[f'{prefix}_full_name'] = full_name
                     data[f'{prefix}_score'] = f"{runs}({balls})"
@@ -719,13 +722,14 @@ def parse_embed_fields(embed, guild=None):
                 conn = sqlite3.connect('players.db')
                 c = conn.cursor()
 
+                resolved_uid = None
                 if user_id_str:
-                    user_id = int(user_id_str)
-                    c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (user_id,))
+                    resolved_uid = int(user_id_str)
+                    c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (resolved_uid,))
                 else:
-                    resolved_id = resolve_user_id_by_username(guild, username)
-                    if resolved_id:
-                        c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (resolved_id,))
+                    resolved_uid = resolve_user_id_by_username(guild, username)
+                    if resolved_uid:
+                        c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (resolved_uid,))
                     else:
                         c.execute("SELECT player_name FROM player_representatives WHERE username = ?", (username,))
 
@@ -737,6 +741,7 @@ def parse_embed_fields(embed, guild=None):
                 team = find_player_team(full_name)
 
                 data['bowler_username'] = username
+                data['bowler_user_id'] = resolved_uid
                 data['bowler_name'] = last_name
                 data['bowler_full_name'] = full_name
                 data['bowler_stats'] = f"{wickets}-{runs} ({overs})"
@@ -1437,7 +1442,9 @@ class MatchUpdates(commands.Cog):
 
             wicket_data = {
                 'out_player_name': out_player_display_name,
+                'out_full_name': out_player_full_name,
                 'out_username': wicket_info['out_username'],
+                'out_user_id': out_uid,
                 'runs': wicket_info['runs'],
                 'balls': wicket_info['balls'],
                 'dismissal_text': dismissal_text,
