@@ -47,15 +47,15 @@ _last_commentator:  str = "doull"  # alternate from this
 
 # ── Fixed exclamation openers for big moments (guarantees the format/tone) ───
 _SIX_OPENERS = [
-    "6️⃣ SIX!", "6️⃣ SIX! Maximum!", "6️⃣ MASSIVE SIX!", "6️⃣ SIX! Into the stands!",
-    "6️⃣ HUGE SIX!", "6️⃣ SIX! Gone all the way!", "6️⃣ SIX! That's out of here!",
+    "6️⃣ **SIX!**", "6️⃣ **SIX! Maximum!**", "6️⃣ **MASSIVE SIX!**", "6️⃣ **SIX! Into the stands!**",
+    "6️⃣ **HUGE SIX!**", "6️⃣ **SIX! Gone all the way!**", "6️⃣ **SIX! That's out of here!**",
 ]
 _FOUR_OPENERS = [
-    "4️⃣ FOUR!", "4️⃣ FOUR! Races away!", "4️⃣ CRACKING FOUR!", "4️⃣ FOUR! Finds the gap!",
-    "4️⃣ BEAUTIFUL FOUR!", "4️⃣ FOUR! Timed to perfection!", "4️⃣ FOUR! Superb shot!",
+    "4️⃣ **FOUR!**", "4️⃣ **FOUR! Races away!**", "4️⃣ **CRACKING FOUR!**", "4️⃣ **FOUR! Finds the gap!**",
+    "4️⃣ **BEAUTIFUL FOUR!**", "4️⃣ **FOUR! Timed to perfection!**", "4️⃣ **FOUR! Superb shot!**",
 ]
 _WICKET_OPENERS = [
-    "🚨 OUT!", "🎯 WICKET!", "❌ GONE!", "🔥 THAT'S OUT!", "🚨 WICKET!", "💥 GOT HIM!",
+    "🚨 **OUT!**", "🎯 **WICKET!**", "❌ **GONE!**", "🔥 **THAT'S OUT!**", "🚨 **WICKET!**", "💥 **GOT HIM!**",
 ]
 
 
@@ -91,7 +91,7 @@ def _format_player(user_id, discord_username: str, full_name: str, guild, bot) -
         except Exception:
             pass
 
-    tag = f"**{first}** **__{display_name}__**"
+    tag = f"**__{display_name}__**"
     return f"{emoji} {tag}" if emoji else tag
 
 

@@ -2450,24 +2450,33 @@ class PlayerLife(commands.Cog):
                     'is ', 'are ', 'do ', 'does ', 'can ', 'could ', 'would ', 'should ')
         is_question = stripped.endswith('?') or stripped.lower().startswith(_q_words)
 
-        if is_question:
-            comment_structure = """\
-- 2 direct answers to the question asked (give a clear opinion/answer — name a player, fact, or take a side)
-- 1 agreement or follow-up that builds on an answer
-- 1 disagreement or different opinion challenging the answers
-- 1 funny reply or cricket meme response to the question
-- 1 neutral analytical take that backs an answer with a stat"""
-            extra_rule = ("IMPORTANT: The post is a QUESTION — every comment MUST actually respond to what "
-                          "was asked. Fans should give real answers and debate them. Do NOT just praise the "
-                          "player or ignore the question.")
+        # Realistic variable comment count — weighted so most posts get moderate engagement
+        # but occasionally a post blows up with 40-50 comments
+        _roll = random.random()
+        if _roll < 0.30:
+            num_comments = random.randint(4, 8)
+        elif _roll < 0.65:
+            num_comments = random.randint(10, 20)
+        elif _roll < 0.88:
+            num_comments = random.randint(22, 35)
         else:
-            comment_structure = """\
-- 2 hype/supportive (excited, praising, fanboying)
-- 1 hate/toxic (jealous, roasting, salty)
-- 1 neutral/analytical (debating, comparing, thoughtful)
-- 1 funny/meme (joke, cricket pun, light humour)
-- 1 question (asking something sparked by the post)"""
-            extra_rule = "Each comment must directly reference the post content — no generic cricket chat."
+            num_comments = random.randint(38, 50)
+
+        # Roughly how many comments should be Hinglish (20-30% of total, at least 1 if >4)
+        num_hinglish = max(1, round(num_comments * random.uniform(0.18, 0.30))) if num_comments > 4 else 0
+
+        if is_question:
+            comment_structure = (
+                f"Mix of: direct answers to the question (most comments), follow-ups building on answers, "
+                f"disagreements/counter-takes, funny/meme replies, and at least one analytical stat-backed take. "
+                f"IMPORTANT: every single comment MUST actually respond to what was asked — no generic praise."
+            )
+        else:
+            comment_structure = (
+                f"Mix of: hype/supportive fans (largest group), a few hate/toxic/salty replies, "
+                f"some analytical/debating takes, some funny/meme comments, and a few questions sparked by the post. "
+                f"Each comment must directly reference the post content — no generic cricket chat."
+            )
 
         prompt = f"""You are generating realistic fan comments on a cricket player's CricketGram post.
 
@@ -2476,13 +2485,14 @@ Followers: {social['followers']:,}
 Reputation: {life['reputation']}/100
 Post content: "{content}"
 
-Generate exactly 6 comments from different fan perspectives:
+Generate exactly {num_comments} comments from different fan perspectives.
 {comment_structure}
 
-{extra_rule}
-Rules: max 80 chars each, natural cricket slang, 0-2 emojis per comment, no emoji at the start. Creative usernames only.
+Language rule: write approximately {num_hinglish} of the {num_comments} comments in Hinglish (natural mix of Hindi words written in English, like "bhai", "yaar", "ekdum", "kya scene hai", "mast", "sahi hai", etc.) — the rest in English. Spread them naturally throughout the list, not all together.
 
-Return ONLY valid JSON array, no markdown:
+Rules: max 80 chars each, natural cricket slang, 0-2 emojis per comment, no emoji at the start. Creative varied usernames only.
+
+Return ONLY a valid JSON array of exactly {num_comments} objects, no markdown:
 [
   {{
     "handle": "fan_username",
@@ -2492,7 +2502,7 @@ Return ONLY valid JSON array, no markdown:
   }}
 ]"""
         try:
-            raw = await call_openrouter(prompt, max_tokens=700)
+            raw = await call_openrouter(prompt, max_tokens=min(4000, 80 * num_comments + 500))
             raw = raw.strip()
             start = raw.find('[')
             end   = raw.rfind(']')
