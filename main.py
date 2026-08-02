@@ -1814,6 +1814,136 @@ async def claim_command(ctx, user: discord.Member, *, player_name: str):
 
         await claims_channel.send(embed=embed)
 
+class CaptainRequestView(discord.ui.View):
+    """Button view sent in the specialclaim DM so the user can request captaincy."""
+    def __init__(self, requester: discord.Member, team_name: str):
+        super().__init__(timeout=None)
+        self.requester = requester
+        self.team_name = team_name
+        self.clicked = False
+
+    @discord.ui.button(label="Become Captain 🧢", style=discord.ButtonStyle.primary)
+    async def captain_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.clicked:
+            await interaction.response.send_message("You've already sent this request!", ephemeral=True)
+            return
+        self.clicked = True
+        button.disabled = True
+        # Disable the button on the original DM embed
+        await interaction.response.edit_message(view=self)
+        # Acknowledge with a new message in the DM
+        await interaction.followup.send("Request Sent! ✅")
+        # DM the owner
+        try:
+            owner = await interaction.client.fetch_user(765965975761715241)
+            await owner.send(
+                f"{self.requester.mention} wants to be captain of **{self.team_name}**"
+            )
+        except Exception as e:
+            print(f"[SPECIALCLAIM] Failed to DM owner about captain request: {e}")
+
+
+@bot.command(name="specialclaim", help="[OWNER] Claim a player for a user and DM them their assignment")
+async def specialclaim_command(ctx, user: discord.Member, *, player_name: str):
+    if ctx.author.id != 765965975761715241:
+        return
+
+    # Parse optional quoted extra message from the end of the input
+    # e.g. -specialclaim @user Virat Kohli "Welcome to the team!"
+    extra_message = None
+    _qm = re.search(r'"([^"]+)"\s*$', player_name)
+    if _qm:
+        extra_message = _qm.group(1)
+        player_name = player_name[:_qm.start()].strip()
+
+    players, team_names = find_player(player_name)
+
+    if not players:
+        await ctx.send(f"❌ Player '{player_name}' not found.")
+        return
+
+    if len(players) > 1:
+        embed = discord.Embed(
+            title="🔍 Multiple Players Found",
+            description=f"Multiple players match '{player_name}'. Please use the full name:\n\n",
+            color=0xFFA500
+        )
+        for i, (player, team) in enumerate(zip(players, team_names), 1):
+            flag = get_team_flag(team)
+            embed.description += f"**{i}.** {flag} **{player['name']}** - {team}\n"
+        await ctx.send(embed=embed)
+        return
+
+    player = players[0]
+    team_name = team_names[0]
+
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+
+    # Check if player is already claimed
+    c.execute("SELECT username FROM player_representatives WHERE player_name = ?", (player['name'],))
+    existing = c.fetchone()
+    if existing:
+        await ctx.send(
+            f"⚠️ {player['name']} is already represented by @{existing[0]}. Use `-unclaim` first."
+        )
+        conn.close()
+        return
+
+    # Add representative
+    c.execute("INSERT INTO player_representatives VALUES (?, ?, ?)",
+              (player['name'], user.id, user.name))
+    conn.commit()
+    conn.close()
+
+    await ctx.send(f"✅ {user.mention} is now representing **{player['name']}** from {team_name}!")
+
+    # Upload card to cache channel (same as -claim)
+    asyncio.get_event_loop().create_task(ensure_card_in_cache(bot, user.id))
+
+    # Post to claims channel (same as -claim)
+    claims_channel = bot.get_channel(1452037538792476682)
+    if claims_channel:
+        ann_embed = discord.Embed(
+            title="🎉 Player Update!",
+            description=f"{user.mention} Officially Represents **{player['name']}**",
+            color=get_team_color(team_name)
+        )
+        flag = get_team_flag(team_name)
+        role_emoji = get_role_emoji(player['role'])
+        ann_embed.add_field(
+            name=f"{flag} Player Info",
+            value=f"**{player['name']}**\n{role_emoji} {player['role']}",
+            inline=True
+        )
+        ann_embed.add_field(name="👤 Representative", value=f"{user.mention}", inline=True)
+        ann_embed.set_thumbnail(url=user.avatar.url if user.avatar else None)
+        ann_embed.set_image(url=player['image'])
+        ann_embed.set_footer(text="TFH Nations", icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
+        ann_embed.timestamp = discord.utils.utcnow()
+        await claims_channel.send(embed=ann_embed)
+
+    # DM the claimed user with their assignment embed + captain request button
+    dm_embed = discord.Embed(
+        description=(
+            f"You have been claimed as **{player['name']}** "
+            f"and your team is **{team_name}**"
+        ),
+        color=get_team_color(team_name)
+    )
+    dm_embed.set_thumbnail(url=player['image'])
+    dm_embed.set_footer(
+        text="HC ODI WC 2026",
+        icon_url="https://i.ibb.co/CsJbz15H/Add-a-heading-2026-07-23-T135208-900.png"
+    )
+
+    view = CaptainRequestView(requester=user, team_name=team_name)
+    try:
+        await user.send(content=extra_message, embed=dm_embed, view=view)
+    except discord.Forbidden:
+        await ctx.send(f"⚠️ Could not DM {user.mention} — they may have DMs disabled.")
+
+
 @bot.command(name="unclaim", aliases=["uc"], help="[ADMIN] Remove a player's representative")
 @is_staff_or_admin()
 async def unclaim_command(ctx, *, player_name: str):
@@ -2152,9 +2282,15 @@ class PlayerSelectView(View):
         for child in self.children:
             child.disabled = True
 
+# Flag toggled by -disablerep to lock out -rep and -unrep for all non-admin users
+_rep_commands_disabled: bool = False
+
 # Main represent command
 @bot.command(name="represent", aliases=["rep"], help="Request to represent a cricket player")
 async def represent_command(ctx):
+    if _rep_commands_disabled:
+        await ctx.send("❌ The `-rep` and `-unrep` commands are currently disabled by an admin.")
+        return
     # Check if user already represents a player
     conn = sqlite3.connect('players.db')
     c = conn.cursor()
@@ -2186,6 +2322,9 @@ async def represent_command(ctx):
 # Unrepresent command
 @bot.command(name="unrepresent", aliases=["unrep"], help="Remove yourself as a player representative")
 async def unrepresent_command(ctx):
+    if _rep_commands_disabled:
+        await ctx.send("❌ The `-rep` and `-unrep` commands are currently disabled by an admin.")
+        return
     conn = sqlite3.connect('players.db')
     c = conn.cursor()
 
@@ -2289,6 +2428,14 @@ async def unrepresent_command(ctx):
         ),
         color=0x00FF00
     ), view=None)
+
+@bot.command(name="disablerep", help="[ADMIN] Toggle -rep and -unrep commands on/off for all users")
+@is_staff_or_admin()
+async def disablerep_command(ctx):
+    global _rep_commands_disabled
+    _rep_commands_disabled = not _rep_commands_disabled
+    state = "disabled 🔒" if _rep_commands_disabled else "enabled 🔓"
+    await ctx.send(f"✅ The `-rep` and `-unrep` commands are now **{state}**.")
 
 @bot.command(name="resetmanualstats", help="[ADMIN] Manually reset stats for a user or 'all' who changed players recently")
 @is_staff_or_admin()
