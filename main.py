@@ -3910,6 +3910,111 @@ async def setvc_command(ctx):
 
     view.message = await ctx.send(embed=embed, view=view)
 
+@bot.command(name="synccap", help="[ADMIN] Synchronize captain roles and VC channel access")
+@commands.has_permissions(administrator=True)
+async def synccap_command(ctx):
+    """Give the captain role to captains and grant VCs access to the VC channel."""
+    captain_role_id = 1463220065657688285
+    vc_channel_id = 1463604870547509403
+
+    captain_role = ctx.guild.get_role(captain_role_id)
+    vc_channel = ctx.guild.get_channel(vc_channel_id)
+
+    if not captain_role:
+        await ctx.send(f"❌ Could not find the captain role (`{captain_role_id}`).")
+        return
+    if not vc_channel:
+        await ctx.send(f"❌ Could not find the VC channel (`{vc_channel_id}`).")
+        return
+
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute("SELECT user_id FROM team_captains")
+    captain_ids = {row[0] for row in c.fetchall()}
+    c.execute("SELECT user_id FROM team_vice_captains")
+    vice_captain_ids = {row[0] for row in c.fetchall()}
+    conn.close()
+
+    added_captains = 0
+    removed_non_captains = 0
+    missing_captains = 0
+    failed_role_updates = 0
+
+    # Add the role to every current captain.
+    for user_id in captain_ids:
+        member = ctx.guild.get_member(user_id)
+        if not member:
+            missing_captains += 1
+            continue
+        if captain_role not in member.roles:
+            try:
+                await member.add_roles(captain_role, reason=f"Captain role sync by {ctx.author}")
+                added_captains += 1
+            except (discord.Forbidden, discord.HTTPException):
+                failed_role_updates += 1
+
+    # Remove the role from every member who is not a current captain.
+    for member in list(captain_role.members):
+        if member.id in captain_ids:
+            continue
+        try:
+            await member.remove_roles(captain_role, reason=f"Captain role sync by {ctx.author}")
+            removed_non_captains += 1
+        except (discord.Forbidden, discord.HTTPException):
+            failed_role_updates += 1
+
+    # Grant each current VC a member-specific view permission on the VC channel.
+    granted_vc_access = 0
+    missing_vcs = 0
+    failed_vc_permissions = 0
+    for user_id in vice_captain_ids:
+        member = ctx.guild.get_member(user_id)
+        if not member:
+            missing_vcs += 1
+            continue
+        try:
+            await vc_channel.set_permissions(
+                member,
+                view_channel=True,
+                reason=f"Vice-captain channel access sync by {ctx.author}"
+            )
+            granted_vc_access += 1
+        except (discord.Forbidden, discord.HTTPException):
+            failed_vc_permissions += 1
+
+    embed = discord.Embed(
+        title="✅ Captain Sync Complete",
+        color=0x00A86B
+    )
+    embed.add_field(
+        name="Captain Role",
+        value=(
+            f"Added: **{added_captains}**\n"
+            f"Removed from non-captains: **{removed_non_captains}**\n"
+            f"Missing captains: **{missing_captains}**"
+        ),
+        inline=False
+    )
+    embed.add_field(
+        name="Vice-Captain Channel",
+        value=(
+            f"Access granted: **{granted_vc_access}**\n"
+            f"Missing VCs: **{missing_vcs}**"
+        ),
+        inline=False
+    )
+    if failed_role_updates or failed_vc_permissions:
+        embed.add_field(
+            name="Permission Failures",
+            value=(
+                f"Role updates: **{failed_role_updates}**\n"
+                f"Channel updates: **{failed_vc_permissions}**"
+            ),
+            inline=False
+        )
+    embed.set_footer(text=f"Synced by {ctx.author}")
+    await ctx.send(embed=embed)
+
 @bot.command(name="fixcaptainstable", aliases=["fct"])
 @is_staff_or_admin()
 async def fix_captains_table(ctx): 
