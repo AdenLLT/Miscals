@@ -2392,7 +2392,7 @@ class PlayerSelectView(View):
             child.disabled = True
 
 # Main represent command
-@bot.command(name="represent", aliases=["rep", "rel"], help="[ADMIN] Request to represent a cricket player")
+@bot.command(name="represent", aliases=["rep"], help="[ADMIN] Request to represent a cricket player")
 @is_staff_or_admin()
 async def represent_command(ctx):
     # Check if user already represents a player
