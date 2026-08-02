@@ -2391,15 +2391,10 @@ class PlayerSelectView(View):
         for child in self.children:
             child.disabled = True
 
-# Flag toggled by -disablerep to lock out -rep and -unrep for all non-admin users
-_rep_commands_disabled: bool = False
-
 # Main represent command
-@bot.command(name="represent", aliases=["rep"], help="Request to represent a cricket player")
+@bot.command(name="represent", aliases=["rep", "rel"], help="[ADMIN] Request to represent a cricket player")
+@is_staff_or_admin()
 async def represent_command(ctx):
-    if _rep_commands_disabled:
-        await ctx.send("❌ The `-rep` and `-unrep` commands are currently disabled by an admin.")
-        return
     # Check if user already represents a player
     conn = sqlite3.connect('players.db')
     c = conn.cursor()
@@ -2429,11 +2424,9 @@ async def represent_command(ctx):
     view.message = await ctx.send(embed=embed, view=view)
 
 # Unrepresent command
-@bot.command(name="unrepresent", aliases=["unrep"], help="Remove yourself as a player representative")
+@bot.command(name="unrepresent", aliases=["unrep"], help="[ADMIN] Remove yourself as a player representative")
+@is_staff_or_admin()
 async def unrepresent_command(ctx):
-    if _rep_commands_disabled:
-        await ctx.send("❌ The `-rep` and `-unrep` commands are currently disabled by an admin.")
-        return
     conn = sqlite3.connect('players.db')
     c = conn.cursor()
 
@@ -2537,14 +2530,6 @@ async def unrepresent_command(ctx):
         ),
         color=0x00FF00
     ), view=None)
-
-@bot.command(name="disablerep", help="[ADMIN] Toggle -rep and -unrep commands on/off for all users")
-@is_staff_or_admin()
-async def disablerep_command(ctx):
-    global _rep_commands_disabled
-    _rep_commands_disabled = not _rep_commands_disabled
-    state = "disabled 🔒" if _rep_commands_disabled else "enabled 🔓"
-    await ctx.send(f"✅ The `-rep` and `-unrep` commands are now **{state}**.")
 
 @bot.command(name="resetmanualstats", help="[ADMIN] Manually reset stats for a user or 'all' who changed players recently")
 @is_staff_or_admin()
