@@ -1844,105 +1844,213 @@ class CaptainRequestView(discord.ui.View):
             print(f"[SPECIALCLAIM] Failed to DM owner about captain request: {e}")
 
 
-@bot.command(name="specialclaim", help="[OWNER] Claim a player for a user and DM them their assignment")
-async def specialclaim_command(ctx, user: discord.Member, *, player_name: str):
+@bot.command(name="specialclaim", help="[OWNER] Interactively claim players for a team")
+async def specialclaim_command(ctx, team_name: str, *, rest: str = ""):
     if ctx.author.id != 765965975761715241:
         return
 
-    # Parse optional quoted extra message from the end of the input
-    # e.g. -specialclaim @user Virat Kohli "Welcome to the team!"
+    # Parse optional quoted extra message from the argument
     extra_message = None
-    _qm = re.search(r'"([^"]+)"\s*$', player_name)
+    _qm = re.search(r'"([^"]+)"', rest)
     if _qm:
         extra_message = _qm.group(1)
-        player_name = player_name[:_qm.start()].strip()
 
-    players, team_names = find_player(player_name)
-
-    if not players:
-        await ctx.send(f"❌ Player '{player_name}' not found.")
+    # Validate team
+    team_key = team_name.lower()
+    if team_key not in TEAM_ROLE_IDS:
+        teams_list = ", ".join(t.title() for t in TEAM_ROLE_IDS)
+        await ctx.send(f"❌ Team **{team_name}** not found.\nAvailable teams: {teams_list}")
         return
 
-    if len(players) > 1:
-        embed = discord.Embed(
-            title="🔍 Multiple Players Found",
-            description=f"Multiple players match '{player_name}'. Please use the full name:\n\n",
-            color=0xFFA500
-        )
-        for i, (player, team) in enumerate(zip(players, team_names), 1):
-            flag = get_team_flag(team)
-            embed.description += f"**{i}.** {flag} **{player['name']}** - {team}\n"
-        await ctx.send(embed=embed)
+    # Get team data from players list
+    teams_data = load_players()
+    team_data = None
+    actual_team_name = None
+    for td in teams_data:
+        if td['team'].lower() == team_key:
+            team_data = td
+            actual_team_name = td['team']
+            break
+
+    if not team_data:
+        await ctx.send(f"❌ No player data found for **{team_name}**.")
         return
 
-    player = players[0]
-    team_name = team_names[0]
+    team_role_id = TEAM_ROLE_IDS[team_key]
+    team_role = ctx.guild.get_role(team_role_id)
+    flag = get_team_flag(actual_team_name)
 
-    conn = sqlite3.connect('players.db')
-    c = conn.cursor()
+    def check(m):
+        return m.author == ctx.author and m.channel == ctx.channel
 
-    # Check if player is already claimed
-    c.execute("SELECT username FROM player_representatives WHERE player_name = ?", (player['name'],))
-    existing = c.fetchone()
-    if existing:
+    await ctx.send(
+        f"✅ Started special claim session for {flag} **{actual_team_name}**.\n"
+        f"Type `END` at any point to stop.\n\n"
+        f"**Give a username:**"
+    )
+
+    first = True
+    while True:
+        # ── Step 1: get username ──────────────────────────────────────────
+        if not first:
+            await ctx.send("**Name another person** (or type `END` to finish):")
+        first = False
+
+        try:
+            msg = await bot.wait_for('message', check=check, timeout=120)
+        except asyncio.TimeoutError:
+            await ctx.send("⏰ Session timed out.")
+            return
+
+        if msg.content.strip().upper() == "END":
+            await ctx.send("✅ Special claim session ended.")
+            return
+
+        username_input = msg.content.strip()
+
+        # Resolve member: mention > exact name > partial name
+        member = None
+        if msg.mentions:
+            member = msg.mentions[0]
+        else:
+            member = ctx.guild.get_member_named(username_input)
+            if not member:
+                ulow = username_input.lower()
+                for m in ctx.guild.members:
+                    if m.name.lower() == ulow or m.display_name.lower() == ulow:
+                        member = m
+                        break
+            if not member:
+                ulow = username_input.lower()
+                for m in ctx.guild.members:
+                    if ulow in m.name.lower() or ulow in m.display_name.lower():
+                        member = m
+                        break
+
+        if not member:
+            await ctx.send(
+                f"❌ Could not find **{username_input}** in this server. "
+                f"Try again or type `END`.\n\n**Give a username:**"
+            )
+            first = True   # re-show "Give a username" prompt next iteration
+            continue
+
+        # ── Step 2: get player name (inner loop until valid) ──────────────
         await ctx.send(
-            f"⚠️ {player['name']} is already represented by @{existing[0]}. Use `-unclaim` first."
+            f"✅ Found {member.mention}. "
+            f"**Which player of {actual_team_name} do you want this person to have?**"
         )
+
+        matched_player = None
+        while matched_player is None:
+            try:
+                pmsg = await bot.wait_for('message', check=check, timeout=120)
+            except asyncio.TimeoutError:
+                await ctx.send("⏰ Session timed out.")
+                return
+
+            if pmsg.content.strip().upper() == "END":
+                await ctx.send("✅ Special claim session ended.")
+                return
+
+            player_input = pmsg.content.strip()
+            player_input_lower = player_input.lower()
+
+            # Exact match first, then partial within this team
+            for p in team_data['players']:
+                if p['name'].lower() == player_input_lower:
+                    matched_player = p
+                    break
+
+            if not matched_player:
+                partial = [p for p in team_data['players'] if player_input_lower in p['name'].lower()]
+                if len(partial) == 1:
+                    matched_player = partial[0]
+                elif len(partial) > 1:
+                    names = "\n".join(f"• {p['name']}" for p in partial)
+                    await ctx.send(
+                        f"🔍 Multiple players match **{player_input}**:\n{names}\n\n"
+                        f"**Please be more specific:**"
+                    )
+                else:
+                    await ctx.send(
+                        f"❌ No player matching **{player_input}** found in {actual_team_name}. "
+                        f"**Try again:**"
+                    )
+
+        # ── Step 3: claim the player ──────────────────────────────────────
+        conn = sqlite3.connect('players.db')
+        c = conn.cursor()
+
+        c.execute("SELECT username FROM player_representatives WHERE player_name = ?", (matched_player['name'],))
+        existing = c.fetchone()
+        if existing:
+            await ctx.send(
+                f"⚠️ **{matched_player['name']}** is already represented by @{existing[0]}. "
+                f"Use `-unclaim` first.\n\n**Give a username:**"
+            )
+            conn.close()
+            first = True
+            continue
+
+        c.execute("INSERT INTO player_representatives VALUES (?, ?, ?)",
+                  (matched_player['name'], member.id, member.name))
+        conn.commit()
         conn.close()
-        return
 
-    # Add representative
-    c.execute("INSERT INTO player_representatives VALUES (?, ?, ?)",
-              (player['name'], user.id, user.name))
-    conn.commit()
-    conn.close()
+        await ctx.send(f"✅ {member.mention} is now representing **{matched_player['name']}** from {actual_team_name}!")
 
-    await ctx.send(f"✅ {user.mention} is now representing **{player['name']}** from {team_name}!")
+        # Assign team role
+        if team_role:
+            try:
+                if team_role not in member.roles:
+                    await member.add_roles(team_role, reason=f"specialclaim by {ctx.author}")
+            except discord.Forbidden:
+                await ctx.send(f"⚠️ Could not assign the **{actual_team_name}** role to {member.mention} — missing permissions.")
 
-    # Upload card to cache channel (same as -claim)
-    asyncio.get_event_loop().create_task(ensure_card_in_cache(bot, user.id))
+        # Card cache
+        asyncio.get_event_loop().create_task(ensure_card_in_cache(bot, member.id))
 
-    # Post to claims channel (same as -claim)
-    claims_channel = bot.get_channel(1452037538792476682)
-    if claims_channel:
-        ann_embed = discord.Embed(
-            title="🎉 Player Update!",
-            description=f"{user.mention} Officially Represents **{player['name']}**",
-            color=get_team_color(team_name)
+        # Post to claims channel
+        claims_channel = bot.get_channel(1452037538792476682)
+        if claims_channel:
+            ann_embed = discord.Embed(
+                title="🎉 Player Update!",
+                description=f"{member.mention} Officially Represents **{matched_player['name']}**",
+                color=get_team_color(actual_team_name)
+            )
+            role_emoji = get_role_emoji(matched_player['role'])
+            ann_embed.add_field(
+                name=f"{flag} Player Info",
+                value=f"**{matched_player['name']}**\n{role_emoji} {matched_player['role']}",
+                inline=True
+            )
+            ann_embed.add_field(name="👤 Representative", value=f"{member.mention}", inline=True)
+            ann_embed.set_thumbnail(url=member.avatar.url if member.avatar else None)
+            ann_embed.set_image(url=matched_player['image'])
+            ann_embed.set_footer(text="TFH Nations", icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
+            ann_embed.timestamp = discord.utils.utcnow()
+            await claims_channel.send(embed=ann_embed)
+
+        # DM the member
+        dm_embed = discord.Embed(
+            description=(
+                f"You have been claimed as **{matched_player['name']}** "
+                f"and your team is **{actual_team_name}**"
+            ),
+            color=get_team_color(actual_team_name)
         )
-        flag = get_team_flag(team_name)
-        role_emoji = get_role_emoji(player['role'])
-        ann_embed.add_field(
-            name=f"{flag} Player Info",
-            value=f"**{player['name']}**\n{role_emoji} {player['role']}",
-            inline=True
+        dm_embed.set_thumbnail(url=matched_player['image'])
+        dm_embed.set_footer(
+            text="HC ODI WC 2026",
+            icon_url="https://i.ibb.co/CsJbz15H/Add-a-heading-2026-07-23-T135208-900.png"
         )
-        ann_embed.add_field(name="👤 Representative", value=f"{user.mention}", inline=True)
-        ann_embed.set_thumbnail(url=user.avatar.url if user.avatar else None)
-        ann_embed.set_image(url=player['image'])
-        ann_embed.set_footer(text="TFH Nations", icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
-        ann_embed.timestamp = discord.utils.utcnow()
-        await claims_channel.send(embed=ann_embed)
 
-    # DM the claimed user with their assignment embed + captain request button
-    dm_embed = discord.Embed(
-        description=(
-            f"You have been claimed as **{player['name']}** "
-            f"and your team is **{team_name}**"
-        ),
-        color=get_team_color(team_name)
-    )
-    dm_embed.set_thumbnail(url=player['image'])
-    dm_embed.set_footer(
-        text="HC ODI WC 2026",
-        icon_url="https://i.ibb.co/CsJbz15H/Add-a-heading-2026-07-23-T135208-900.png"
-    )
-
-    view = CaptainRequestView(requester=user, team_name=team_name)
-    try:
-        await user.send(content=extra_message, embed=dm_embed, view=view)
-    except discord.Forbidden:
-        await ctx.send(f"⚠️ Could not DM {user.mention} — they may have DMs disabled.")
+        view = CaptainRequestView(requester=member, team_name=actual_team_name)
+        try:
+            await member.send(content=extra_message, embed=dm_embed, view=view)
+        except discord.Forbidden:
+            await ctx.send(f"⚠️ Could not DM {member.mention} — they may have DMs disabled.")
 
 
 @bot.command(name="unclaim", aliases=["uc"], help="[ADMIN] Remove a player's representative")
