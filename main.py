@@ -734,6 +734,8 @@ def init_db():
     # ADD THIS NEW TABLE FOR CAPTAINS
     c.execute('''CREATE TABLE IF NOT EXISTS team_captains
                  (team_name TEXT PRIMARY KEY, player_name TEXT, user_id INTEGER, username TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS team_vice_captains
+                 (team_name TEXT PRIMARY KEY, player_name TEXT, user_id INTEGER, username TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS old_representatives
      (id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER,
@@ -1630,6 +1632,34 @@ def remove_team_captain(team_name):
     conn.commit()
     conn.close()
 
+def get_team_vice_captain(team_name):
+    """Get the vice-captain player name for a team."""
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute("SELECT player_name FROM team_vice_captains WHERE team_name = ?", (team_name,))
+    result = c.fetchone()
+    conn.close()
+    return result[0] if result else None
+
+def set_team_vice_captain(team_name, player_name, user_id, username):
+    """Set or replace a team's vice-captain."""
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute(
+        "INSERT OR REPLACE INTO team_vice_captains VALUES (?, ?, ?, ?)",
+        (team_name, player_name, user_id, username)
+    )
+    conn.commit()
+    conn.close()
+
+def remove_team_vice_captain(team_name):
+    """Remove a team's vice-captain."""
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute("DELETE FROM team_vice_captains WHERE team_name = ?", (team_name,))
+    conn.commit()
+    conn.close()
+
 # Pagination View for Player List
 class PlayerListView(View):
     def __init__(self, pages, ctx):
@@ -2099,6 +2129,8 @@ async def unclaim_command(ctx, *, player_name: str):
 
     # Remove representative
     c.execute("DELETE FROM player_representatives WHERE player_name = ?",
+              (player['name'],))
+    c.execute("DELETE FROM team_vice_captains WHERE player_name = ?",
               (player['name'],))
     conn.commit()
     conn.close()
@@ -2919,6 +2951,8 @@ async def viewteam_command(ctx, *, team_name: str):
     # Compute OVR for every player in the squad, use top 12 for team OVR
     all_player_ovrs = []
 
+    vice_captain_name = get_team_vice_captain(team_data['team'])
+
     for player in team_data['players']:
         rep_info = get_representative(player['name'])
         if rep_info:
@@ -2962,11 +2996,12 @@ async def viewteam_command(ctx, *, team_name: str):
             p_ovr = None
         ovr_display = str(p_ovr) if p_ovr is not None else "NIL"
 
-        # Add (C) if this player is the captain
+        # Add (C) if this player is the captain and (VC) if they are vice-captain
         captain_badge = " **(C)**" if player['name'] == captain_name else ""
+        vice_captain_badge = " **(VC)**" if player['name'] == vice_captain_name else ""
 
         # Format: [emoji] · Player Name (C) · @rep · OVR OVR
-        player_line = f"{emoji} · {player['name']}{captain_badge} · {rep_text} · {ovr_display} OVR"
+        player_line = f"{emoji} · {player['name']}{captain_badge}{vice_captain_badge} · {rep_text} · {ovr_display} OVR"
 
         if "Wicketkeeper" in player['role']:
             wicketkeepers.append(player_line)
@@ -3537,6 +3572,7 @@ async def sync_left_command(ctx):
 
             # Remove from captains if they were one
             c.execute("DELETE FROM team_captains WHERE player_name = ?", (player_name,))
+            c.execute("DELETE FROM team_vice_captains WHERE player_name = ?", (player_name,))
 
             removed_list.append(player_name)
             removed_count += 1
@@ -3647,6 +3683,7 @@ async def removecaptain_command(ctx, *, team_name: str):
 
     # Remove captain
     remove_team_captain(team_data['team'])
+    remove_team_vice_captain(team_data['team'])
 
     flag = get_team_flag(team_data['team'])
     embed = discord.Embed(
@@ -3694,6 +3731,184 @@ async def captains_command(ctx):
         for name, value in chunk:
             embed.add_field(name=name, value=value, inline=True)
         await ctx.send(embed=embed)
+
+class ViceCaptainSelectView(View):
+    """Dropdown used by a team captain to appoint their team's vice-captain."""
+    def __init__(self, ctx, team_data, captain_user_id):
+        super().__init__(timeout=180)
+        self.ctx = ctx
+        self.team_data = team_data
+        self.captain_user_id = captain_user_id
+        self.message = None
+
+        options = []
+        for player in team_data['players']:
+            rep_info = get_representative(player['name'])
+            if not rep_info:
+                continue
+
+            member = ctx.guild.get_member(rep_info[0])
+            if not member:
+                continue
+
+            if player['name'] == get_team_captain(team_data['team']):
+                continue
+
+            options.append(discord.SelectOption(
+                label=member.name[:100],
+                description=f"Player: {player['name']}"[:100],
+                value=player['name']
+            ))
+
+        if options:
+            select = Select(
+                placeholder="👤 Select a team player as VC",
+                options=options[:25],
+                custom_id=f"setvc_{team_data['team'].lower().replace(' ', '_')}"
+            )
+            select.callback = self.select_callback
+            self.add_item(select)
+
+    async def select_callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message(
+                "❌ This is not your menu!", ephemeral=True
+            )
+            return
+
+        # Re-check captain status when the dropdown is used.
+        conn = sqlite3.connect('players.db')
+        c = conn.cursor()
+        c.execute(
+            "SELECT user_id FROM team_captains WHERE team_name = ?",
+            (self.team_data['team'],)
+        )
+        captain_row = c.fetchone()
+        conn.close()
+
+        if not captain_row or captain_row[0] != interaction.user.id:
+            await interaction.response.send_message(
+                "❌ Only the current captain of this team can appoint the VC.",
+                ephemeral=True
+            )
+            return
+
+        player_name = interaction.data['values'][0]
+        players, team_names = find_player(player_name)
+        if not players or team_names[0] != self.team_data['team']:
+            await interaction.response.send_message(
+                "❌ That player is no longer available for this team.",
+                ephemeral=True
+            )
+            return
+
+        rep_info = get_representative(player_name)
+        if not rep_info:
+            await interaction.response.send_message(
+                "❌ That player is no longer claimed by a Discord user.",
+                ephemeral=True
+            )
+            return
+
+        member = interaction.guild.get_member(rep_info[0])
+        if not member:
+            await interaction.response.send_message(
+                "❌ That player is no longer in the server.",
+                ephemeral=True
+            )
+            return
+
+        set_team_vice_captain(
+            self.team_data['team'],
+            player_name,
+            rep_info[0],
+            rep_info[1]
+        )
+
+        for child in self.children:
+            child.disabled = True
+
+        flag = get_team_flag(self.team_data['team'])
+        embed = discord.Embed(
+            title="✅ Vice-Captain Appointed",
+            description=(
+                f"{flag} {member.mention} (`{member.name}`) is now the "
+                f"vice-captain of **{self.team_data['team']}**.\n\n"
+                f"`-vt {self.team_data['team']}` will show **(VC)** beside "
+                f"**{player_name}**."
+            ),
+            color=get_team_color(self.team_data['team'])
+        )
+        embed.set_footer(text=f"Appointed by {interaction.user.name}")
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    async def on_timeout(self):
+        for child in self.children:
+            child.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except (discord.NotFound, discord.HTTPException):
+                pass
+
+@bot.command(name="setvc", help="[TEAM CAPTAIN] Choose a vice-captain for your team")
+async def setvc_command(ctx):
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute(
+        "SELECT team_name FROM team_captains WHERE user_id = ?",
+        (ctx.author.id,)
+    )
+    captain_teams = [row[0] for row in c.fetchall()]
+    conn.close()
+
+    if not captain_teams:
+        await ctx.send("❌ Only team captains can use `-setvc`.")
+        return
+
+    # A captain should normally have one team; use the first if legacy data
+    # contains more than one captain record for the same Discord user.
+    team_name = captain_teams[0]
+    teams_data = load_players()
+    team_data = next(
+        (team for team in teams_data if team['team'].lower() == team_name.lower()),
+        None
+    )
+    if not team_data:
+        await ctx.send(f"❌ Player data for **{team_name}** could not be found.")
+        return
+
+    captain_name = get_team_captain(team_data['team'])
+    claimed_members = []
+    for player in team_data['players']:
+        if player['name'] == captain_name:
+            continue
+        rep_info = get_representative(player['name'])
+        if rep_info and ctx.guild.get_member(rep_info[0]):
+            claimed_members.append(player)
+
+    if not claimed_members:
+        await ctx.send(
+            f"❌ No eligible claimed teammates from **{team_data['team']}** "
+            "are currently available to choose."
+        )
+        return
+
+    flag = get_team_flag(team_data['team'])
+    view = ViceCaptainSelectView(ctx, team_data, ctx.author.id)
+    embed = discord.Embed(
+        title=f"{flag} Select Your Vice-Captain",
+        description=(
+            f"Choose a Discord username from **{team_data['team']}** below. "
+            "Selecting another player will replace the current VC."
+        ),
+        color=get_team_color(team_data['team'])
+    )
+    current_vc = get_team_vice_captain(team_data['team'])
+    if current_vc:
+        embed.set_footer(text=f"Current VC: {current_vc}")
+
+    view.message = await ctx.send(embed=embed, view=view)
 
 @bot.command(name="fixcaptainstable", aliases=["fct"])
 @is_staff_or_admin()
@@ -3746,6 +3961,7 @@ async def syncplayers_command(ctx):
 
             # Remove from captains if they were one
             c.execute("DELETE FROM team_captains WHERE player_name = ?", (player_name,))
+            c.execute("DELETE FROM team_vice_captains WHERE player_name = ?", (player_name,))
 
             removed_list.append(f"{player_name} (@{username})")
             removed_count += 1
@@ -5292,7 +5508,13 @@ async def deletereal_command(ctx, *, player_name: str):
         deletion_log.append(f"✅ Removed from team captains")
     conn.commit()
 
-    # 3. Remove from match_stats (using user_id)
+    # 3. Remove from team vice-captains
+    c.execute("DELETE FROM team_vice_captains WHERE player_name = ?", (exact_player_name,))
+    if c.rowcount > 0:
+        deletion_log.append(f"✅ Removed from team vice-captains")
+    conn.commit()
+
+    # 4. Remove from match_stats (using user_id)
     c.execute("DELETE FROM match_stats WHERE user_id = ?", (user_id,))
     if c.rowcount > 0:
         deletion_log.append(f"✅ Removed {c.rowcount} match stat entries")
