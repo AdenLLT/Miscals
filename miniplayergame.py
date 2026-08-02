@@ -311,101 +311,205 @@ class MiniPlayerGame(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         init_minigame_db()
+        # Prevent concurrent -drop invocations for the same user from
+        # passing the squad-size check before either one is persisted.
+        self._drop_in_progress = set()
 
     # ── -drop ────────────────────────────────────────────────
     @commands.command(name="drop", help="Drop a random claimed player card into your squad (max 15).")
     async def drop_command(self, ctx):
         user_id = ctx.author.id
 
-        # Squad cap check
-        size = get_squad_size(user_id)
-        if size >= MAX_SQUAD_SIZE:
-            embed = discord.Embed(
-                title="🚫 Squad Full!",
-                description=(
-                    f"You already have **{MAX_SQUAD_SIZE}/{MAX_SQUAD_SIZE}** players — "
-                    f"your squad is at its limit!\nUse **-mysquad** to view your squad."
-                ),
-                color=0xFF4444
-            )
-            return await ctx.send(embed=embed)
-
-        # Gather claimed players
-        all_claimed = _get_all_claimed()
-        if not all_claimed:
-            return await ctx.send("❌ No claimed players found in the database.")
-
-        # Exclude players already in this user's squad
-        already = {r[0] for r in get_squad(user_id)}
-        available = [(pn, uid) for pn, uid in all_claimed if pn not in already]
-        if not available:
+        if user_id in self._drop_in_progress:
             return await ctx.send(
-                "❌ You already have every claimed player in your squad! "
-                "Nothing new to drop."
+                "⏳ Your previous `-drop` is still being processed. "
+                "Please wait until the new player has been added to your squad."
             )
 
-        loading = await ctx.send("🎴 Dropping a player card...")
-
-        # Scan card cache once and try to find a player that has a card
+        self._drop_in_progress.add(user_id)
         try:
-            from cricket_stats import scan_card_cache
-            card_cache = await scan_card_cache(self.bot)
-        except Exception:
-            card_cache = {}
+            # Squad cap check. This happens inside the in-progress guard so
+            # concurrent commands cannot all pass before an insert occurs.
+            size = get_squad_size(user_id)
+            if size >= MAX_SQUAD_SIZE:
+                embed = discord.Embed(
+                    title="🚫 Squad Full!",
+                    description=(
+                        f"You already have **{MAX_SQUAD_SIZE}/{MAX_SQUAD_SIZE}** players — "
+                        f"your squad is at its limit!\nUse **-mysquad** to view your squad."
+                    ),
+                    color=0xFF4444
+                )
+                return await ctx.send(embed=embed)
 
-        random.shuffle(available)
-        picked_name  = None
-        picked_uid   = None
-        card_url     = None
+            # Gather claimed players
+            all_claimed = _get_all_claimed()
+            if not all_claimed:
+                return await ctx.send("❌ No claimed players found in the database.")
 
-        # Prefer players that have a cached card
-        for pn, uid in available:
-            cached = card_cache.get(uid)
-            if cached and cached.get('url'):
-                picked_name = pn
-                picked_uid  = uid
-                card_url    = cached['url']
-                break
+            # Exclude players already in this user's squad
+            already = {r[0] for r in get_squad(user_id)}
+            available = [(pn, uid) for pn, uid in all_claimed if pn not in already]
+            if not available:
+                return await ctx.send(
+                    "❌ You already have every claimed player in your squad! "
+                    "Nothing new to drop."
+                )
 
-        # Fallback: any available player
-        if not picked_name:
-            picked_name, picked_uid = available[0]
+            loading = await ctx.send("🎴 Dropping a player card...")
 
-        # Look up role + team
-        role, team = _get_player_info(picked_name)
-        flag  = _flag(team)
-        emoji = _get_player_emoji(picked_name, self.bot)
+            # Scan card cache once and try to find a player that has a card
+            try:
+                from cricket_stats import scan_card_cache
+                card_cache = await scan_card_cache(self.bot)
+            except Exception:
+                card_cache = {}
 
-        # Discord info of the person who claimed this player
-        try:
-            claimed_user = self.bot.get_user(picked_uid) or await self.bot.fetch_user(picked_uid)
-            discord_handle = claimed_user.name if claimed_user else f"uid:{picked_uid}"
-        except Exception:
-            discord_handle = f"uid:{picked_uid}"
+            random.shuffle(available)
+            picked_name  = None
+            picked_uid   = None
+            card_url     = None
 
-        # Persist
-        add_to_squad(user_id, picked_name, picked_uid, role, team)
+            # Prefer players that have a cached card
+            for pn, uid in available:
+                cached = card_cache.get(uid)
+                if cached and cached.get('url'):
+                    picked_name = pn
+                    picked_uid  = uid
+                    card_url    = cached['url']
+                    break
 
-        new_size = get_squad_size(user_id)
+            # Fallback: any available player
+            if not picked_name:
+                picked_name, picked_uid = available[0]
 
-        # Build embed
-        emoji_prefix = f"{emoji} " if emoji else ""
-        description  = f"{emoji_prefix}**{picked_name} (__@{discord_handle}__)** {flag}"
+            # Look up role + team
+            role, team = _get_player_info(picked_name)
+            flag  = _flag(team)
+            emoji = _get_player_emoji(picked_name, self.bot)
+
+            # Discord info of the person who claimed this player
+            try:
+                claimed_user = self.bot.get_user(picked_uid) or await self.bot.fetch_user(picked_uid)
+                discord_handle = claimed_user.name if claimed_user else f"uid:{picked_uid}"
+            except Exception:
+                discord_handle = f"uid:{picked_uid}"
+
+            # Persist before releasing the in-progress guard.
+            add_to_squad(user_id, picked_name, picked_uid, role, team)
+
+            new_size = get_squad_size(user_id)
+
+            # Build embed
+            emoji_prefix = f"{emoji} " if emoji else ""
+            description  = f"{emoji_prefix}**{picked_name} (__@{discord_handle}__)** {flag}"
+
+            embed = discord.Embed(
+                title=f"You got @{discord_handle}",
+                description=description,
+                color=0xFFD700
+            )
+            embed.set_footer(text=picked_name)
+            if card_url:
+                embed.set_image(url=card_url)
+
+            embed.add_field(name="🏏 Role",    value=role,               inline=True)
+            embed.add_field(name="🌍 Team",    value=f"{flag} {team}",   inline=True)
+            embed.add_field(name="📋 Squad",   value=f"{new_size}/{MAX_SQUAD_SIZE}", inline=True)
+
+            await loading.edit(content=None, embed=embed)
+        finally:
+            self._drop_in_progress.discard(user_id)
+
+    @commands.command(
+        name="removeabove15squadplayers",
+        help="[ADMIN] Remove excess players from squads larger than 15"
+    )
+    @commands.has_permissions(administrator=True)
+    async def remove_above_15_squad_players_command(self, ctx):
+        """Keep the oldest 15 players in every oversized squad."""
+        conn = _db()
+        c = conn.cursor()
+        c.execute("""
+            SELECT user_id, COUNT(*) AS squad_size
+            FROM minigame_squads
+            GROUP BY user_id
+            HAVING COUNT(*) > ?
+            ORDER BY squad_size DESC, user_id
+        """, (MAX_SQUAD_SIZE,))
+        oversized = c.fetchall()
+
+        removed_total = 0
+        removed_by_user = []
+
+        for user_id, squad_size in oversized:
+            c.execute("""
+                SELECT player_name
+                FROM minigame_squads
+                WHERE user_id=?
+                ORDER BY datetime(added_at) ASC, rowid ASC
+            """, (user_id,))
+            squad_names = [row[0] for row in c.fetchall()]
+            excess_names = squad_names[MAX_SQUAD_SIZE:]
+            if not excess_names:
+                continue
+
+            placeholders = ",".join("?" for _ in excess_names)
+            c.execute(
+                f"DELETE FROM minigame_squads "
+                f"WHERE user_id=? AND player_name IN ({placeholders})",
+                (user_id, *excess_names)
+            )
+            removed_count = c.rowcount
+            removed_total += removed_count
+            removed_by_user.append((user_id, squad_size, removed_count))
+
+            # Do not leave an elected captain/VC pointing at a removed player.
+            c.execute(
+                "SELECT captain, vc FROM minigame_captains WHERE user_id=?",
+                (user_id,)
+            )
+            elected = c.fetchone()
+            if elected:
+                remaining_names = set(squad_names[:MAX_SQUAD_SIZE])
+                captain_name = elected[0] if elected[0] in remaining_names else ""
+                vc_name = elected[1] if elected[1] in remaining_names else ""
+                c.execute(
+                    "UPDATE minigame_captains SET captain=?, vc=? WHERE user_id=?",
+                    (captain_name, vc_name, user_id)
+                )
+
+        conn.commit()
+        conn.close()
+
+        if not removed_by_user:
+            return await ctx.send(
+                f"✅ No squads exceeded **{MAX_SQUAD_SIZE}** players."
+            )
+
+        details = []
+        for user_id, old_size, removed_count in removed_by_user[:20]:
+            member = ctx.guild.get_member(user_id)
+            label = member.mention if member else f"`{user_id}`"
+            details.append(
+                f"• {label}: **{old_size} → {MAX_SQUAD_SIZE}** "
+                f"({removed_count} removed)"
+            )
+        if len(removed_by_user) > 20:
+            details.append(f"• …and {len(removed_by_user) - 20} more squads")
 
         embed = discord.Embed(
-            title=f"You got @{discord_handle}",
-            description=description,
-            color=0xFFD700
+            title="🧹 Oversized Squad Cleanup Complete",
+            description="\n".join(details),
+            color=0x00A86B
         )
-        embed.set_footer(text=picked_name)
-        if card_url:
-            embed.set_image(url=card_url)
-
-        embed.add_field(name="🏏 Role",    value=role,               inline=True)
-        embed.add_field(name="🌍 Team",    value=f"{flag} {team}",   inline=True)
-        embed.add_field(name="📋 Squad",   value=f"{new_size}/{MAX_SQUAD_SIZE}", inline=True)
-
-        await loading.edit(content=None, embed=embed)
+        embed.add_field(
+            name="Total Removed",
+            value=f"**{removed_total}** excess player(s)",
+            inline=False
+        )
+        embed.set_footer(text=f"Cleaned by {ctx.author}")
+        await ctx.send(embed=embed)
 
     # ── -mysquad ─────────────────────────────────────────────
     @commands.command(name="mysquad", help="View your mini player squad.")
