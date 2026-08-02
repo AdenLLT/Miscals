@@ -3,6 +3,7 @@ from cricket_stats import ensure_card_in_cache, startup_sync_card_cache
 import discord
 import os
 import json
+import re
 import random
 import sqlite3
 import pickle
