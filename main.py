@@ -924,7 +924,7 @@ def get_team_flag_url(team_name):
         "England": "1f3f4-e0067-e0062-e0065-e006e-e0067-e007f",  # 🏴󠁧󠁢󠁥󠁮󠁧󠁿
         "New Zealand": "1f1f3-1f1ff",  # 🇳🇿
         "South Africa": "1f1ff-1f1e6",  # 🇿🇦
-        "West Indies": "1f3f4",  # 🏴
+        "West Indies": "1f3dd",  # 🏝️
         "Sri Lanka": "1f1f1-1f1f0",  # 🇱🇰
         "Bangladesh": "1f1e7-1f1e9",  # 🇧🇩
         "Afghanistan": "1f1e6-1f1eb",  # 🇦🇫
