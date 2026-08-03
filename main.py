@@ -31,6 +31,8 @@ mydb = sqlite3.connect("players.db")
 crsr = mydb.cursor()
 mydb.commit()
 
+DEFAULT_PLAYER_IMAGE_URL = "https://i.ibb.co/GvWNRX0K/Untitled-design-4.png"
+
 DB_BACKUP_CHANNEL_ID = 1511452654906114139
 
 async def restore_db_from_channel():
@@ -802,7 +804,15 @@ def init_nicknames_db():
 def load_players():
     try:
         with open('players.json', 'r', encoding='utf-8') as f:
-            return json.load(f)
+            teams_data = json.load(f)
+
+        # Keep every player image consumer consistent. Missing image values
+        # may be stored as null, blank text, or NIL in players.json.
+        for team_data in teams_data:
+            for player in team_data.get('players', []):
+                player['image'] = get_player_image_url(player.get('image'))
+
+        return teams_data
     except json.JSONDecodeError as e:
         print(f"❌ Error loading players.json at line {e.lineno}, column {e.colno}")
         print(f"Error message: {e.msg}")
@@ -2686,40 +2696,67 @@ def get_emoji_guilds(bot_instance):
 # Store emoji mappings {player_name: emoji_id}
 player_emojis = {}
 
+def get_player_image_url(image_url):
+    """Return a usable player image URL, using the default for missing images."""
+    if image_url is None:
+        return DEFAULT_PLAYER_IMAGE_URL
+
+    if isinstance(image_url, str):
+        cleaned_url = image_url.strip()
+        if not cleaned_url or cleaned_url.upper() in {
+                "NIL", "NONE", "NULL", "N/A", "NA"
+        }:
+            return DEFAULT_PLAYER_IMAGE_URL
+        return cleaned_url
+
+    return DEFAULT_PLAYER_IMAGE_URL
+
 async def download_and_process_image(session, url, player_name):
     """Download player image and convert to emoji format (PNG, max 256KB)"""
-    try:
-        async with session.get(url) as resp:
-            if resp.status != 200:
-                return None
+    requested_url = get_player_image_url(url)
+    urls_to_try = [requested_url]
+    if requested_url != DEFAULT_PLAYER_IMAGE_URL:
+        urls_to_try.append(DEFAULT_PLAYER_IMAGE_URL)
 
-            image_data = await resp.read()
-            img = Image.open(BytesIO(image_data))
+    for image_url in urls_to_try:
+        try:
+            async with session.get(image_url) as resp:
+                if resp.status != 200:
+                    continue
 
-            # Convert to RGBA if needed
-            if img.mode != 'RGBA':
-                img = img.convert('RGBA')
+                image_data = await resp.read()
+                img = Image.open(BytesIO(image_data))
 
-            # Resize to 128x128 (Discord emoji recommended size)
-            img = img.resize((128, 128), Image.Resampling.LANCZOS)
+                # Convert to RGBA if needed
+                if img.mode != 'RGBA':
+                    img = img.convert('RGBA')
 
-            # Save as PNG
-            output = BytesIO()
-            img.save(output, format='PNG', optimize=True)
-            output.seek(0)
+                # Resize to 128x128 (Discord emoji recommended size)
+                img = img.resize((128, 128), Image.Resampling.LANCZOS)
 
-            # Check if under 256KB (Discord emoji limit)
-            if output.getbuffer().nbytes > 256000:
-                # Reduce size if too large
-                img = img.resize((64, 64), Image.Resampling.LANCZOS)
+                # Save as PNG
                 output = BytesIO()
                 img.save(output, format='PNG', optimize=True)
                 output.seek(0)
 
-            return output
-    except Exception as e:
-        print(f"❌ Error processing image for {player_name}: {e}")
-        return None
+                # Check if under 256KB (Discord emoji limit)
+                if output.getbuffer().nbytes > 256000:
+                    img = img.resize((64, 64), Image.Resampling.LANCZOS)
+                    output = BytesIO()
+                    img.save(output, format='PNG', optimize=True)
+                    output.seek(0)
+
+                if image_url == DEFAULT_PLAYER_IMAGE_URL and requested_url != image_url:
+                    print(
+                        f"⚠️ Used default image for {player_name}; "
+                        "the listed image could not be downloaded."
+                    )
+                return output
+        except Exception as exc:
+            print(f"⚠️ Error processing image for {player_name} from {image_url}: {exc}")
+
+    print(f"❌ Could not process any image for {player_name}")
+    return None
 
 async def upload_emojis_to_servers(bot):
     """Upload player emojis to all servers the bot is in (except the main server)."""
@@ -2731,7 +2768,7 @@ async def upload_emojis_to_servers(bot):
         for player in team_data['players']:
             all_players.append({
                 'name': player['name'],
-                'image': player['image'],
+                'image': get_player_image_url(player.get('image')),
                 'team': team_data['team']
             })
 
@@ -2780,8 +2817,8 @@ async def upload_emojis_to_servers(bot):
 
                     # Download and process image
                     image_data = await download_and_process_image(
-                        session, 
-                        player['image'], 
+                        session,
+                        get_player_image_url(player.get('image')),
                         player['name']
                     )
 
@@ -2859,6 +2896,177 @@ async def upload_emojis_command(ctx):
         await ctx.send(f"✅ Emoji upload complete! {len(emojis)} players now have emojis.")
     except Exception as e:
         await ctx.send(f"❌ Error during upload: {e}")
+
+@bot.command(
+    name="playersemojissync",
+    help="[ADMIN] Check every player for a custom emoji and upload missing emojis"
+)
+@commands.has_permissions(administrator=True)
+async def players_emojis_sync_command(ctx):
+    """Audit and repair custom player emojis for every player."""
+    await ctx.send(
+        "🔄 Starting player emoji sync. "
+        "I’ll check every player and upload only missing emojis."
+    )
+
+    try:
+        # Read the raw file so missing image values can be persisted as the
+        # requested default URL, not just replaced in memory.
+        with open('players.json', 'r', encoding='utf-8') as players_file:
+            teams_data = json.load(players_file)
+    except (FileNotFoundError, json.JSONDecodeError) as exc:
+        await ctx.send(f"❌ Could not load players.json: {exc}")
+        return
+
+    all_players = []
+    default_image_players = []
+    for team_data in teams_data:
+        for player in team_data.get('players', []):
+            original_image = player.get('image')
+            usable_image = get_player_image_url(original_image)
+            if usable_image != original_image:
+                player['image'] = usable_image
+                default_image_players.append(player['name'])
+            all_players.append({
+                'name': player['name'],
+                'image': usable_image,
+                'team': team_data.get('team', 'Unknown')
+            })
+
+    if not all_players:
+        await ctx.send("❌ No players found in players.json.")
+        return
+
+    # Persist replacements for null/blank/NIL image values so every other
+    # feature that reads players.json sees the same usable image URL.
+    if default_image_players:
+        try:
+            with open('players.json', 'w', encoding='utf-8') as players_file:
+                json.dump(teams_data, players_file, indent=2, ensure_ascii=False)
+        except OSError as exc:
+            await ctx.send(f"⚠️ Could not save default player images: {exc}")
+
+    emoji_guilds = get_emoji_guilds(bot)
+    if not emoji_guilds:
+        await ctx.send("❌ No emoji-storage servers are available.")
+        return
+
+    # Build one authoritative view from Discord itself. The JSON file can be
+    # stale after an emoji is deleted or moved, so it is never used as the
+    # existence check.
+    emojis_by_name = {}
+    for guild in emoji_guilds:
+        for emoji in guild.emojis:
+            emojis_by_name.setdefault(emoji.name, (emoji, guild))
+
+    mappings = load_emoji_mappings()
+    existing_count = 0
+    uploaded_count = 0
+    mapping_repaired_count = 0
+    default_count = len(default_image_players)
+    full_count = 0
+    failed = []
+
+    async def find_available_guild():
+        for candidate in emoji_guilds:
+            if len(candidate.emojis) < candidate.emoji_limit:
+                return candidate
+        return None
+
+    await ctx.send(
+        f"📊 Auditing **{len(all_players)}** players across "
+        f"**{len(emoji_guilds)}** emoji server(s)..."
+    )
+
+    async with aiohttp.ClientSession() as session:
+        for index, player in enumerate(all_players, 1):
+            player_name = player['name']
+            emoji_name = ''.join(
+                c if c.isalnum() or c == '_' else '_'
+                for c in player_name
+            )[:32]
+
+            # Existing emoji: repair the mapping if needed, but do not upload
+            # a duplicate.
+            existing = emojis_by_name.get(emoji_name)
+            if existing:
+                emoji_obj, _guild = existing
+                if mappings.get(player_name) != emoji_obj.id:
+                    mappings[player_name] = emoji_obj.id
+                    mapping_repaired_count += 1
+                existing_count += 1
+                continue
+
+            target_guild = await find_available_guild()
+            if not target_guild:
+                full_count += 1
+                failed.append(f"{player_name} — all emoji servers are full")
+                continue
+
+            image_data = await download_and_process_image(
+                session,
+                player['image'],
+                player_name
+            )
+            if not image_data:
+                failed.append(f"{player_name} — image could not be downloaded")
+                continue
+
+            try:
+                emoji_obj = await target_guild.create_custom_emoji(
+                    name=emoji_name,
+                    image=image_data.read(),
+                    reason=f"Player emoji sync by {ctx.author}"
+                )
+                mappings[player_name] = emoji_obj.id
+                emojis_by_name[emoji_name] = (emoji_obj, target_guild)
+                uploaded_count += 1
+                await asyncio.sleep(2)
+            except discord.Forbidden:
+                failed.append(f"{player_name} — no permission in {target_guild.name}")
+            except discord.HTTPException as exc:
+                if exc.code == 30008:
+                    full_count += 1
+                    failed.append(f"{player_name} — {target_guild.name} became full")
+                else:
+                    failed.append(f"{player_name} — Discord HTTP error {exc}")
+            except Exception as exc:
+                failed.append(f"{player_name} — {exc}")
+
+            if index % 25 == 0:
+                await ctx.send(
+                    f"⏳ Progress: **{index}/{len(all_players)}** checked "
+                    f"• **{uploaded_count}** uploaded"
+                )
+
+    player_emojis.clear()
+    player_emojis.update(mappings)
+    try:
+        with open('player_emojis.json', 'w', encoding='utf-8') as emoji_file:
+            json.dump(mappings, emoji_file, indent=2)
+    except OSError as exc:
+        failed.append(f"Could not save player_emojis.json — {exc}")
+
+    summary = (
+        f"✅ Existing emojis: **{existing_count}**\n"
+        f"🆕 Uploaded: **{uploaded_count}**\n"
+        f"🔧 Mappings repaired: **{mapping_repaired_count}**\n"
+        f"🏝️ Default image used: **{default_count}**\n"
+        f"🚫 Servers full: **{full_count}**\n"
+        f"❌ Failed: **{len(failed)}**"
+    )
+    embed = discord.Embed(
+        title="✅ Player Emoji Sync Complete",
+        description=summary,
+        color=0x00A86B if not failed else 0xFFA500
+    )
+    if failed:
+        failure_text = "\n".join(f"• {item}" for item in failed[:15])
+        if len(failed) > 15:
+            failure_text += f"\n…and {len(failed) - 15} more."
+        embed.add_field(name="Issues", value=failure_text, inline=False)
+    embed.set_footer(text=f"Synced by {ctx.author}")
+    await ctx.send(embed=embed)
 
 # Update playerlist command to use emojis
 @bot.command(name="playerlist", aliases=["pl"], help="View all players in a paginated list")
