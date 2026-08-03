@@ -74,6 +74,15 @@ def init_tournament_db():
                   winner TEXT,
                   FOREIGN KEY (tournament_id) REFERENCES tournaments(id))''')
 
+    c.execute('''CREATE TABLE IF NOT EXISTS tournament_round_info
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  tournament_id INTEGER,
+                  round_number INTEGER,
+                  round_type TEXT,
+                  round_display_name TEXT,
+                  rest_team TEXT DEFAULT NULL,
+                  FOREIGN KEY (tournament_id) REFERENCES tournaments(id))''')
+
     # Trophy data for players
     c.execute('''CREATE TABLE IF NOT EXISTS player_trophies
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -83,6 +92,12 @@ def init_tournament_db():
                   team_name TEXT,
                   won_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                   FOREIGN KEY (tournament_id) REFERENCES tournaments(id))''')
+
+    # Migrate existing tournament_teams table if group_name column missing
+    c.execute("PRAGMA table_info(tournament_teams)")
+    tt_cols = [row[1] for row in c.fetchall()]
+    if 'group_name' not in tt_cols:
+        c.execute("ALTER TABLE tournament_teams ADD COLUMN group_name TEXT DEFAULT NULL")
 
     conn.commit()
     conn.close()
@@ -1668,7 +1683,7 @@ async def create_international_points_table(teams_data):
         traceback.print_exc()
         return None
 
-async def create_points_table_image(tournament_name, teams_data):
+async def create_points_table_image(tournament_name, teams_data, title_text="Points Table"):
     """Create a beautiful points table image with team gradients and dividers"""
     try:
         # Image dimensions
@@ -1696,8 +1711,7 @@ async def create_points_table_image(tournament_name, teams_data):
             cell_font = ImageFont.load_default()
             footer_font = ImageFont.load_default()
 
-        # Draw title
-        title_text = "Points Table"
+        # Draw title (title_text is now a parameter)
         title_bbox = draw.textbbox((0, 0), title_text, font=title_font)
         title_width = title_bbox[2] - title_bbox[0]
         draw.text(((width - title_width) // 2, 10),
@@ -1905,6 +1919,79 @@ def get_played_matchups(tournament_id):
     return {frozenset([t1, t2]) for t1, t2 in matchups}
 
 
+def get_group_standings(tournament_id, group_name):
+    """Return teams in a group ordered by pts DESC, nrr DESC"""
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute("""
+        SELECT team_name, points, matches_played, wins, losses, nrr, fpp,
+               COALESCE(qualified, 0)
+        FROM tournament_teams
+        WHERE tournament_id = ? AND UPPER(group_name) = UPPER(?)
+        ORDER BY points DESC, nrr DESC
+    """, (tournament_id, group_name))
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+
+def get_next_tournament_round(tournament_id):
+    """Return the next available round number for the tournament"""
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute("SELECT MAX(round_number) FROM fixtures WHERE tournament_id = ?",
+              (tournament_id,))
+    row = c.fetchone()
+    max_round = row[0] if row[0] is not None else 0
+    if max_round > 0:
+        c.execute("""SELECT COUNT(*) FROM fixtures
+                     WHERE tournament_id = ? AND round_number = ?
+                     AND is_played = 0 AND is_reserved = 0""",
+                  (tournament_id, max_round))
+        unplayed = c.fetchone()[0]
+        target = max_round if unplayed > 0 else max_round + 1
+    else:
+        target = 1
+    conn.close()
+    return target
+
+
+def generate_group_round_robin(teams, round_index):
+    """
+    Generate fixtures for round_index (0-based) of a round-robin schedule
+    for an odd number of teams. Uses the circle method with a BYE placeholder.
+    Returns (matches_list, rest_team).
+    Works for even numbers too (rest_team will be None).
+    """
+    teams = list(teams)
+    # If odd, add BYE to make even
+    if len(teams) % 2 == 1:
+        all_slots = ['__BYE__'] + teams  # fix BYE at position 0
+    else:
+        all_slots = [teams[0]] + teams[1:]  # fix team 0
+    m = len(all_slots)
+
+    # Build rotated list for this round (circle method: fix slot 0, rotate rest)
+    rotating = list(all_slots[1:])
+    if round_index > 0:
+        # Rotate left by round_index
+        rotating = rotating[round_index:] + rotating[:round_index]
+    slots = [all_slots[0]] + rotating
+
+    matches = []
+    rest_team = None
+    for i in range(m // 2):
+        t1 = slots[i]
+        t2 = slots[m - 1 - i]
+        if t1 == '__BYE__':
+            rest_team = t2
+        elif t2 == '__BYE__':
+            rest_team = t1
+        else:
+            matches.append((t1, t2))
+    return matches, rest_team
+
+
 # Team Selection View
 class TeamSelectionView(View):
 
@@ -2036,7 +2123,7 @@ class TeamSelectionView(View):
 class FixtureEditView(View):
 
     def __init__(self, ctx, bot, tournament_id, fixtures, round_number,
-                 available_teams):
+                 available_teams, round_info=None):
         super().__init__(timeout=600)
         self.ctx = ctx
         self.bot = bot
@@ -2044,6 +2131,7 @@ class FixtureEditView(View):
         self.fixtures = fixtures  # List of [team1, team2, channel_id, stadium_name]
         self.round_number = round_number
         self.available_teams = available_teams
+        self.round_info = round_info  # Optional dict with round_type, round_display_name, rest_team
         self.message = None
 
         self.add_controls()
@@ -2261,6 +2349,17 @@ class FixtureEditView(View):
         c.execute("UPDATE tournaments SET current_round = ? WHERE id = ?",
                   (self.round_number, self.tournament_id))
 
+        # Save round metadata if provided (group / intergroup rounds)
+        if self.round_info:
+            c.execute(
+                """INSERT INTO tournament_round_info
+                       (tournament_id, round_number, round_type, round_display_name, rest_team)
+                       VALUES (?, ?, ?, ?, ?)""",
+                (self.tournament_id, self.round_number,
+                 self.round_info.get('round_type'),
+                 self.round_info.get('round_display_name'),
+                 self.round_info.get('rest_team')))
+
         conn.commit()
         conn.close()
 
@@ -2362,8 +2461,9 @@ class Tournament(commands.Cog):
         view = TeamSelectionView(ctx, tournament_name, all_teams)
         view.message = await ctx.send(embed=embed, view=view)
 
-    @commands.command(name="pts", aliases=["points", "pointstable"], help="View tournament points table")
-    async def points_table(self, ctx):
+    @commands.command(name="pts", aliases=["points", "pointstable"],
+                      help="View tournament points table. Add A/B/C for a specific group.")
+    async def points_table(self, ctx, group: str = None):
         tournament = get_active_tournament()
         if not tournament:
             await ctx.send("❌ No active tournament found!")
@@ -2371,47 +2471,389 @@ class Tournament(commands.Cog):
 
         tournament_id, tournament_name, current_round = tournament
 
-        conn = sqlite3.connect('players.db')
-        c = conn.cursor()
-
-        # Check if qualified column exists
-        c.execute("PRAGMA table_info(tournament_teams)")
-        columns = [column[1] for column in c.fetchall()]
-
-        if 'qualified' in columns:
-            c.execute(
-                """SELECT team_name, points, matches_played, wins, losses, nrr, fpp, qualified
-                    FROM tournament_teams 
-                    WHERE tournament_id = ?
-                    ORDER BY points DESC, nrr DESC""", (tournament_id, ))
+        if group:
+            group = group.upper()
+            if group not in ('A', 'B', 'C'):
+                await ctx.send("❌ Invalid group. Use `A`, `B`, or `C`.\n"
+                               "Example: `-pts A`  |  `-pts B`  |  `-pts C`")
+                return
+            teams = get_group_standings(tournament_id, group)
+            title_text = f"Group {group} Standings"
+            footer_text = f"Group {group} • Use -pts for full table"
         else:
-            c.execute(
-                """SELECT team_name, points, matches_played, wins, losses, nrr, fpp, 0 as qualified
-                    FROM tournament_teams 
-                    WHERE tournament_id = ?
-                    ORDER BY points DESC, nrr DESC""", (tournament_id, ))
-
-        teams = c.fetchall()
-        conn.close()
+            conn = sqlite3.connect('players.db')
+            c = conn.cursor()
+            c.execute("""SELECT team_name, points, matches_played, wins, losses, nrr, fpp,
+                                COALESCE(qualified, 0)
+                         FROM tournament_teams
+                         WHERE tournament_id = ?
+                         ORDER BY points DESC, nrr DESC""", (tournament_id,))
+            teams = c.fetchall()
+            conn.close()
+            title_text = "Points Table"
+            footer_text = "TOP 8 QUALIFY"
 
         if not teams:
-            await ctx.send("❌ No teams found in the tournament!")
+            msg = (f"❌ No teams found in Group {group}! "
+                   f"Use `-assigngroups` to assign teams to groups."
+                   if group else "❌ No teams found in the tournament!")
+            await ctx.send(msg)
             return
 
-        # Create points table image
-        table_image = await create_points_table_image(tournament_name, teams)
-
+        table_image = await create_points_table_image(tournament_name, teams,
+                                                       title_text=title_text)
         if not table_image:
             await ctx.send("❌ Failed to create points table image!")
             return
 
         file = discord.File(table_image, filename="points_table.png")
-
-        embed = discord.Embed(title=f"🏆 {tournament_name}", color=0xFFD700)
+        embed = discord.Embed(
+            title=f"🏆 {tournament_name}" + (f" — Group {group}" if group else ""),
+            color=0xFFD700)
         embed.set_image(url="attachment://points_table.png")
-        embed.set_footer(text="TOP 8 QUALIFY")
-
+        embed.set_footer(text=footer_text)
         await ctx.send(embed=embed, file=file)
+
+    # ── GROUP MANAGEMENT ──────────────────────────────────────────────────
+
+    @commands.command(name="assigngroups", aliases=["ag"],
+                      help="[ADMIN] Assign tournament teams to Groups A, B, C")
+    @commands.has_permissions(administrator=True)
+    async def assigngroups(self, ctx):
+        """Interactively assign each tournament team to Group A, B, or C."""
+        tournament = get_active_tournament()
+        if not tournament:
+            await ctx.send("❌ No active tournament found!")
+            return
+
+        tournament_id, tournament_name, _ = tournament
+
+        conn = sqlite3.connect('players.db')
+        c = conn.cursor()
+        c.execute("""SELECT team_name, group_name FROM tournament_teams
+                     WHERE tournament_id = ? ORDER BY team_name""",
+                  (tournament_id,))
+        all_team_rows = c.fetchall()
+        conn.close()
+
+        if not all_team_rows:
+            await ctx.send("❌ No teams in the tournament!")
+            return
+
+        all_teams = [row[0] for row in all_team_rows]
+        current_assignments = {row[0]: row[1] for row in all_team_rows}
+
+        # Build a summary of current assignments for the embed description
+        def _current_desc(assignments):
+            lines = []
+            for g in ('A', 'B', 'C'):
+                in_g = [t for t, gn in assignments.items() if gn and gn.upper() == g]
+                lines.append(f"**Group {g}:** {', '.join(in_g) if in_g else '*none*'}")
+            unassigned = [t for t, gn in assignments.items() if not gn]
+            if unassigned:
+                lines.append(f"⚠️ **Unassigned:** {', '.join(unassigned)}")
+            return "\n".join(lines)
+
+        assignments = dict(current_assignments)
+
+        class GroupAssignView(View):
+            def __init__(inner_self):
+                super().__init__(timeout=300)
+                inner_self.message = None
+                inner_self._build()
+
+            def _build(inner_self):
+                inner_self.clear_items()
+                team_opts = [
+                    discord.SelectOption(label=t, value=t, emoji=get_team_flag(t))
+                    for t in all_teams
+                ]
+                chunks = [team_opts[i:i + 25] for i in range(0, len(team_opts), 25)]
+
+                for group_letter in ('A', 'B', 'C'):
+                    for chunk_i, chunk in enumerate(chunks):
+                        if not chunk:
+                            continue
+                        suffix = " (cont.)" if chunk_i else ""
+                        sel = Select(
+                            placeholder=f"Group {group_letter} — pick teams{suffix}",
+                            options=chunk,
+                            min_values=0,
+                            max_values=min(len(chunk), 9),
+                            custom_id=f"grp_{group_letter}_{chunk_i}"
+                        )
+                        sel.callback = inner_self._make_cb(group_letter)
+                        inner_self.add_item(sel)
+
+                inner_self.add_item(inner_self.confirm_btn)
+
+            def _make_cb(inner_self, group_letter):
+                async def callback(interaction: discord.Interaction):
+                    if interaction.user.id != ctx.author.id:
+                        await interaction.response.send_message(
+                            "❌ Not your menu!", ephemeral=True)
+                        return
+                    selected = interaction.data['values']
+                    # Clear old assignments for this group, apply new ones
+                    for t in all_teams:
+                        if assignments.get(t) and assignments[t].upper() == group_letter:
+                            assignments[t] = None
+                    for t in selected:
+                        assignments[t] = group_letter
+                    await interaction.response.defer()
+                    if inner_self.message:
+                        await inner_self.message.edit(
+                            embed=inner_self._embed(), view=inner_self)
+                return callback
+
+            def _embed(inner_self):
+                e = discord.Embed(
+                    title=f"🏆 {tournament_name} — Group Assignment",
+                    description=(
+                        "Select teams for each group using the dropdowns, "
+                        "then click **Confirm**.\n\n"
+                        + _current_desc(assignments)
+                    ),
+                    color=0x0066CC
+                )
+                return e
+
+            @discord.ui.button(label="✅ Confirm Assignments",
+                               style=discord.ButtonStyle.success,
+                               custom_id="confirm_grp_assign")
+            async def confirm_btn(inner_self, interaction: discord.Interaction,
+                                  button: Button):
+                if interaction.user.id != ctx.author.id:
+                    await interaction.response.send_message(
+                        "❌ Not your menu!", ephemeral=True)
+                    return
+
+                # Validate: no team in multiple groups
+                team_counts = {}
+                for t, gn in assignments.items():
+                    if gn:
+                        team_counts[t] = team_counts.get(t, 0) + 1
+                dupes = [t for t, cnt in team_counts.items() if cnt > 1]
+                if dupes:
+                    await interaction.response.send_message(
+                        f"❌ These teams appear in multiple groups: {', '.join(dupes)}",
+                        ephemeral=True)
+                    return
+
+                conn2 = sqlite3.connect('players.db')
+                c2 = conn2.cursor()
+                for team, gn in assignments.items():
+                    c2.execute(
+                        "UPDATE tournament_teams SET group_name = ? "
+                        "WHERE tournament_id = ? AND team_name = ?",
+                        (gn, tournament_id, team))
+                conn2.commit()
+                conn2.close()
+
+                await interaction.response.defer()
+                for item in inner_self.children:
+                    item.disabled = True
+                if inner_self.message:
+                    await inner_self.message.edit(view=inner_self)
+
+                summary = ""
+                for g in ('A', 'B', 'C'):
+                    in_g = sorted(
+                        [t for t, gn in assignments.items() if gn and gn.upper() == g])
+                    summary += f"**Group {g}:** {', '.join(in_g) if in_g else '*empty*'}\n"
+                unassigned = [t for t, gn in assignments.items() if not gn]
+                if unassigned:
+                    summary += f"⚠️ **Still unassigned:** {', '.join(unassigned)}\n"
+
+                done_embed = discord.Embed(
+                    title="✅ Group Assignments Saved",
+                    description=summary,
+                    color=0x00FF00
+                )
+                done_embed.set_footer(text="Use -setgroupfixtures A/B/C to generate group stage rounds.")
+                await ctx.send(embed=done_embed)
+
+        view = GroupAssignView()
+        view.message = await ctx.send(embed=view._embed(), view=view)
+
+    @commands.command(name="setgroupfixtures", aliases=["sgf"],
+                      help="[ADMIN] Generate next intra-group round-robin fixtures. Usage: -sgf <A/B/C>")
+    @commands.has_permissions(administrator=True)
+    async def setgroupfixtures(self, ctx, group: str):
+        """Generate the next round of fixtures within a group (round-robin, with rest for odd teams)."""
+        tournament = get_active_tournament()
+        if not tournament:
+            await ctx.send("❌ No active tournament found!")
+            return
+
+        group = group.upper()
+        if group not in ('A', 'B', 'C'):
+            await ctx.send("❌ Specify group A, B, or C. Example: `-sgf A`")
+            return
+
+        tournament_id, tournament_name, _ = tournament
+
+        group_teams_rows = get_group_standings(tournament_id, group)
+        if not group_teams_rows:
+            await ctx.send(
+                f"❌ No teams found in Group {group}. "
+                f"Use `-assigngroups` to assign teams to groups first.")
+            return
+
+        group_teams = [row[0] for row in group_teams_rows]
+        n = len(group_teams)
+
+        # Count how many intra-group rounds have already been generated
+        conn = sqlite3.connect('players.db')
+        c = conn.cursor()
+        c.execute("""SELECT COUNT(*) FROM tournament_round_info
+                     WHERE tournament_id = ? AND round_type = ?""",
+                  (tournament_id, f'group_{group}'))
+        rounds_done = c.fetchone()[0]
+        conn.close()
+
+        # Max rounds for n teams: n rounds if odd, n-1 if even
+        max_rounds = n if n % 2 == 1 else n - 1
+        if rounds_done >= max_rounds:
+            await ctx.send(
+                f"❌ All **{max_rounds}** intra-group rounds for Group {group} "
+                f"have already been generated!")
+            return
+
+        round_index = rounds_done  # 0-based
+        matches, rest_team = generate_group_round_robin(group_teams, round_index)
+
+        if not matches:
+            await ctx.send(
+                f"❌ Could not generate fixtures for Group {group} "
+                f"Round {rounds_done + 1}.")
+            return
+
+        target_round = get_next_tournament_round(tournament_id)
+
+        # Assign random stadiums
+        fixtures = []
+        for t1, t2 in matches:
+            channel_id = random.choice(list(MATCH_CHANNELS.keys()))
+            stadium = MATCH_CHANNELS[channel_id]
+            fixtures.append([t1, t2, channel_id, stadium])
+
+        group_internal_round = rounds_done + 1
+        round_display = f"Group {group} — Round {group_internal_round}"
+        round_info = {
+            'round_type': f'group_{group}',
+            'round_display_name': round_display,
+            'rest_team': rest_team
+        }
+
+        rest_note = f"\n⏸️ **Rest this round:** {rest_team}" if rest_team else ""
+        await ctx.send(
+            f"📋 Generating **{round_display}** "
+            f"(Tournament Round {target_round}){rest_note}\n"
+            f"Teams: {len(group_teams)} | Matches: {len(matches)}")
+
+        conn2 = sqlite3.connect('players.db')
+        c2 = conn2.cursor()
+        c2.execute("SELECT team_name FROM tournament_teams WHERE tournament_id = ?",
+                   (tournament_id,))
+        all_teams = [row[0] for row in c2.fetchall()]
+        conn2.close()
+
+        view = FixtureEditView(ctx, self.bot, tournament_id, fixtures,
+                               target_round, all_teams, round_info=round_info)
+        embed = await view.create_fixture_embed()
+        view.message = await ctx.send(embed=embed, view=view)
+
+    @commands.command(name="setigfixtures", aliases=["sigf"],
+                      help="[ADMIN] Generate intergroup round fixtures. Usage: -sigf <1/2/3>")
+    @commands.has_permissions(administrator=True)
+    async def setigfixtures(self, ctx, ig_round: int):
+        """
+        Generate intergroup round fixtures matched by group standings rank.
+          Round 1 → Group A (#1 A vs #1 B, #2 A vs #2 B, …)
+          Round 2 → Group B vs Group C
+          Round 3 → Group A vs Group C
+        """
+        if ig_round not in (1, 2, 3):
+            await ctx.send(
+                "❌ Specify intergroup round **1**, **2**, or **3**.\n"
+                "• `-sigf 1` → Group A vs Group B (ranked by standings)\n"
+                "• `-sigf 2` → Group B vs Group C\n"
+                "• `-sigf 3` → Group A vs Group C")
+            return
+
+        tournament = get_active_tournament()
+        if not tournament:
+            await ctx.send("❌ No active tournament found!")
+            return
+
+        tournament_id, tournament_name, _ = tournament
+
+        group_map = {1: ('A', 'B'), 2: ('B', 'C'), 3: ('A', 'C')}
+        g1, g2 = group_map[ig_round]
+
+        standings_g1 = get_group_standings(tournament_id, g1)
+        standings_g2 = get_group_standings(tournament_id, g2)
+
+        if not standings_g1:
+            await ctx.send(
+                f"❌ No teams found in Group {g1}. "
+                f"Use `-assigngroups` first.")
+            return
+        if not standings_g2:
+            await ctx.send(
+                f"❌ No teams found in Group {g2}. "
+                f"Use `-assigngroups` first.")
+            return
+
+        num_matches = min(len(standings_g1), len(standings_g2))
+        target_round = get_next_tournament_round(tournament_id)
+
+        fixtures = []
+        match_desc = []
+        for i in range(num_matches):
+            t1 = standings_g1[i][0]   # rank i+1 in group g1
+            t2 = standings_g2[i][0]   # rank i+1 in group g2
+            channel_id = random.choice(list(MATCH_CHANNELS.keys()))
+            stadium = MATCH_CHANNELS[channel_id]
+            fixtures.append([t1, t2, channel_id, stadium])
+            flag1 = get_team_flag(t1)
+            flag2 = get_team_flag(t2)
+            match_desc.append(
+                f"#{i+1} {flag1} {t1} vs {flag2} {t2} "
+                f"*(#{i+1} {g1} vs #{i+1} {g2})*")
+
+        round_display = f"Intergroup Round {ig_round} (Group {g1} vs Group {g2})"
+        round_info = {
+            'round_type': f'intergroup_{ig_round}',
+            'round_display_name': round_display,
+            'rest_team': None
+        }
+
+        conn = sqlite3.connect('players.db')
+        c = conn.cursor()
+        c.execute("SELECT team_name FROM tournament_teams WHERE tournament_id = ?",
+                  (tournament_id,))
+        all_teams = [row[0] for row in c.fetchall()]
+        conn.close()
+
+        preview_embed = discord.Embed(
+            title=f"🏆 {tournament_name} — {round_display}",
+            description=(
+                f"**Tournament Round:** {target_round}\n"
+                f"**Matches:** {num_matches}\n\n"
+                + "\n".join(match_desc)
+            ),
+            color=0xFF8C00
+        )
+        preview_embed.set_footer(
+            text="Rankings from current group standings • Edit below before confirming")
+        await ctx.send(embed=preview_embed)
+
+        view = FixtureEditView(ctx, self.bot, tournament_id, fixtures,
+                               target_round, all_teams, round_info=round_info)
+        embed = await view.create_fixture_embed()
+        view.message = await ctx.send(embed=embed, view=view)
 
     @commands.command(name="createspecialround", aliases=["csr"], help="[ADMIN] Create a special round (e.g., Quarter Finals)")
     @commands.has_permissions(administrator=True)
