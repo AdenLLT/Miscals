@@ -3,7 +3,7 @@ import sqlite3
 import random
 import json
 from discord.ext import commands
-from discord.ui import View, Button, Select
+from discord.ui import View, Button, Select, Modal, TextInput
 from typing import List, Optional
 from PIL import Image, ImageDraw, ImageFont
 import io
@@ -2479,7 +2479,7 @@ class Tournament(commands.Cog):
                 return
             teams = get_group_standings(tournament_id, group)
             title_text = f"Group {group} Standings"
-            footer_text = f"Group {group} • Use -pts for full table"
+            footer_text = "TOP 6 QUALIFY"
         else:
             conn = sqlite3.connect('players.db')
             c = conn.cursor()
@@ -2556,112 +2556,141 @@ class Tournament(commands.Cog):
 
         assignments = dict(current_assignments)
 
-        class GroupAssignView(View):
-            def __init__(inner_self):
-                super().__init__(timeout=300)
-                inner_self.message = None
-                inner_self._build()
+        def _group_default(group_letter):
+            return ", ".join(
+                team for team in all_teams
+                if assignments.get(team) and assignments[team].upper() == group_letter
+            )
 
-            def _build(inner_self):
-                inner_self.clear_items()
-                team_opts = [
-                    discord.SelectOption(label=t, value=t, emoji=get_team_flag(t))
-                    for t in all_teams
-                ]
-                chunks = [team_opts[i:i + 25] for i in range(0, len(team_opts), 25)]
+        class GroupAssignModal(Modal, title="Assign Tournament Groups"):
+            group_a = TextInput(
+                label="Group A (comma-separated team names)",
+                placeholder="Team 1, Team 2, Team 3",
+                style=discord.TextStyle.paragraph,
+                required=False,
+                max_length=4000
+            )
+            group_b = TextInput(
+                label="Group B (comma-separated team names)",
+                placeholder="Team 10, Team 11, Team 12",
+                style=discord.TextStyle.paragraph,
+                required=False,
+                max_length=4000
+            )
+            group_c = TextInput(
+                label="Group C (comma-separated team names)",
+                placeholder="Team 19, Team 20, Team 21",
+                style=discord.TextStyle.paragraph,
+                required=False,
+                max_length=4000
+            )
 
-                for group_letter in ('A', 'B', 'C'):
-                    for chunk_i, chunk in enumerate(chunks):
-                        if not chunk:
-                            continue
-                        suffix = " (cont.)" if chunk_i else ""
-                        sel = Select(
-                            placeholder=f"Group {group_letter} — pick teams{suffix}",
-                            options=chunk,
-                            min_values=0,
-                            max_values=min(len(chunk), 9),
-                            custom_id=f"grp_{group_letter}_{chunk_i}"
-                        )
-                        sel.callback = inner_self._make_cb(group_letter)
-                        inner_self.add_item(sel)
+            def __init__(inner_self, parent_view):
+                super().__init__()
+                inner_self.parent_view = parent_view
+                inner_self.group_a.default = _group_default('A')
+                inner_self.group_b.default = _group_default('B')
+                inner_self.group_c.default = _group_default('C')
 
-                inner_self.add_item(inner_self.confirm_btn)
-
-            def _make_cb(inner_self, group_letter):
-                async def callback(interaction: discord.Interaction):
-                    if interaction.user.id != ctx.author.id:
-                        await interaction.response.send_message(
-                            "❌ Not your menu!", ephemeral=True)
-                        return
-                    selected = interaction.data['values']
-                    # Clear old assignments for this group, apply new ones
-                    for t in all_teams:
-                        if assignments.get(t) and assignments[t].upper() == group_letter:
-                            assignments[t] = None
-                    for t in selected:
-                        assignments[t] = group_letter
-                    await interaction.response.defer()
-                    if inner_self.message:
-                        await inner_self.message.edit(
-                            embed=inner_self._embed(), view=inner_self)
-                return callback
-
-            def _embed(inner_self):
-                e = discord.Embed(
-                    title=f"🏆 {tournament_name} — Group Assignment",
-                    description=(
-                        "Select teams for each group using the dropdowns, "
-                        "then click **Confirm**.\n\n"
-                        + _current_desc(assignments)
-                    ),
-                    color=0x0066CC
-                )
-                return e
-
-            @discord.ui.button(label="✅ Confirm Assignments",
-                               style=discord.ButtonStyle.success,
-                               custom_id="confirm_grp_assign")
-            async def confirm_btn(inner_self, interaction: discord.Interaction,
-                                  button: Button):
+            async def on_submit(inner_self, interaction: discord.Interaction):
                 if interaction.user.id != ctx.author.id:
                     await interaction.response.send_message(
-                        "❌ Not your menu!", ephemeral=True)
-                    return
-
-                # Validate: no team in multiple groups
-                team_counts = {}
-                for t, gn in assignments.items():
-                    if gn:
-                        team_counts[t] = team_counts.get(t, 0) + 1
-                dupes = [t for t, cnt in team_counts.items() if cnt > 1]
-                if dupes:
-                    await interaction.response.send_message(
-                        f"❌ These teams appear in multiple groups: {', '.join(dupes)}",
+                        "❌ This assignment form belongs to the admin who opened it.",
                         ephemeral=True)
                     return
 
+                # Accept commas, new lines, or a mixture of both. Matching is
+                # case-insensitive while the database keeps the official name.
+                team_by_lower = {team.lower(): team for team in all_teams}
+                raw_groups = {
+                    'A': inner_self.group_a.value,
+                    'B': inner_self.group_b.value,
+                    'C': inner_self.group_c.value
+                }
+                parsed_groups = {}
+                unknown = []
+                duplicate_groups = {}
+
+                for group_letter, raw_value in raw_groups.items():
+                    names = [
+                        name.strip() for name in raw_value.replace("\n", ",").split(",")
+                        if name.strip()
+                    ]
+                    parsed_groups[group_letter] = []
+                    for name in names:
+                        official_name = team_by_lower.get(name.lower())
+                        if official_name is None:
+                            unknown.append(name)
+                            continue
+                        if official_name in duplicate_groups:
+                            duplicate_groups.setdefault(official_name, []).append(group_letter)
+                        else:
+                            duplicate_groups[official_name] = [group_letter]
+                        if official_name not in parsed_groups[group_letter]:
+                            parsed_groups[group_letter].append(official_name)
+
+                duplicate_names = [
+                    team for team, groups in duplicate_groups.items()
+                    if len(groups) > 1
+                ]
+                oversized = [
+                    f"Group {group_letter} has {len(group_teams)} teams (maximum is 9)"
+                    for group_letter, group_teams in parsed_groups.items()
+                    if len(group_teams) > 9
+                ]
+
+                if unknown or duplicate_names or oversized:
+                    problems = []
+                    if unknown:
+                        problems.append(f"Unknown team(s): {', '.join(unknown)}")
+                    if duplicate_names:
+                        problems.append(
+                            "Teams listed in multiple groups: "
+                            + ", ".join(duplicate_names)
+                        )
+                    problems.extend(oversized)
+                    await interaction.response.send_message(
+                        "❌ Please fix the group assignment:\n• "
+                        + "\n• ".join(problems),
+                        ephemeral=True)
+                    return
+
+                new_assignments = {team: None for team in all_teams}
+                for group_letter, group_teams in parsed_groups.items():
+                    for team in group_teams:
+                        new_assignments[team] = group_letter
+
                 conn2 = sqlite3.connect('players.db')
                 c2 = conn2.cursor()
-                for team, gn in assignments.items():
+                for team, group_name in new_assignments.items():
                     c2.execute(
                         "UPDATE tournament_teams SET group_name = ? "
                         "WHERE tournament_id = ? AND team_name = ?",
-                        (gn, tournament_id, team))
+                        (group_name, tournament_id, team))
                 conn2.commit()
                 conn2.close()
+                assignments.clear()
+                assignments.update(new_assignments)
 
                 await interaction.response.defer()
-                for item in inner_self.children:
+                for item in inner_self.parent_view.children:
                     item.disabled = True
-                if inner_self.message:
-                    await inner_self.message.edit(view=inner_self)
+                if inner_self.parent_view.message:
+                    await inner_self.parent_view.message.edit(
+                        embed=inner_self.parent_view._embed(),
+                        view=inner_self.parent_view)
 
                 summary = ""
-                for g in ('A', 'B', 'C'):
-                    in_g = sorted(
-                        [t for t, gn in assignments.items() if gn and gn.upper() == g])
-                    summary += f"**Group {g}:** {', '.join(in_g) if in_g else '*empty*'}\n"
-                unassigned = [t for t, gn in assignments.items() if not gn]
+                for group_letter in ('A', 'B', 'C'):
+                    group_teams = sorted(parsed_groups[group_letter])
+                    summary += (
+                        f"**Group {group_letter}:** "
+                        f"{', '.join(group_teams) if group_teams else '*empty*'}\n"
+                    )
+                unassigned = sorted(
+                    team for team, group_name in new_assignments.items()
+                    if not group_name
+                )
                 if unassigned:
                     summary += f"⚠️ **Still unassigned:** {', '.join(unassigned)}\n"
 
@@ -2670,8 +2699,37 @@ class Tournament(commands.Cog):
                     description=summary,
                     color=0x00FF00
                 )
-                done_embed.set_footer(text="Use -setgroupfixtures A/B/C to generate group stage rounds.")
+                done_embed.set_footer(
+                    text="Use -setgroupfixtures A/B/C to generate group stage rounds.")
                 await ctx.send(embed=done_embed)
+
+        class GroupAssignView(View):
+            def __init__(inner_self):
+                super().__init__(timeout=300)
+                inner_self.message = None
+
+            def _embed(inner_self):
+                return discord.Embed(
+                    title=f"🏆 {tournament_name} — Group Assignment",
+                    description=(
+                        "Click **Open Assignment Form** and enter each group’s "
+                        "team names separated by commas. You can assign up to "
+                        "9 teams per group.\n\n"
+                        "**Current assignments:**\n" + _current_desc(assignments)
+                    ),
+                    color=0x0066CC
+                )
+
+            @discord.ui.button(label="Open Assignment Form",
+                               style=discord.ButtonStyle.primary,
+                               custom_id="open_grp_assign")
+            async def open_form(inner_self, interaction: discord.Interaction,
+                                button: Button):
+                if interaction.user.id != ctx.author.id:
+                    await interaction.response.send_message(
+                        "❌ Not your menu!", ephemeral=True)
+                    return
+                await interaction.response.send_modal(GroupAssignModal(inner_self))
 
         view = GroupAssignView()
         view.message = await ctx.send(embed=view._embed(), view=view)
