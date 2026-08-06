@@ -1988,6 +1988,241 @@ def get_next_tournament_round(tournament_id):
     return target
 
 
+def get_unfinished_regular_round(tournament_id):
+    """Return (round_number, unfinished_count) for the latest regular round."""
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute(
+        """SELECT MAX(round_number) FROM fixtures
+           WHERE tournament_id = ? AND round_number > 0""",
+        (tournament_id,),
+    )
+    row = c.fetchone()
+    latest_round = row[0] if row and row[0] is not None else None
+    if latest_round is None:
+        conn.close()
+        return None
+
+    c.execute(
+        """SELECT COUNT(*) FROM fixtures
+           WHERE tournament_id = ? AND round_number = ?
+             AND is_played = 0 AND is_reserved = 0""",
+        (tournament_id, latest_round),
+    )
+    unfinished = c.fetchone()[0]
+    conn.close()
+    return latest_round, unfinished
+
+
+def unfinished_round_message(tournament_id):
+    """Return the user-facing block message, or None if a new round is allowed."""
+    status = get_unfinished_regular_round(tournament_id)
+    if status and status[1] > 0:
+        round_number, unfinished = status
+        return (
+            f"❌ Round **{round_number}** still has **{unfinished}** uncompleted "
+            "fixture(s). Complete those games or use `-reserveall` before "
+            "creating a new round."
+        )
+    return None
+
+
+def unfinished_group_round_message(tournament_id, group):
+    """Return a block message for the latest generated round of one group."""
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute(
+        """SELECT round_number, round_display_name
+           FROM tournament_round_info
+           WHERE tournament_id = ? AND round_type = ?
+           ORDER BY round_number DESC
+           LIMIT 1""",
+        (tournament_id, f"group_{group}"),
+    )
+    row = c.fetchone()
+    if not row:
+        conn.close()
+        return None
+
+    round_number, round_display_name = row
+    c.execute(
+        """SELECT COUNT(*) FROM fixtures
+           WHERE tournament_id = ? AND round_number = ?
+             AND is_played = 0 AND is_reserved = 0""",
+        (tournament_id, round_number),
+    )
+    unfinished = c.fetchone()[0]
+    conn.close()
+    if unfinished:
+        return (
+            f"❌ **{round_display_name or f'Round {round_number}'}** still has "
+            f"**{unfinished}** uncompleted fixture(s). Complete those games "
+            "or use `-reserveall` before creating a new round."
+        )
+    return None
+
+
+async def post_fixture_rows(bot, guild, fixture_rows, title):
+    """Post saved fixture rows to the configured fixtures channel."""
+    fixtures_channel = guild.get_channel(FIXTURES_CHANNEL)
+    if not fixtures_channel:
+        print(f"❌ Fixtures channel {FIXTURES_CHANNEL} not found!")
+        return False
+
+    for team1, team2, channel_id, stored_stadium in fixture_rows:
+        stadium = MATCH_CHANNELS.get(channel_id, stored_stadium or "Unknown Stadium")
+        vs_image = await create_vs_image(team1, team2, stadium)
+
+        embed = discord.Embed(title=title, color=0x00FF00)
+        embed.add_field(
+            name="Match",
+            value=f"{get_team_flag(team1)} **{team1}** vs "
+                  f"{get_team_flag(team2)} **{team2}**",
+            inline=False,
+        )
+        embed.add_field(
+            name="Stadium",
+            value=f"🏟️ <#{channel_id}>",
+            inline=False,
+        )
+        embed.set_footer(text="TourneyFanHub")
+
+        role_ids = [get_team_role_id(team1), get_team_role_id(team2)]
+        ping_text = " ".join(f"<@&{role_id}>" for role_id in role_ids if role_id)
+
+        if vs_image:
+            file = discord.File(vs_image, filename=f"{team1}_vs_{team2}.png")
+            embed.set_image(url=f"attachment://{team1}_vs_{team2}.png")
+            await fixtures_channel.send(
+                content=ping_text or None,
+                embed=embed,
+                file=file,
+            )
+        else:
+            await fixtures_channel.send(
+                content=ping_text or None,
+                embed=embed,
+            )
+    return True
+
+
+def allocate_stadiums_for_matches(tournament_id, matchups, round_number):
+    """
+    Assign a unique stadium to every pending matchup.
+
+    A stadium cannot be used twice in the same tournament round, and the
+    same matchup cannot return to a stadium it used in an earlier round.
+    Returns [(channel_id, stadium_name), ...] in the same order as matchups,
+    or None when the available stadiums cannot satisfy both rules.
+    """
+    if len(matchups) > len(MATCH_CHANNELS):
+        return None
+
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+
+    c.execute(
+        """SELECT channel_id FROM fixtures
+           WHERE tournament_id = ? AND round_number = ?""",
+        (tournament_id, round_number),
+    )
+    used_this_round = {row[0] for row in c.fetchall()}
+
+    c.execute(
+        """SELECT team1, team2, channel_id FROM fixtures
+           WHERE tournament_id = ?""",
+        (tournament_id,),
+    )
+    previous_stadiums = {}
+    for team1, team2, channel_id in c.fetchall():
+        matchup = frozenset((team1, team2))
+        previous_stadiums.setdefault(matchup, set()).add(channel_id)
+    conn.close()
+
+    stadium_ids = list(MATCH_CHANNELS.keys())
+    candidates = []
+    for team1, team2 in matchups:
+        matchup = frozenset((team1, team2))
+        forbidden = previous_stadiums.get(matchup, set())
+        options = [
+            channel_id for channel_id in stadium_ids
+            if channel_id not in used_this_round and channel_id not in forbidden
+        ]
+        candidates.append(options)
+
+    # Assign the most constrained matchups first, then restore original order.
+    order = sorted(range(len(matchups)), key=lambda index: len(candidates[index]))
+    assignments = {}
+
+    def backtrack(position, used):
+        if position == len(order):
+            return True
+
+        fixture_index = order[position]
+        options = candidates[fixture_index].copy()
+        random.shuffle(options)
+        for channel_id in options:
+            if channel_id in used:
+                continue
+            assignments[fixture_index] = channel_id
+            if backtrack(position + 1, used | {channel_id}):
+                return True
+            assignments.pop(fixture_index, None)
+        return False
+
+    if not backtrack(0, set()):
+        return None
+
+    return [
+        (assignments[index], MATCH_CHANNELS[assignments[index]])
+        for index in range(len(matchups))
+    ]
+
+
+def validate_fixture_stadiums(tournament_id, round_number, fixtures):
+    """Return an error string if pending fixtures violate stadium rules."""
+    channel_ids = [fixture[2] for fixture in fixtures]
+    duplicates = {
+        channel_id for channel_id in channel_ids
+        if channel_ids.count(channel_id) > 1
+    }
+    if duplicates:
+        duplicate_names = ", ".join(
+            MATCH_CHANNELS.get(channel_id, str(channel_id))
+            for channel_id in duplicates
+        )
+        return (
+            f"Stadiums must be unique within a round. Repeated: "
+            f"**{duplicate_names}**."
+        )
+
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute(
+        """SELECT team1, team2, channel_id
+           FROM fixtures
+           WHERE tournament_id = ?""",
+        (tournament_id,),
+    )
+    previous = c.fetchall()
+    conn.close()
+
+    for team1, team2, channel_id, _ in fixtures:
+        matchup = frozenset((team1, team2))
+        if any(
+            frozenset((old_team1, old_team2)) == matchup
+            and old_channel_id == channel_id
+            for old_team1, old_team2, old_channel_id in previous
+        ):
+            return (
+                f"**{team1} vs {team2}** already used "
+                f"**{MATCH_CHANNELS.get(channel_id, channel_id)}** "
+                "in an earlier fixture. Choose a different stadium."
+            )
+
+    return None
+
+
 def generate_group_round_robin(teams, round_index):
     """
     Generate fixtures for round_index (0-based) of a round-robin schedule
@@ -2365,6 +2600,16 @@ class FixtureEditView(View):
                                                     ephemeral=True)
             return
 
+        stadium_error = validate_fixture_stadiums(
+            self.tournament_id, self.round_number, self.fixtures
+        )
+        if stadium_error:
+            await interaction.response.send_message(
+                f"❌ Cannot post these fixtures.\n{stadium_error}",
+                ephemeral=True,
+            )
+            return
+
         await interaction.response.defer()
 
         conn = sqlite3.connect('players.db')
@@ -2404,63 +2649,18 @@ class FixtureEditView(View):
         await interaction.followup.send("✅ Fixtures confirmed and posted!")
 
     async def post_fixtures(self):
-        guild = self.ctx.guild
-        fixtures_channel = guild.get_channel(FIXTURES_CHANNEL)
-
-        if not fixtures_channel:
-            print(f"❌ Fixtures channel {FIXTURES_CHANNEL} not found!")
-            return
-
         tournament = get_active_tournament()
         tournament_name = tournament[1] if tournament else "Tournament"
-
-        for team1, team2, channel_id, stadium in self.fixtures:
-            vs_image = await create_vs_image(team1, team2, stadium)
-
-            embed = discord.Embed(
-                title=f"{tournament_name} - Round {self.round_number}",
-                color=0x00FF00)
-
-            flag1 = get_team_flag(team1)
-            flag2 = get_team_flag(team2)
-
-            embed.add_field(
-                name="Match",
-                value=f"{flag1} **{team1}** vs {flag2} **{team2}**",
-                inline=False)
-
-            # Link to the stadium channel
-            embed.add_field(name="Stadium",
-                            value=f"🏟️ <#{channel_id}>",
-                            inline=False)
-
-            embed.set_footer(text="TourneyFanHub")
-
-            role1_id = get_team_role_id(team1)
-            role2_id = get_team_role_id(team2)
-
-            ping_text = ""
-            if role1_id:
-                ping_text += f"<@&{role1_id}> "
-            if role2_id:
-                ping_text += f"<@&{role2_id}> "
-
-            if vs_image:
-                file = discord.File(vs_image,
-                                    filename=f"{team1}_vs_{team2}.png")
-                embed.set_image(url=f"attachment://{team1}_vs_{team2}.png")
-
-                if ping_text:
-                    await fixtures_channel.send(content=ping_text,
-                                                embed=embed,
-                                                file=file)
-                else:
-                    await fixtures_channel.send(embed=embed, file=file)
-            else:
-                if ping_text:
-                    await fixtures_channel.send(content=ping_text, embed=embed)
-                else:
-                    await fixtures_channel.send(embed=embed)
+        fixture_rows = [
+            (team1, team2, channel_id, stadium)
+            for team1, team2, channel_id, stadium in self.fixtures
+        ]
+        await post_fixture_rows(
+            self.bot,
+            self.ctx.guild,
+            fixture_rows,
+            f"{tournament_name} - Round {self.round_number}",
+        )
 
 
 class Tournament(commands.Cog):
@@ -2846,6 +3046,11 @@ class Tournament(commands.Cog):
                 f"Use `-assigngroups` to assign teams to groups first.")
             return
 
+        blocked_message = unfinished_group_round_message(tournament_id, group)
+        if blocked_message:
+            await ctx.send(blocked_message)
+            return
+
         group_teams = [row[0] for row in group_teams_rows]
         n = len(group_teams)
 
@@ -2877,12 +3082,23 @@ class Tournament(commands.Cog):
 
         target_round = get_next_tournament_round(tournament_id)
 
-        # Assign random stadiums
-        fixtures = []
-        for t1, t2 in matches:
-            channel_id = random.choice(list(MATCH_CHANNELS.keys()))
-            stadium = MATCH_CHANNELS[channel_id]
-            fixtures.append([t1, t2, channel_id, stadium])
+        stadium_assignments = allocate_stadiums_for_matches(
+            tournament_id, matches, target_round
+        )
+        if stadium_assignments is None:
+            await ctx.send(
+                "❌ Could not assign unique stadiums for this round. "
+                "Every fixture needs a different stadium, and a matchup "
+                "cannot reuse a stadium from an earlier round."
+            )
+            return
+
+        fixtures = [
+            [t1, t2, channel_id, stadium]
+            for (t1, t2), (channel_id, stadium) in zip(
+                matches, stadium_assignments
+            )
+        ]
 
         group_internal_round = rounds_done + 1
         round_display = f"Group {group} — Round {group_internal_round}"
@@ -2910,6 +3126,88 @@ class Tournament(commands.Cog):
         embed = await view.create_fixture_embed()
         view.message = await ctx.send(embed=embed, view=view)
 
+    @commands.command(
+        name="postsamefixtures",
+        help="[ADMIN] Repost the latest saved fixtures for a group. Usage: -postsamefixtures A",
+    )
+    @commands.has_permissions(administrator=True)
+    async def postsamefixtures(self, ctx, group: str):
+        """Repost a group's latest fixtures exactly as stored, without changing the DB."""
+        tournament = get_active_tournament()
+        if not tournament:
+            await ctx.send("❌ No active tournament found!")
+            return
+
+        group = group.upper()
+        if group not in ("A", "B", "C"):
+            await ctx.send(
+                "❌ Specify group A, B, or C. Example: `-postsamefixtures A`"
+            )
+            return
+
+        tournament_id, tournament_name, _ = tournament
+        conn = sqlite3.connect("players.db")
+        c = conn.cursor()
+        c.execute(
+            """SELECT round_number, round_display_name
+               FROM tournament_round_info
+               WHERE tournament_id = ? AND round_type = ?
+               ORDER BY round_number DESC
+               LIMIT 1""",
+            (tournament_id, f"group_{group}"),
+        )
+        round_info = c.fetchone()
+        if not round_info:
+            conn.close()
+            await ctx.send(f"❌ No saved fixtures found for Group {group}.")
+            return
+
+        round_number, round_display_name = round_info
+        c.execute(
+            """SELECT team_name
+               FROM tournament_teams
+               WHERE tournament_id = ? AND UPPER(group_name) = ?""",
+            (tournament_id, group),
+        )
+        group_teams = {row[0] for row in c.fetchall()}
+        c.execute(
+            """SELECT team1, team2, channel_id
+               FROM fixtures
+               WHERE tournament_id = ? AND round_number = ?
+               ORDER BY id ASC""",
+            (tournament_id, round_number),
+        )
+        stored_rows = [
+            row for row in c.fetchall()
+            if row[0] in group_teams and row[1] in group_teams
+        ]
+        conn.close()
+
+        if not stored_rows:
+            await ctx.send(
+                f"❌ No fixtures found for the latest saved Group {group} round."
+            )
+            return
+
+        await ctx.send(
+            f"📌 Reposting the exact saved fixtures for "
+            f"**{round_display_name or f'Group {group} Round'}**…"
+        )
+        posted = await post_fixture_rows(
+            self.bot,
+            ctx.guild,
+            [
+                (team1, team2, channel_id, MATCH_CHANNELS.get(channel_id))
+                for team1, team2, channel_id in stored_rows
+            ],
+            f"{tournament_name} - {round_display_name or f'Group {group}'}",
+        )
+        if posted:
+            await ctx.send(
+                f"✅ Reposted **{len(stored_rows)}** exact fixture(s). "
+                "The saved fixtures were not changed."
+            )
+
     @commands.command(name="setigfixtures", aliases=["sigf"],
                       help="[ADMIN] Generate intergroup round fixtures. Usage: -sigf <1/2/3>")
     @commands.has_permissions(administrator=True)
@@ -2935,6 +3233,11 @@ class Tournament(commands.Cog):
 
         tournament_id, tournament_name, _ = tournament
 
+        blocked_message = unfinished_round_message(tournament_id)
+        if blocked_message:
+            await ctx.send(blocked_message)
+            return
+
         group_map = {1: ('A', 'B'), 2: ('B', 'C'), 3: ('A', 'C')}
         g1, g2 = group_map[ig_round]
 
@@ -2955,19 +3258,35 @@ class Tournament(commands.Cog):
         num_matches = min(len(standings_g1), len(standings_g2))
         target_round = get_next_tournament_round(tournament_id)
 
-        fixtures = []
+        matchups = []
         match_desc = []
         for i in range(num_matches):
             t1 = standings_g1[i][0]   # rank i+1 in group g1
             t2 = standings_g2[i][0]   # rank i+1 in group g2
-            channel_id = random.choice(list(MATCH_CHANNELS.keys()))
-            stadium = MATCH_CHANNELS[channel_id]
-            fixtures.append([t1, t2, channel_id, stadium])
+            matchups.append((t1, t2))
             flag1 = get_team_flag(t1)
             flag2 = get_team_flag(t2)
             match_desc.append(
                 f"#{i+1} {flag1} {t1} vs {flag2} {t2} "
                 f"*(#{i+1} {g1} vs #{i+1} {g2})*")
+
+        stadium_assignments = allocate_stadiums_for_matches(
+            tournament_id, matchups, target_round
+        )
+        if stadium_assignments is None:
+            await ctx.send(
+                "❌ Could not assign unique stadiums for this round. "
+                "Every fixture needs a different stadium, and a matchup "
+                "cannot reuse a stadium from an earlier round."
+            )
+            return
+
+        fixtures = [
+            [t1, t2, channel_id, stadium]
+            for (t1, t2), (channel_id, stadium) in zip(
+                matchups, stadium_assignments
+            )
+        ]
 
         round_display = f"Intergroup Round {ig_round} (Group {g1} vs Group {g2})"
         round_info = {
@@ -3049,6 +3368,12 @@ class Tournament(commands.Cog):
             return
 
         tournament_id, tournament_name, current_round = tournament
+
+        if not special_round:
+            blocked_message = unfinished_round_message(tournament_id)
+            if blocked_message:
+                await ctx.send(blocked_message)
+                return
 
         # Determine round info
         if special_round:
@@ -3134,6 +3459,56 @@ class Tournament(commands.Cog):
 
                 self.selected_channel_id = int(interaction.data['values'][0])
                 stadium = MATCH_CHANNELS[self.selected_channel_id]
+
+                # Prevent two fixtures in the same round from sharing a
+                # stadium, and prevent a repeated matchup from returning to
+                # a stadium it has already used.
+                conn = sqlite3.connect('players.db')
+                c = conn.cursor()
+                c.execute(
+                    """SELECT id FROM fixtures
+                       WHERE tournament_id = ? AND round_number = ?
+                         AND channel_id = ?""",
+                    (tournament_id, round_number, self.selected_channel_id),
+                )
+                duplicate_round_stadium = c.fetchone()
+                c.execute(
+                    """SELECT id FROM fixtures
+                       WHERE tournament_id = ?
+                         AND ((team1 = ? AND team2 = ?)
+                              OR (team1 = ? AND team2 = ?))
+                         AND channel_id = ?""",
+                    (
+                        tournament_id,
+                        team1,
+                        team2,
+                        team2,
+                        team1,
+                        self.selected_channel_id,
+                    ),
+                )
+                repeated_matchup_stadium = c.fetchone()
+                conn.close()
+
+                if duplicate_round_stadium and (
+                    not is_reserve or duplicate_round_stadium[0] != existing[0]
+                ):
+                    await interaction.response.send_message(
+                        "❌ That stadium is already assigned to another fixture "
+                        "in this round. Choose a different stadium.",
+                        ephemeral=True,
+                    )
+                    return
+
+                if repeated_matchup_stadium and (
+                    not is_reserve or repeated_matchup_stadium[0] != existing[0]
+                ):
+                    await interaction.response.send_message(
+                        "❌ This matchup has already used that stadium in an "
+                        "earlier fixture. Choose a different stadium.",
+                        ephemeral=True,
+                    )
+                    return
 
                 await interaction.response.defer()
 
@@ -3259,6 +3634,11 @@ class Tournament(commands.Cog):
             return
 
         tournament_id, tournament_name, current_round = tournament
+
+        blocked_message = unfinished_round_message(tournament_id)
+        if blocked_message:
+            await ctx.send(blocked_message)
+            return
 
         conn = sqlite3.connect('players.db')
         c = conn.cursor()
@@ -3407,11 +3787,23 @@ class Tournament(commands.Cog):
                 )
                 return
 
-            fixtures = []
-            for t1, t2 in matching_result:
-                channel_id = random.choice(list(MATCH_CHANNELS.keys()))
-                stadium = MATCH_CHANNELS[channel_id]
-                fixtures.append([t1, t2, channel_id, stadium])
+            stadium_assignments = allocate_stadiums_for_matches(
+                tournament_id, matching_result, target_round
+            )
+            if stadium_assignments is None:
+                await ctx.send(
+                    "❌ Could not assign unique stadiums for this round. "
+                    "Every fixture needs a different stadium, and a matchup "
+                    "cannot reuse a stadium from an earlier round."
+                )
+                return
+
+            fixtures = [
+                [t1, t2, channel_id, stadium]
+                for (t1, t2), (channel_id, stadium) in zip(
+                    matching_result, stadium_assignments
+                )
+            ]
 
             embed = await FixtureEditView(ctx, self.bot, tournament_id,
                                           fixtures, target_round,
