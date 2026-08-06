@@ -4839,20 +4839,40 @@ MATCHTIME_STADIUMS = {
     1534821730412003348: "Penrith Stadium",
 }
 
+MATCHTIME_PRIMARY_TEAM_COUNT = 24
+MATCHTIME_OTHER_TEAMS_LABEL = "OTHER Teams"
+
 
 async def matchtime_opponent_autocomplete(
     interaction: discord.Interaction,
     current: str,
 ) -> list[app_commands.Choice[str]]:
-    """Return all tournament teams while respecting Discord's 25-result limit."""
+    """Show 24 teams plus an option that opens the remaining-team menu."""
     current = current.lower().strip()
-    matches = [
-        team_name for team_name in MATCHTIME_TEAM_ROLE_IDS
-        if not current or current in team_name.lower()
-    ]
+    primary_teams = list(MATCHTIME_TEAM_ROLE_IDS)[:MATCHTIME_PRIMARY_TEAM_COUNT]
+
+    if current:
+        matches = [
+            team_name for team_name in primary_teams
+            if current in team_name.lower()
+        ]
+        # Allow the grouped option to be found by typing "other".
+        if "other" in current:
+            matches.append(MATCHTIME_OTHER_TEAMS_LABEL)
+        return [
+            app_commands.Choice(name=team_name, value=team_name)
+            for team_name in matches[:25]
+        ]
+
     return [
-        app_commands.Choice(name=team_name, value=team_name)
-        for team_name in matches[:25]
+        *[
+            app_commands.Choice(name=team_name, value=team_name)
+            for team_name in primary_teams
+        ],
+        app_commands.Choice(
+            name=MATCHTIME_OTHER_TEAMS_LABEL,
+            value=MATCHTIME_OTHER_TEAMS_LABEL,
+        ),
     ]
 
 
@@ -4983,6 +5003,194 @@ class MatchTimeButtons(discord.ui.View):
 
         await interaction.response.edit_message(embed=cancel_embed, view=self)
 
+
+class MatchTimeOtherTeamsSelect(discord.ui.Select):
+    def __init__(
+        self,
+        owner_id: int,
+        requester_team_role_id: int,
+        requester_team_name: str,
+        match_time: str,
+        stadium_channel_id: int,
+    ):
+        self.owner_id = owner_id
+        self.requester_team_role_id = requester_team_role_id
+        self.requester_team_name = requester_team_name
+        self.match_time = match_time
+        self.stadium_channel_id = stadium_channel_id
+
+        primary_teams = set(list(MATCHTIME_TEAM_ROLE_IDS)[:MATCHTIME_PRIMARY_TEAM_COUNT])
+        other_teams = [
+            team_name for team_name in MATCHTIME_TEAM_ROLE_IDS
+            if team_name not in primary_teams
+        ]
+        options = [
+            discord.SelectOption(
+                label=team_name,
+                value=team_name,
+            )
+            for team_name in other_teams
+        ]
+        super().__init__(
+            placeholder="Choose an other team…",
+            options=options,
+            min_values=1,
+            max_values=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.owner_id:
+            return await interaction.response.send_message(
+                "❌ This team menu belongs to the person who used /matchtime.",
+                ephemeral=True,
+            )
+
+        await _create_matchtime_request(
+            interaction=interaction,
+            requester_team_role_id=self.requester_team_role_id,
+            requester_team_name=self.requester_team_name,
+            opponent_team_name=self.values[0],
+            match_time=self.match_time,
+            stadium_channel_id=self.stadium_channel_id,
+        )
+
+
+class MatchTimeOtherTeamsView(discord.ui.View):
+    def __init__(
+        self,
+        owner_id: int,
+        requester_team_role_id: int,
+        requester_team_name: str,
+        match_time: str,
+        stadium_channel_id: int,
+    ):
+        super().__init__(timeout=180)
+        self.add_item(
+            MatchTimeOtherTeamsSelect(
+                owner_id=owner_id,
+                requester_team_role_id=requester_team_role_id,
+                requester_team_name=requester_team_name,
+                match_time=match_time,
+                stadium_channel_id=stadium_channel_id,
+            )
+        )
+
+
+async def _create_matchtime_request(
+    interaction: discord.Interaction,
+    requester_team_role_id: int,
+    requester_team_name: str,
+    opponent_team_name: str,
+    match_time: str,
+    stadium_channel_id: int,
+):
+    """Create the captain request shared by the normal and OTHER Teams paths."""
+    requester_team_role = interaction.guild.get_role(requester_team_role_id)
+    opponent_role_id = MATCHTIME_TEAM_ROLE_IDS.get(opponent_team_name)
+    opponent_role = (
+        interaction.guild.get_role(opponent_role_id)
+        if opponent_role_id
+        else None
+    )
+    if not requester_team_role:
+        await interaction.response.send_message(
+            "❌ Your team role could not be found!",
+            ephemeral=True,
+        )
+        return
+    if not opponent_role:
+        await interaction.response.send_message(
+            "❌ Opponent team role not found!",
+            ephemeral=True,
+        )
+        return
+
+    if requester_team_role.id == opponent_role.id:
+        await interaction.response.send_message(
+            "❌ You cannot challenge your own team!",
+            ephemeral=True,
+        )
+        return
+
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute(
+        "SELECT user_id, username FROM team_captains WHERE team_name = ?",
+        (opponent_team_name,),
+    )
+    captain_result = c.fetchone()
+    conn.close()
+
+    if not captain_result:
+        await interaction.response.send_message(
+            f"❌ {opponent_team_name} doesn't have a captain set yet!",
+            ephemeral=True,
+        )
+        return
+
+    captain_id, captain_username = captain_result
+    captain = interaction.guild.get_member(captain_id)
+    if not captain:
+        await interaction.response.send_message(
+            f"❌ Captain of {opponent_team_name} is not in the server!",
+            ephemeral=True,
+        )
+        return
+
+    stadium_channel = interaction.guild.get_channel(stadium_channel_id)
+    if not stadium_channel:
+        await interaction.response.send_message(
+            "❌ The selected stadium channel was not found in this server!",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.channel.send(
+        content=f"<@{captain_id}> - Match Time Request"
+    )
+
+    request_embed = discord.Embed(
+        title="🏏 Match Time Request",
+        description=f"The captain of **{requester_team_name}** wants to schedule a match!",
+        color=0xFFA500,
+    )
+    request_embed.add_field(
+        name="Teams",
+        value=f"{requester_team_role.mention} **VS** {opponent_role.mention}",
+        inline=False,
+    )
+    request_embed.add_field(
+        name="Proposed Time",
+        value=f"**{match_time}**",
+        inline=False,
+    )
+    request_embed.add_field(
+        name="🏟️ Stadium Channel",
+        value=f"{stadium_channel.mention} (`{stadium_channel.id}`)",
+        inline=False,
+    )
+    request_embed.set_footer(text=f"Requested by {interaction.user.name}")
+
+    view = MatchTimeButtons(
+        requester_id=interaction.user.id,
+        target_captain_id=captain_id,
+        requester_team_role_id=requester_team_role.id,
+        target_team_role_id=opponent_role.id,
+        requester_team_name=requester_team_name,
+        target_team_name=opponent_team_name,
+        match_time=match_time,
+        stadium_channel_id=stadium_channel_id,
+        channel=interaction.channel,
+    )
+    await interaction.channel.send(embed=request_embed, view=view)
+
+    confirmation = "✅ Match time request sent!"
+    if interaction.response.is_done():
+        await interaction.followup.send(confirmation, ephemeral=True)
+    else:
+        await interaction.response.send_message(confirmation, ephemeral=True)
+
+
 @bot.tree.command(name="matchtime", description="Schedule a match time with another team")
 @app_commands.describe(
     opponent="Select the opponent team",
@@ -5033,41 +5241,6 @@ async def matchtime(
         await interaction.response.send_message("❌ You don't have a team role!", ephemeral=True)
         return
 
-    # Get opponent team role
-    opponent_team_name = opponent
-    opponent_role_id = MATCHTIME_TEAM_ROLE_IDS.get(opponent_team_name)
-    opponent_role = (
-        interaction.guild.get_role(opponent_role_id)
-        if opponent_role_id
-        else None
-    )
-    if not opponent_role:
-        await interaction.response.send_message("❌ Opponent team role not found!", ephemeral=True)
-        return
-
-    # Check if user is trying to challenge their own team
-    if requester_team_role.id == opponent_role.id:
-        await interaction.response.send_message("❌ You cannot challenge your own team!", ephemeral=True)
-        return
-
-    # Get opponent team captain
-    conn = sqlite3.connect('players.db')
-    c = conn.cursor()
-    c.execute("SELECT user_id, username FROM team_captains WHERE team_name = ?", (opponent_team_name,))
-    captain_result = c.fetchone()
-    conn.close()
-
-    if not captain_result:
-        await interaction.response.send_message(f"❌ {opponent_team_name} doesn't have a captain set yet!", ephemeral=True)
-        return
-
-    captain_id, captain_username = captain_result
-    captain = interaction.guild.get_member(captain_id)
-
-    if not captain:
-        await interaction.response.send_message(f"❌ Captain of {opponent_team_name} is not in the server!", ephemeral=True)
-        return
-
     stadium_channel_id = int(stadium.value)
     stadium_channel = interaction.guild.get_channel(stadium_channel_id)
     if not stadium_channel:
@@ -5077,51 +5250,28 @@ async def matchtime(
         )
         return
 
-    # Build ping text for captain
-    ping_text = f"<@{captain_id}>"
+    if opponent == MATCHTIME_OTHER_TEAMS_LABEL:
+        await interaction.response.send_message(
+            "🌍 **Choose an other team**",
+            view=MatchTimeOtherTeamsView(
+                owner_id=interaction.user.id,
+                requester_team_role_id=requester_team_role.id,
+                requester_team_name=requester_team_name,
+                match_time=time.value,
+                stadium_channel_id=stadium_channel_id,
+            ),
+            ephemeral=True,
+        )
+        return
 
-    # Send captain ping first as regular message (not reply)
-    await interaction.channel.send(content=f"{ping_text} - Match Time Request")
-
-    # Create request embed
-    request_embed = discord.Embed(
-        title="🏏 Match Time Request",
-        description=f"The captain of **{requester_team_name}** wants to schedule a match!",
-        color=0xFFA500
-    )
-
-    request_embed.add_field(
-        name="Teams",
-        value=f"{requester_team_role.mention} **VS** {opponent_role.mention}",
-        inline=False
-    )
-
-    request_embed.add_field(
-        name="Proposed Time",
-        value=f"**{time.value}**",
-        inline=False
-    )
-
-    request_embed.set_footer(text=f"Requested by {interaction.user.name}")
-
-    # Create view with buttons
-    view = MatchTimeButtons(
-        requester_id=interaction.user.id,
-        target_captain_id=captain_id,
+    await _create_matchtime_request(
+        interaction=interaction,
         requester_team_role_id=requester_team_role.id,
-        target_team_role_id=opponent_role.id,
         requester_team_name=requester_team_name,
-        target_team_name=opponent_team_name,
+        opponent_team_name=opponent,
         match_time=time.value,
         stadium_channel_id=stadium_channel_id,
-        channel=interaction.channel
     )
-
-    # Send embed as regular message (not reply) with buttons
-    await interaction.channel.send(embed=request_embed, view=view)
-
-    # Send ephemeral confirmation to the slash command user
-    await interaction.response.send_message("✅ Match time request sent!", ephemeral=True)
 
 @bot.command(name="order", aliases=["o"], help="View your team's batting order")
 async def order_command(ctx):
