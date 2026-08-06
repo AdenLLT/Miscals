@@ -163,15 +163,32 @@ def get_player_emoji(player_name, bot):
     return "👤"
 
 
-# Available match channels (stadiums)
+# Available tournament match channels (stadiums)
 MATCH_CHANNELS = {
-    1464251938521485403: "Dubai International Cricket Stadium",
-    1464648443371978832: "Gaddafi Stadium Lahore",
-    1464677627506987202: "National Stadium Karachi",
-    1464677685593768047: "Rawalpindi Cricket Stadium",
-    1464648571898036469: "Multan Cricket Stadium",
-    1464677944222810429: "Arbab Niaz Stadium",
-    1471920655955136736: "Abu Dhabi Cricket Stadium"
+    1511817436792361080: "Perth Stadium",
+    1483896802603172013: "Adelaide Oval",
+    1511820266433544344: "McLean Park",
+    1511820228013592626: "Basin Reserve",
+    1511817976817389821: "Hagley Oval",
+    1511820174922350812: "Eden Park",
+    1483767491132915793: "Melbourne Cricket Ground",
+    1534819463029850174: "Sydney Cricket Ground",
+    1534819524380196864: "The Gabba",
+    1534819620828086404: "Bellerive Oval",
+    1534819692374523964: "Manuka Oval",
+    1534819853775667311: "Brisbane Cricket Ground",
+    1534820064946028644: "Great Barrier Reef",
+    1534820172580392991: "Cazalys Stadium",
+    1534820357331095653: "Bay Oval",
+    1534820441552719942: "Seddon Park",
+    1534820594317656094: "McLean Park",
+    1534820753575514172: "University Oval",
+    1534820885645627412: "Saxton Oval",
+    1534821113337741322: "Marrara Stadium",
+    1534821195655155793: "Carrara Oval",
+    1534821412685090816: "Docklands Stadium",
+    1534821626409910353: "Newcastle International",
+    1534821730412003348: "Penrith Stadium",
 }
 
 # Channel for posting fixtures
