@@ -5120,6 +5120,12 @@ async def _create_matchtime_request(
     other_team="Optional: select Malaysia, Spain, Germany, Japan, Portugal, or Denmark",
 )
 @app_commands.choices(time=[
+    app_commands.Choice(name="5:00 PM IST", value="5:00PM IST"),
+    app_commands.Choice(name="5:30 PM IST", value="5:30PM IST"),
+    app_commands.Choice(name="6:00 PM IST", value="6:00PM IST"),
+    app_commands.Choice(name="6:15 PM IST", value="6:15PM IST"),
+    app_commands.Choice(name="6:30 PM IST", value="6:30PM IST"),
+    app_commands.Choice(name="6:45 PM IST", value="6:45PM IST"),
     app_commands.Choice(name="7:00 PM IST", value="7:00PM IST"),
     app_commands.Choice(name="7:15 PM IST", value="7:15PM IST"),
     app_commands.Choice(name="7:30 PM IST", value="7:30PM IST"),
@@ -5130,7 +5136,10 @@ async def _create_matchtime_request(
     app_commands.Choice(name="8:45 PM IST", value="8:45PM IST"),
     app_commands.Choice(name="9:00 PM IST", value="9:00PM IST"),
     app_commands.Choice(name="9:15 PM IST", value="9:15PM IST"),
-    app_commands.Choice(name="9:30 PM IST", value="9:30PM IST")
+    app_commands.Choice(name="9:30 PM IST", value="9:30PM IST"),
+    app_commands.Choice(name="9:45 PM IST", value="9:45PM IST"),
+    app_commands.Choice(name="10:00 PM IST", value="10:00PM IST"),
+    app_commands.Choice(name="10:15 PM IST", value="10:15PM IST"),
 ])
 @app_commands.autocomplete(opponent=matchtime_opponent_autocomplete)
 @app_commands.autocomplete(other_team=matchtime_other_team_autocomplete)
