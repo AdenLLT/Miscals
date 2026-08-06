@@ -2106,6 +2106,273 @@ async def post_fixture_rows(bot, guild, fixture_rows, title):
     return True
 
 
+class SameFixturesRepostView(View):
+    """Admin menu for reposting saved fixtures, optionally changing stadiums."""
+
+    def __init__(
+        self,
+        ctx,
+        tournament_id,
+        tournament_name,
+        group,
+        round_number,
+        round_display_name,
+        fixtures,
+    ):
+        super().__init__(timeout=300)
+        self.ctx = ctx
+        self.tournament_id = tournament_id
+        self.tournament_name = tournament_name
+        self.group = group
+        self.round_number = round_number
+        self.round_display_name = round_display_name
+        self.fixtures = [
+            [team1, team2, channel_id, MATCH_CHANNELS.get(channel_id, stadium)]
+            for team1, team2, channel_id, stadium in fixtures
+        ]
+        self.selected_fixture_index = None
+        self.message = None
+        self._add_controls()
+
+    def summary(self):
+        lines = [
+            f"📌 **Saved fixtures: {self.round_display_name or f'Group {self.group}'}**",
+            "Choose **Post Exact Fixtures** to repost unchanged, or select a "
+            "fixture and stadium before choosing **Post With Stadium Changes**.",
+            "",
+        ]
+        for index, (team1, team2, _, stadium) in enumerate(self.fixtures, 1):
+            lines.append(f"**{index}.** {team1} vs {team2} — 🏟️ {stadium}")
+        return "\n".join(lines)[:1900]
+
+    def _add_controls(self):
+        self.clear_items()
+
+        fixture_options = [
+            discord.SelectOption(
+                label=f"{team1} vs {team2}"[:100],
+                description=f"Current stadium: {stadium}"[:100],
+                value=str(index),
+            )
+            for index, (team1, team2, _, stadium) in enumerate(self.fixtures)
+        ]
+        fixture_select = Select(
+            placeholder="1️⃣ Select a fixture to change its stadium",
+            options=fixture_options,
+            custom_id="repost_fixture_select",
+        )
+
+        async def fixture_callback(interaction: discord.Interaction):
+            if interaction.user.id != self.ctx.author.id:
+                return await interaction.response.send_message(
+                    "❌ This is not your menu!", ephemeral=True
+                )
+            self.selected_fixture_index = int(interaction.data["values"][0])
+            team1, team2, _, stadium = self.fixtures[self.selected_fixture_index]
+            await interaction.response.send_message(
+                f"✅ Selected **{team1} vs {team2}**. "
+                f"Now choose a stadium from the second menu.",
+                ephemeral=True,
+            )
+
+        fixture_select.callback = fixture_callback
+        self.add_item(fixture_select)
+
+        stadium_options = [
+            discord.SelectOption(
+                label=stadium_name,
+                value=str(channel_id),
+                emoji="🏟️",
+            )
+            for channel_id, stadium_name in MATCH_CHANNELS.items()
+        ]
+        stadium_select = Select(
+            placeholder="2️⃣ Choose a replacement stadium",
+            options=stadium_options,
+            custom_id="repost_stadium_select",
+        )
+
+        async def stadium_callback(interaction: discord.Interaction):
+            if interaction.user.id != self.ctx.author.id:
+                return await interaction.response.send_message(
+                    "❌ This is not your menu!", ephemeral=True
+                )
+            if self.selected_fixture_index is None:
+                return await interaction.response.send_message(
+                    "❌ Select a fixture from the first menu before choosing "
+                    "a stadium.",
+                    ephemeral=True,
+                )
+
+            new_channel_id = int(interaction.data["values"][0])
+            old_channel_id = self.fixtures[self.selected_fixture_index][2]
+            team1, team2 = self.fixtures[self.selected_fixture_index][:2]
+
+            if new_channel_id != old_channel_id:
+                # Keep the same uniqueness rules used during fixture creation.
+                if any(
+                    index != self.selected_fixture_index
+                    and fixture[2] == new_channel_id
+                    for index, fixture in enumerate(self.fixtures)
+                ):
+                    return await interaction.response.send_message(
+                        "❌ That stadium is already assigned to another fixture "
+                        "in this repost. Choose a different stadium.",
+                        ephemeral=True,
+                    )
+
+                conn = sqlite3.connect("players.db")
+                c = conn.cursor()
+                c.execute(
+                    """SELECT 1 FROM fixtures
+                       WHERE tournament_id = ? AND round_number = ?
+                         AND channel_id = ?
+                         AND NOT ((team1 = ? AND team2 = ?)
+                                  OR (team1 = ? AND team2 = ?))
+                       LIMIT 1""",
+                    (
+                        self.tournament_id,
+                        self.round_number,
+                        new_channel_id,
+                        team1,
+                        team2,
+                        team2,
+                        team1,
+                    ),
+                )
+                used_by_round_fixture = c.fetchone()
+                c.execute(
+                    """SELECT 1 FROM fixtures
+                       WHERE tournament_id = ? AND round_number != ?
+                         AND channel_id = ?
+                         AND ((team1 = ? AND team2 = ?)
+                              OR (team1 = ? AND team2 = ?))
+                       LIMIT 1""",
+                    (
+                        self.tournament_id,
+                        self.round_number,
+                        new_channel_id,
+                        team1,
+                        team2,
+                        team2,
+                        team1,
+                    ),
+                )
+                used_by_previous_match = c.fetchone()
+                conn.close()
+
+                if used_by_round_fixture:
+                    return await interaction.response.send_message(
+                        "❌ That stadium is already assigned to another fixture "
+                        "in this round. Choose a different stadium.",
+                        ephemeral=True,
+                    )
+                if used_by_previous_match:
+                    return await interaction.response.send_message(
+                        "❌ This matchup used that stadium in an earlier round. "
+                        "Choose a different stadium.",
+                        ephemeral=True,
+                    )
+
+            self.fixtures[self.selected_fixture_index][2] = new_channel_id
+            self.fixtures[self.selected_fixture_index][3] = MATCH_CHANNELS[
+                new_channel_id
+            ]
+            await interaction.response.send_message(
+                f"✅ Stadium changed for **{team1} vs {team2}** to "
+                f"**{MATCH_CHANNELS[new_channel_id]}**.",
+                ephemeral=True,
+            )
+            if self.message:
+                await self.message.edit(content=self.summary(), view=self)
+
+        stadium_select.callback = stadium_callback
+        self.add_item(stadium_select)
+
+        exact_button = Button(
+            label="Post Exact Fixtures",
+            emoji="📌",
+            style=discord.ButtonStyle.success,
+            custom_id="post_exact_saved_fixtures",
+        )
+        exact_button.callback = self.post_exact_callback
+        self.add_item(exact_button)
+
+        changed_button = Button(
+            label="Post With Stadium Changes",
+            emoji="🏟️",
+            style=discord.ButtonStyle.primary,
+            custom_id="post_changed_saved_fixtures",
+        )
+        changed_button.callback = self.post_changed_callback
+        self.add_item(changed_button)
+
+        cancel_button = Button(
+            label="Cancel",
+            style=discord.ButtonStyle.secondary,
+            custom_id="cancel_saved_fixtures",
+        )
+        cancel_button.callback = self.cancel_callback
+        self.add_item(cancel_button)
+
+    async def _post(self, interaction: discord.Interaction):
+        if interaction.user.id != self.ctx.author.id:
+            return await interaction.response.send_message(
+                "❌ This is not your menu!", ephemeral=True
+            )
+
+        await interaction.response.defer()
+        for item in self.children:
+            item.disabled = True
+        await interaction.message.edit(view=self)
+
+        posted = await post_fixture_rows(
+            self.ctx.bot,
+            self.ctx.guild,
+            [
+                (team1, team2, channel_id, stadium)
+                for team1, team2, channel_id, stadium in self.fixtures
+            ],
+            f"{self.tournament_name} - "
+            f"{self.round_display_name or f'Group {self.group}'}",
+        )
+        if posted:
+            await interaction.followup.send(
+                f"✅ Reposted **{len(self.fixtures)}** fixture(s). "
+                "Saved database fixtures were not changed."
+            )
+        else:
+            await interaction.followup.send(
+                "❌ Could not find the tournament fixtures channel."
+            )
+        self.stop()
+
+    async def post_exact_callback(self, interaction: discord.Interaction):
+        await self._post(interaction)
+
+    async def post_changed_callback(self, interaction: discord.Interaction):
+        await self._post(interaction)
+
+    async def cancel_callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.ctx.author.id:
+            return await interaction.response.send_message(
+                "❌ This is not your menu!", ephemeral=True
+            )
+        await interaction.response.edit_message(
+            content="❌ Fixture repost cancelled.", view=None
+        )
+        self.stop()
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except Exception:
+                pass
+
+
 def allocate_stadiums_for_matches(tournament_id, matchups, round_number):
     """
     Assign a unique stadium to every pending matchup.
@@ -3189,24 +3456,19 @@ class Tournament(commands.Cog):
             )
             return
 
-        await ctx.send(
-            f"📌 Reposting the exact saved fixtures for "
-            f"**{round_display_name or f'Group {group} Round'}**…"
-        )
-        posted = await post_fixture_rows(
-            self.bot,
-            ctx.guild,
-            [
+        view = SameFixturesRepostView(
+            ctx=ctx,
+            tournament_id=tournament_id,
+            tournament_name=tournament_name,
+            group=group,
+            round_number=round_number,
+            round_display_name=round_display_name,
+            fixtures=[
                 (team1, team2, channel_id, MATCH_CHANNELS.get(channel_id))
                 for team1, team2, channel_id in stored_rows
             ],
-            f"{tournament_name} - {round_display_name or f'Group {group}'}",
         )
-        if posted:
-            await ctx.send(
-                f"✅ Reposted **{len(stored_rows)}** exact fixture(s). "
-                "The saved fixtures were not changed."
-            )
+        view.message = await ctx.send(content=view.summary(), view=view)
 
     @commands.command(name="setigfixtures", aliases=["sigf"],
                       help="[ADMIN] Generate intergroup round fixtures. Usage: -sigf <1/2/3>")
