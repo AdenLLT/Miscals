@@ -133,7 +133,7 @@ async def on_ready():
     await bot.load_extension('playerlife')
     await bot.load_extension('miniplayergame')
     await bot.tree.sync(guild=ALLOWED_GUILD_OBJ)
-    await bot.change_presence(activity=discord.Game(name="With Aden's Balls"))
+    await bot.change_presence(activity=discord.Game(name="ODI WC26"))
     print(f'{bot.user} has connected to Discord!')
     print(f'Bot is ready! Prefix: .')
     await backup_db_to_channel()
@@ -4806,15 +4806,109 @@ async def send_message(ctx, channel_id: int, *, message: str):
 
 #------------
 
+# Team roles used by /matchtime. The autocomplete keeps this list usable
+# without exceeding Discord's 25 static-choice limit.
+MATCHTIME_TEAM_ROLE_IDS = {
+    "India": 1460376137594044567,
+    "Pakistan": 1460376138755866644,
+    "Australia": 1460376139611640025,
+    "England": 1460376141314654424,
+    "New Zealand": 1460376142342000762,
+    "South Africa": 1460376143633846527,
+    "West Indies": 1460376148751028408,
+    "Sri Lanka": 1460376147715166282,
+    "Bangladesh": 1460376144862908523,
+    "Afghanistan": 1460376146163273739,
+    "Netherlands": 1460376154480312370,
+    "Scotland": 1460376151795961897,
+    "Ireland": 1460376149908525191,
+    "Zimbabwe": 1460376157668245545,
+    "UAE": 1460376158985130114,
+    "Canada": 1460376154958725152,
+    "USA": 1460376156250570824,
+    "Italy": 1513096652842467328,
+    "Nepal": 1513096680835125398,
+    "Namibia": 1513096608063950878,
+    "Hong Kong": 1513236745527889951,
+    "Oman": 1513236895595757768,
+    "Papua New Guinea": 1513237053935194262,
+    "Uganda": 1513237221560287312,
+    "Malaysia": 1513238128482320454,
+    "Spain": 1513238260502233198,
+    "Germany": 1513238268777595073,
+    "Japan": 1513238484075282432,
+    "Portugal": 1513238487707549958,
+    "Denmark": 1513238490723385466,
+}
+
+# Tournament stadium channels, kept in the same order as the tournament
+# selector so /matchtime sends members to the actual match channel.
+MATCHTIME_STADIUMS = {
+    1511817436792361080: "Perth Stadium",
+    1483896802603172013: "Adelaide Oval",
+    1511820266433544344: "McLean Park",
+    1511820228013592626: "Basin Reserve",
+    1511817976817389821: "Hagley Oval",
+    1511820174922350812: "Eden Park",
+    1483767491132915793: "Melbourne Cricket Ground",
+    1534819463029850174: "Sydney Cricket Ground",
+    1534819524380196864: "The Gabba",
+    1534819620828086404: "Bellerive Oval",
+    1534819692374523964: "Manuka Oval",
+    1534819853775667311: "Brisbane Cricket Ground",
+    1534820064946028644: "Great Barrier Reef",
+    1534820172580392991: "Cazalys Stadium",
+    1534820357331095653: "Bay Oval",
+    1534820441552719942: "Seddon Park",
+    1534820594317656094: "McLean Park",
+    1534820753575514172: "University Oval",
+    1534820885645627412: "Saxton Oval",
+    1534821113337741322: "Marrara Stadium",
+    1534821195655155793: "Carrara Oval",
+    1534821412685090816: "Docklands Stadium",
+    1534821626409910353: "Newcastle International",
+    1534821730412003348: "Penrith Stadium",
+}
+
+
+async def matchtime_opponent_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> list[app_commands.Choice[str]]:
+    """Return all tournament teams while respecting Discord's 25-result limit."""
+    current = current.lower().strip()
+    matches = [
+        team_name for team_name in MATCHTIME_TEAM_ROLE_IDS
+        if not current or current in team_name.lower()
+    ]
+    return [
+        app_commands.Choice(name=team_name, value=team_name)
+        for team_name in matches[:25]
+    ]
+
+
 class MatchTimeButtons(discord.ui.View):
-    def __init__(self, requester_id, target_captain_id, requester_team_role_id, target_team_role_id, match_time, captain_id, channel):
+    def __init__(
+        self,
+        requester_id,
+        target_captain_id,
+        requester_team_role_id,
+        target_team_role_id,
+        requester_team_name,
+        target_team_name,
+        match_time,
+        stadium_channel_id,
+        channel,
+    ):
         super().__init__(timeout=172800)  # 2 days in seconds
         self.requester_id = requester_id
         self.target_captain_id = target_captain_id
         self.requester_team_role_id = requester_team_role_id
         self.target_team_role_id = target_team_role_id
+        self.requester_team_name = requester_team_name
+        self.target_team_name = target_team_name
         self.match_time = match_time
-        self.captain_id = captain_id
+        self.stadium_channel_id = stadium_channel_id
         self.channel = channel
 
     @discord.ui.button(label="Accept Time", style=discord.ButtonStyle.green, custom_id="accept_time")
@@ -4837,9 +4931,20 @@ class MatchTimeButtons(discord.ui.View):
         if self.target_team_role_id:
             ping_text += f"<@&{self.target_team_role_id}> "
 
+        stadium_channel = self.channel.guild.get_channel(self.stadium_channel_id)
+        stadium_name = (
+            stadium_channel.name if stadium_channel else "the selected stadium channel"
+        )
+        stadium_mention = (
+            stadium_channel.mention if stadium_channel else f"<#{self.stadium_channel_id}>"
+        )
+
         # Send ping message first (separate from embed) as regular message
         await self.channel.send(
-            content=f"{ping_text}**VS** at **{self.match_time}**"
+            content=(
+                f"{ping_text}**VS** at **{self.match_time}** in "
+                f"{stadium_mention}"
+            )
         )
 
         # Then send the embed as regular message
@@ -4853,10 +4958,50 @@ class MatchTimeButtons(discord.ui.View):
             value=f"**{self.match_time}**",
             inline=False
         )
+        announce_embed.add_field(
+            name="🏟️ Match Channel",
+            value=f"{stadium_mention} (`{self.stadium_channel_id}`)",
+            inline=False
+        )
 
         announce_embed.set_footer(text="Good luck to both teams!")
 
         await self.channel.send(embed=announce_embed)
+
+        # DM every non-bot member carrying either team's role. De-duplicate
+        # members who happen to have both roles.
+        team_members = {
+            member.id: member
+            for member in self.channel.guild.members
+            if not member.bot and (
+                any(role.id == self.requester_team_role_id for role in member.roles)
+                or any(role.id == self.target_team_role_id for role in member.roles)
+            )
+        }
+        dm_message = (
+            "🏏 **Match Scheduled!**\n\n"
+            f"**{self.requester_team_name}** vs **{self.target_team_name}**\n"
+            f"🕐 Time: **{self.match_time}**\n"
+            f"🏟️ Channel: **#{stadium_name}**\n"
+            f"Channel ID: `{self.stadium_channel_id}`\n"
+            f"Open the match channel: {stadium_mention}\n\n"
+            "Good luck!"
+        )
+        dm_sent = 0
+        dm_failed = 0
+        for member in team_members.values():
+            try:
+                await member.send(dm_message)
+                dm_sent += 1
+            except (discord.Forbidden, discord.HTTPException):
+                dm_failed += 1
+            except Exception:
+                dm_failed += 1
+
+        await self.channel.send(
+            f"📨 Match DMs sent to **{dm_sent}** team member(s)"
+            + (f"; **{dm_failed}** could not be reached." if dm_failed else ".")
+        )
 
     @discord.ui.button(label="Cancel Request", style=discord.ButtonStyle.red, custom_id="cancel_request")
     async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -4880,27 +5025,9 @@ class MatchTimeButtons(discord.ui.View):
 @bot.tree.command(name="matchtime", description="Schedule a match time with another team")
 @app_commands.describe(
     opponent="Select the opponent team",
-    time="Select the match time"
+    time="Select the match time",
+    stadium="Select the stadium channel"
 )
-@app_commands.choices(opponent=[
-    app_commands.Choice(name="India", value="1460376137594044567"),
-    app_commands.Choice(name="Pakistan", value="1460376138755866644"),
-    app_commands.Choice(name="Australia", value="1460376139611640025"),
-    app_commands.Choice(name="England", value="1460376141314654424"),
-    app_commands.Choice(name="New Zealand", value="1460376142342000762"),
-    app_commands.Choice(name="South Africa", value="1460376143633846527"),
-    app_commands.Choice(name="West Indies", value="1460376148751028408"),
-    app_commands.Choice(name="Sri Lanka", value="1460376147715166282"),
-    app_commands.Choice(name="Bangladesh", value="1460376144862908523"),
-    app_commands.Choice(name="Afghanistan", value="1460376146163273739"),
-    app_commands.Choice(name="Netherlands", value="1460376154480312370"),
-    app_commands.Choice(name="Scotland", value="1460376151795961897"),
-    app_commands.Choice(name="Ireland", value="1460376149908525191"),
-    app_commands.Choice(name="Zimbabwe", value="1460376157668245545"),
-    app_commands.Choice(name="UAE", value="1460376158985130114"),
-    app_commands.Choice(name="Canada", value="1460376154958725152"),
-    app_commands.Choice(name="USA", value="1460376156250570824")
-])
 @app_commands.choices(time=[
     app_commands.Choice(name="7:00 PM IST", value="7:00PM IST"),
     app_commands.Choice(name="7:15 PM IST", value="7:15PM IST"),
@@ -4914,38 +5041,27 @@ class MatchTimeButtons(discord.ui.View):
     app_commands.Choice(name="9:15 PM IST", value="9:15PM IST"),
     app_commands.Choice(name="9:30 PM IST", value="9:30PM IST")
 ])
-async def matchtime(interaction: discord.Interaction, opponent: app_commands.Choice[str], time: app_commands.Choice[str]):
+@app_commands.choices(stadium=[
+    app_commands.Choice(name=stadium_name, value=str(channel_id))
+    for channel_id, stadium_name in MATCHTIME_STADIUMS.items()
+])
+@app_commands.autocomplete(opponent=matchtime_opponent_autocomplete)
+async def matchtime(
+    interaction: discord.Interaction,
+    opponent: str,
+    time: app_commands.Choice[str],
+    stadium: app_commands.Choice[str],
+):
     # Check if user has the required role
     required_role = interaction.guild.get_role(1463220065657688285)
     if required_role not in interaction.user.roles:
         await interaction.response.send_message("❌ You don't have permission to use this command!", ephemeral=True)
         return
 
-    # Get user's team role
-    role_ids = {
-        "India": 1460376137594044567,
-        "Pakistan": 1460376138755866644,
-        "Australia": 1460376139611640025,
-        "England": 1460376141314654424,
-        "New Zealand": 1460376142342000762,
-        "South Africa": 1460376143633846527,
-        "West Indies": 1460376148751028408,
-        "Sri Lanka": 1460376147715166282,
-        "Bangladesh": 1460376144862908523,
-        "Afghanistan": 1460376146163273739,
-        "Netherlands": 1460376154480312370,
-        "Scotland": 1460376151795961897,
-        "Ireland": 1460376149908525191,
-        "Zimbabwe": 1460376157668245545,
-        "UAE": 1460376158985130114,
-        "Canada": 1460376154958725152,
-        "USA": 1460376156250570824
-    }
-
     # Find requester's team
     requester_team_role = None
     requester_team_name = None
-    for team_name, role_id in role_ids.items():
+    for team_name, role_id in MATCHTIME_TEAM_ROLE_IDS.items():
         role = interaction.guild.get_role(role_id)
         if role in interaction.user.roles:
             requester_team_role = role
@@ -4957,7 +5073,13 @@ async def matchtime(interaction: discord.Interaction, opponent: app_commands.Cho
         return
 
     # Get opponent team role
-    opponent_role = interaction.guild.get_role(int(opponent.value))
+    opponent_team_name = opponent
+    opponent_role_id = MATCHTIME_TEAM_ROLE_IDS.get(opponent_team_name)
+    opponent_role = (
+        interaction.guild.get_role(opponent_role_id)
+        if opponent_role_id
+        else None
+    )
     if not opponent_role:
         await interaction.response.send_message("❌ Opponent team role not found!", ephemeral=True)
         return
@@ -4970,19 +5092,28 @@ async def matchtime(interaction: discord.Interaction, opponent: app_commands.Cho
     # Get opponent team captain
     conn = sqlite3.connect('players.db')
     c = conn.cursor()
-    c.execute("SELECT user_id, username FROM team_captains WHERE team_name = ?", (opponent.name,))
+    c.execute("SELECT user_id, username FROM team_captains WHERE team_name = ?", (opponent_team_name,))
     captain_result = c.fetchone()
     conn.close()
 
     if not captain_result:
-        await interaction.response.send_message(f"❌ {opponent.name} doesn't have a captain set yet!", ephemeral=True)
+        await interaction.response.send_message(f"❌ {opponent_team_name} doesn't have a captain set yet!", ephemeral=True)
         return
 
     captain_id, captain_username = captain_result
     captain = interaction.guild.get_member(captain_id)
 
     if not captain:
-        await interaction.response.send_message(f"❌ Captain of {opponent.name} is not in the server!", ephemeral=True)
+        await interaction.response.send_message(f"❌ Captain of {opponent_team_name} is not in the server!", ephemeral=True)
+        return
+
+    stadium_channel_id = int(stadium.value)
+    stadium_channel = interaction.guild.get_channel(stadium_channel_id)
+    if not stadium_channel:
+        await interaction.response.send_message(
+            "❌ The selected stadium channel was not found in this server!",
+            ephemeral=True,
+        )
         return
 
     # Build ping text for captain
@@ -5018,8 +5149,10 @@ async def matchtime(interaction: discord.Interaction, opponent: app_commands.Cho
         target_captain_id=captain_id,
         requester_team_role_id=requester_team_role.id,
         target_team_role_id=opponent_role.id,
+        requester_team_name=requester_team_name,
+        target_team_name=opponent_team_name,
         match_time=time.value,
-        captain_id=captain_id,
+        stadium_channel_id=stadium_channel_id,
         channel=interaction.channel
     )
 
