@@ -137,11 +137,18 @@ async def on_ready():
     await bot.load_extension('series')
     await bot.load_extension('playerlife')
     await bot.load_extension('miniplayergame')
-    # The command definitions are registered on the global tree. Copy them
-    # into the allowed guild before syncing so Discord immediately receives
-    # the current signatures (especially after slash-command parameters or
-    # choices change).
+    # Keep this bot's commands guild-scoped. Remove the old global
+    # /matchtime registration so Discord cannot show both a global and a
+    # guild copy of that command.
+    matchtime_command = bot.tree.remove_command("matchtime")
+    bot.tree.clear_commands(guild=ALLOWED_GUILD_OBJ)
     bot.tree.copy_global_to(guild=ALLOWED_GUILD_OBJ)
+    if matchtime_command:
+        bot.tree.add_command(matchtime_command, guild=ALLOWED_GUILD_OBJ)
+
+    # Sync the global tree after removing the stale global command, then sync
+    # the complete current command set to the allowed guild.
+    await bot.tree.sync()
     synced_commands = await bot.tree.sync(guild=ALLOWED_GUILD_OBJ)
     print(f"✅ Synced {len(synced_commands)} guild slash commands.")
     await bot.change_presence(activity=discord.Game(name="ODI WC26"))
@@ -4821,69 +4828,45 @@ MATCHTIME_TEAM_ROLE_IDS = {
     "Denmark": 1513238490723385466,
 }
 
-# Tournament stadium channels, kept in the same order as the tournament
-# selector so /matchtime sends members to the actual match channel.
-MATCHTIME_STADIUMS = {
-    1511817436792361080: "Perth Stadium",
-    1483896802603172013: "Adelaide Oval",
-    1511820266433544344: "McLean Park",
-    1511820228013592626: "Basin Reserve",
-    1511817976817389821: "Hagley Oval",
-    1511820174922350812: "Eden Park",
-    1483767491132915793: "Melbourne Cricket Ground",
-    1534819463029850174: "Sydney Cricket Ground",
-    1534819524380196864: "The Gabba",
-    1534819620828086404: "Bellerive Oval",
-    1534819692374523964: "Manuka Oval",
-    1534819853775667311: "Brisbane Cricket Ground",
-    1534820064946028644: "Great Barrier Reef",
-    1534820172580392991: "Cazalys Stadium",
-    1534820357331095653: "Bay Oval",
-    1534820441552719942: "Seddon Park",
-    1534820594317656094: "McLean Park",
-    1534820753575514172: "University Oval",
-    1534820885645627412: "Saxton Oval",
-    1534821113337741322: "Marrara Stadium",
-    1534821195655155793: "Carrara Oval",
-    1534821412685090816: "Docklands Stadium",
-    1534821626409910353: "Newcastle International",
-    1534821730412003348: "Penrith Stadium",
-}
-
 MATCHTIME_PRIMARY_TEAM_COUNT = 24
-MATCHTIME_OTHER_TEAMS_LABEL = "OTHER Teams"
 
 
 async def matchtime_opponent_autocomplete(
     interaction: discord.Interaction,
     current: str,
 ) -> list[app_commands.Choice[str]]:
-    """Show 24 teams plus an option that opens the remaining-team menu."""
+    """Show only the primary tournament teams."""
     current = current.lower().strip()
     primary_teams = list(MATCHTIME_TEAM_ROLE_IDS)[:MATCHTIME_PRIMARY_TEAM_COUNT]
 
-    if current:
-        matches = [
-            team_name for team_name in primary_teams
-            if current in team_name.lower()
-        ]
-        # Allow the grouped option to be found by typing "other".
-        if "other" in current:
-            matches.append(MATCHTIME_OTHER_TEAMS_LABEL)
-        return [
-            app_commands.Choice(name=team_name, value=team_name)
-            for team_name in matches[:25]
-        ]
-
+    matches = [
+        team_name for team_name in primary_teams
+        if not current or current in team_name.lower()
+    ]
     return [
-        *[
-            app_commands.Choice(name=team_name, value=team_name)
-            for team_name in primary_teams
-        ],
-        app_commands.Choice(
-            name=MATCHTIME_OTHER_TEAMS_LABEL,
-            value=MATCHTIME_OTHER_TEAMS_LABEL,
-        ),
+        app_commands.Choice(name=team_name, value=team_name)
+        for team_name in matches[:25]
+    ]
+
+
+async def matchtime_other_team_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> list[app_commands.Choice[str]]:
+    """Show the optional list of teams outside the primary 24."""
+    current = current.lower().strip()
+    primary_teams = set(list(MATCHTIME_TEAM_ROLE_IDS)[:MATCHTIME_PRIMARY_TEAM_COUNT])
+    other_teams = [
+        team_name for team_name in MATCHTIME_TEAM_ROLE_IDS
+        if team_name not in primary_teams
+    ]
+    matches = [
+        team_name for team_name in other_teams
+        if not current or current in team_name.lower()
+    ]
+    return [
+        app_commands.Choice(name=team_name, value=team_name)
+        for team_name in matches[:25]
     ]
 
 
@@ -4959,7 +4942,7 @@ class MatchTimeButtons(discord.ui.View):
             inline=False
         )
         announce_embed.add_field(
-            name="🏟️ Match Channel",
+        name="📍 Match Channel",
             value=f"{stadium_mention} (`{self.stadium_channel_id}`)",
             inline=False
         )
@@ -5015,78 +4998,6 @@ class MatchTimeButtons(discord.ui.View):
         await interaction.response.edit_message(embed=cancel_embed, view=self)
 
 
-class MatchTimeOtherTeamsSelect(discord.ui.Select):
-    def __init__(
-        self,
-        owner_id: int,
-        requester_team_role_id: int,
-        requester_team_name: str,
-        match_time: str,
-        stadium_channel_id: int,
-    ):
-        self.owner_id = owner_id
-        self.requester_team_role_id = requester_team_role_id
-        self.requester_team_name = requester_team_name
-        self.match_time = match_time
-        self.stadium_channel_id = stadium_channel_id
-
-        primary_teams = set(list(MATCHTIME_TEAM_ROLE_IDS)[:MATCHTIME_PRIMARY_TEAM_COUNT])
-        other_teams = [
-            team_name for team_name in MATCHTIME_TEAM_ROLE_IDS
-            if team_name not in primary_teams
-        ]
-        options = [
-            discord.SelectOption(
-                label=team_name,
-                value=team_name,
-            )
-            for team_name in other_teams
-        ]
-        super().__init__(
-            placeholder="Choose an other team…",
-            options=options,
-            min_values=1,
-            max_values=1,
-        )
-
-    async def callback(self, interaction: discord.Interaction):
-        if interaction.user.id != self.owner_id:
-            return await interaction.response.send_message(
-                "❌ This team menu belongs to the person who used /matchtime.",
-                ephemeral=True,
-            )
-
-        await _create_matchtime_request(
-            interaction=interaction,
-            requester_team_role_id=self.requester_team_role_id,
-            requester_team_name=self.requester_team_name,
-            opponent_team_name=self.values[0],
-            match_time=self.match_time,
-            stadium_channel_id=self.stadium_channel_id,
-        )
-
-
-class MatchTimeOtherTeamsView(discord.ui.View):
-    def __init__(
-        self,
-        owner_id: int,
-        requester_team_role_id: int,
-        requester_team_name: str,
-        match_time: str,
-        stadium_channel_id: int,
-    ):
-        super().__init__(timeout=180)
-        self.add_item(
-            MatchTimeOtherTeamsSelect(
-                owner_id=owner_id,
-                requester_team_role_id=requester_team_role_id,
-                requester_team_name=requester_team_name,
-                match_time=match_time,
-                stadium_channel_id=stadium_channel_id,
-            )
-        )
-
-
 async def _create_matchtime_request(
     interaction: discord.Interaction,
     requester_team_role_id: int,
@@ -5095,7 +5006,7 @@ async def _create_matchtime_request(
     match_time: str,
     stadium_channel_id: int,
 ):
-    """Create the captain request shared by the normal and OTHER Teams paths."""
+    """Create the captain request in the channel where /matchtime was used."""
     requester_team_role = interaction.guild.get_role(requester_team_role_id)
     opponent_role_id = MATCHTIME_TEAM_ROLE_IDS.get(opponent_team_name)
     opponent_role = (
@@ -5176,7 +5087,7 @@ async def _create_matchtime_request(
         inline=False,
     )
     request_embed.add_field(
-        name="🏟️ Stadium Channel",
+        name="📍 Match Channel",
         value=f"{stadium_channel.mention} (`{stadium_channel.id}`)",
         inline=False,
     )
@@ -5204,9 +5115,9 @@ async def _create_matchtime_request(
 
 @bot.tree.command(name="matchtime", description="Schedule a match time with another team")
 @app_commands.describe(
-    opponent="Select the opponent team",
     time="Select the match time",
-    stadium="Select the stadium channel"
+    opponent="Optional: select one of the main tournament teams",
+    other_team="Optional: select Malaysia, Spain, Germany, Japan, Portugal, or Denmark",
 )
 @app_commands.choices(time=[
     app_commands.Choice(name="7:00 PM IST", value="7:00PM IST"),
@@ -5221,16 +5132,13 @@ async def _create_matchtime_request(
     app_commands.Choice(name="9:15 PM IST", value="9:15PM IST"),
     app_commands.Choice(name="9:30 PM IST", value="9:30PM IST")
 ])
-@app_commands.choices(stadium=[
-    app_commands.Choice(name=stadium_name, value=str(channel_id))
-    for channel_id, stadium_name in MATCHTIME_STADIUMS.items()
-])
 @app_commands.autocomplete(opponent=matchtime_opponent_autocomplete)
+@app_commands.autocomplete(other_team=matchtime_other_team_autocomplete)
 async def matchtime(
     interaction: discord.Interaction,
-    opponent: str,
     time: app_commands.Choice[str],
-    stadium: app_commands.Choice[str],
+    opponent: Optional[str] = None,
+    other_team: Optional[str] = None,
 ):
     # Check if user has the required role
     required_role = interaction.guild.get_role(1463220065657688285)
@@ -5252,34 +5160,28 @@ async def matchtime(
         await interaction.response.send_message("❌ You don't have a team role!", ephemeral=True)
         return
 
-    stadium_channel_id = int(stadium.value)
-    stadium_channel = interaction.guild.get_channel(stadium_channel_id)
-    if not stadium_channel:
+    if opponent and other_team:
         await interaction.response.send_message(
-            "❌ The selected stadium channel was not found in this server!",
+            "❌ Choose either a main tournament team or an other team, not both.",
             ephemeral=True,
         )
         return
 
-    if opponent == MATCHTIME_OTHER_TEAMS_LABEL:
+    selected_opponent = other_team or opponent
+    if not selected_opponent:
         await interaction.response.send_message(
-            "🌍 **Choose an other team**",
-            view=MatchTimeOtherTeamsView(
-                owner_id=interaction.user.id,
-                requester_team_role_id=requester_team_role.id,
-                requester_team_name=requester_team_name,
-                match_time=time.value,
-                stadium_channel_id=stadium_channel_id,
-            ),
+            "❌ Select an opponent from either **opponent** or **other_team**.",
             ephemeral=True,
         )
         return
 
+    # The match channel is always where the captain used /matchtime.
+    stadium_channel_id = interaction.channel.id
     await _create_matchtime_request(
         interaction=interaction,
         requester_team_role_id=requester_team_role.id,
         requester_team_name=requester_team_name,
-        opponent_team_name=opponent,
+        opponent_team_name=selected_opponent,
         match_time=time.value,
         stadium_channel_id=stadium_channel_id,
     )
