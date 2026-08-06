@@ -1,0 +1,1 @@
+- [Discord command sync](discord-command-sync.md) — assign interaction checks directly and copy the current global tree before guild sync.

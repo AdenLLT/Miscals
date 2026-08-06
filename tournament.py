@@ -1252,6 +1252,25 @@ def get_team_color_rgb(team_name):
     return colors.get(team_name, (128, 128, 128))
 
 
+def _safe_rgb(color, fallback=(128, 128, 128)):
+    """Return a Pillow-safe three-channel RGB tuple."""
+    try:
+        if isinstance(color, int):
+            values = (
+                (color >> 16) & 0xFF,
+                (color >> 8) & 0xFF,
+                color & 0xFF,
+            )
+        else:
+            values = tuple(color)
+            if len(values) < 3:
+                raise ValueError("RGB color must have at least three channels")
+            values = values[:3]
+        return tuple(max(0, min(255, int(value))) for value in values)
+    except (TypeError, ValueError, OverflowError):
+        return fallback
+
+
 def get_team_color(team_name):
     """Get team color (imported from main.py logic)"""
     colors = {
@@ -1407,8 +1426,8 @@ async def create_vs_image(team1, team2, stadium_name):
         draw = ImageDraw.Draw(overlay, 'RGBA')
 
         # Get team colors
-        color1 = get_team_color_rgb(team1)
-        color2 = get_team_color_rgb(team2)
+        color1 = _safe_rgb(get_team_color_rgb(team1))
+        color2 = _safe_rgb(get_team_color_rgb(team2))
 
         # Create smooth fading gradients with HIGHER alpha (150 instead of 80)
         # Left side gradient (team1 color)
@@ -1417,7 +1436,7 @@ async def create_vs_image(team1, team2, stadium_name):
             alpha = int(150 * (1 - progress))  # Increased from 80
 
             for y in range(height):
-                draw.point((x, y), fill=color1 + (alpha, ))
+                draw.point((x, y), fill=(*color1, max(0, min(255, alpha))))
 
         # Right side gradient (team2 color)
         for x in range(width // 2, width):
@@ -1425,7 +1444,7 @@ async def create_vs_image(team1, team2, stadium_name):
             alpha = int(150 * progress)  # Increased from 80
 
             for y in range(height):
-                draw.point((x, y), fill=color2 + (alpha, ))
+                draw.point((x, y), fill=(*color2, max(0, min(255, alpha))))
 
         # Composite overlay onto background
         img = Image.alpha_composite(bg, overlay)

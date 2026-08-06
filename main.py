@@ -112,9 +112,14 @@ def is_staff_or_admin_slash():
 async def only_allowed_guild(ctx):
     return ctx.guild is not None and ctx.guild.id == ALLOWED_GUILD_ID
 
-@bot.tree.interaction_check
 async def only_allowed_guild_slash(interaction: discord.Interaction) -> bool:
     return interaction.guild_id == ALLOWED_GUILD_ID
+
+
+# CommandTree.interaction_check is an overridable method, not a decorator.
+# Assigning the coroutine directly avoids creating an un-awaited coroutine
+# during module initialization and ensures every slash command is checked.
+bot.tree.interaction_check = only_allowed_guild_slash
 
 @bot.event
 async def on_ready():
@@ -132,7 +137,13 @@ async def on_ready():
     await bot.load_extension('series')
     await bot.load_extension('playerlife')
     await bot.load_extension('miniplayergame')
-    await bot.tree.sync(guild=ALLOWED_GUILD_OBJ)
+    # The command definitions are registered on the global tree. Copy them
+    # into the allowed guild before syncing so Discord immediately receives
+    # the current signatures (especially after slash-command parameters or
+    # choices change).
+    bot.tree.copy_global_to(guild=ALLOWED_GUILD_OBJ)
+    synced_commands = await bot.tree.sync(guild=ALLOWED_GUILD_OBJ)
+    print(f"✅ Synced {len(synced_commands)} guild slash commands.")
     await bot.change_presence(activity=discord.Game(name="ODI WC26"))
     print(f'{bot.user} has connected to Discord!')
     print(f'Bot is ready! Prefix: .')
