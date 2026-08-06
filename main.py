@@ -4710,37 +4710,6 @@ async def roleallunclaimed_command(ctx):
 
     await ctx.send(embed=embed)
 
-@bot.command(name="rules", help="Display the game rules")
-async def rules_command(ctx):
-    """Display the game rules with well.png image"""
-
-    embed = discord.Embed(
-        title="📋 Rules",
-        color=0x0066CC
-    )
-
-    # Format the rules nicely
-    rules_text = (
-        "`MAXIMUM BOWLING OVERS:`\n\n"
-        "<:ball:1451974295793172547> **BOWLERS:** __4__ Full Overs\n"
-        "<:allrounder:1451978476033671279> **ALL ROUNDERS:** __2__ Overs\n"
-        "<:bat:1451967322146213980> **BATSMEN** / **WICKETKEEPERS:** __1__ Over\n\n"
-        "*(Only ONE batsman / wicketkeeper allowed to bowl 2 overs)*\n\n"
-        "**BATTING INNINGS ORDER:** `WICKETKEEPERS OR BATSMEN --> ALL-ROUNDERS --> BOWLERS`"
-    )
-
-    embed.description = rules_text
-
-    # Set the image
-    try:
-        file = discord.File("well.png", filename="well.png")
-        embed.set_image(url="attachment://well.png")
-        await ctx.send(embed=embed, file=file)
-    except FileNotFoundError:
-        await ctx.send("❌ well.png file not found!")
-    except Exception as e:
-        await ctx.send(f"❌ Error loading image: {e}")
-
 @bot.command(name="replyextract")
 async def reply_extract(ctx):
     if ctx.message.reference is not None:
