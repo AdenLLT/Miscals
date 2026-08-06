@@ -4987,21 +4987,13 @@ class MatchTimeButtons(discord.ui.View):
             f"Open the match channel: {stadium_mention}\n\n"
             "Good luck!"
         )
-        dm_sent = 0
-        dm_failed = 0
         for member in team_members.values():
             try:
                 await member.send(dm_message)
-                dm_sent += 1
             except (discord.Forbidden, discord.HTTPException):
-                dm_failed += 1
+                pass
             except Exception:
-                dm_failed += 1
-
-        await self.channel.send(
-            f"📨 Match DMs sent to **{dm_sent}** team member(s)"
-            + (f"; **{dm_failed}** could not be reached." if dm_failed else ".")
-        )
+                pass
 
     @discord.ui.button(label="Cancel Request", style=discord.ButtonStyle.red, custom_id="cancel_request")
     async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
