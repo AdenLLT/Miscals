@@ -7184,6 +7184,58 @@ async def categorychannels_command(ctx):
     )
 
 
+@bot.command(
+    name="giverolemention",
+    help="[ADMIN] Allow a role to use @everyone/@here in every server channel",
+)
+@commands.has_permissions(administrator=True)
+async def give_role_mention_command(ctx, role_id: str):
+    """Allow the specified role to mention everyone in every channel."""
+    if ctx.guild is None:
+        return await ctx.send("❌ This command can only be used in a server.")
+
+    try:
+        role = ctx.guild.get_role(int(role_id.strip()))
+    except (TypeError, ValueError):
+        role = None
+
+    if role is None:
+        return await ctx.send(
+            "❌ Role not found. Use the role's numeric ID, for example: "
+            "`-giverolemention 123456789012345678`"
+        )
+
+    updated = 0
+    failed = []
+    for channel in ctx.guild.channels:
+        try:
+            # Start with the existing overwrite so every unrelated permission
+            # remains unchanged; only enable Mention Everyone.
+            overwrite = channel.overwrites_for(role)
+            overwrite.mention_everyone = True
+            await channel.set_permissions(
+                role,
+                overwrite=overwrite,
+                reason=f"{ctx.author} granted Mention Everyone via -giverolemention",
+            )
+            updated += 1
+        except (discord.Forbidden, discord.HTTPException) as error:
+            failed.append(f"{channel.name} ({type(error).__name__})")
+
+    result = (
+        f"✅ **{role.name}** can now use `@everyone` and `@here` in "
+        f"**{updated}** channel(s)."
+    )
+    if failed:
+        result += (
+            f"\n⚠️ Could not update **{len(failed)}** channel(s): "
+            + ", ".join(failed[:10])
+        )
+        if len(failed) > 10:
+            result += f" and {len(failed) - 10} more."
+    await ctx.send(result)
+
+
 # ── Commands ──────────────────────────────────────────────────
 @bot.command(name="convertembed")
 async def convertembed_command(ctx):

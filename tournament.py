@@ -1507,7 +1507,7 @@ async def create_vs_image(team1, team2, stadium_name):
 
         # Place the label much farther left than the original edge-aligned
         # position, while keeping it near the bottom.
-        text_x = width - text_width - 360
+        text_x = width - text_width - 280
         text_y = height - text_height - 105
 
         # Draw text with outline
