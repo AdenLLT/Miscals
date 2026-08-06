@@ -3046,7 +3046,7 @@ class Tournament(commands.Cog):
             teams = c.fetchall()
             conn.close()
             title_text = "Points Table"
-            footer_text = "TOP 8 QUALIFY"
+            footer_text = "TOP 2 TEAMS DIRECTLY TO SEMIS"
 
         if not teams:
             msg = (f"❌ No teams found in Group {group}! "
