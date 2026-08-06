@@ -1484,7 +1484,9 @@ async def create_vs_image(team1, team2, stadium_name):
         text_width = bbox[2] - bbox[0]
         text_height = bbox[3] - bbox[1]
 
-        text_x = (width - text_width) // 2
+        # Keep the stadium label on the right side instead of centered,
+        # with enough margin to keep the outline inside the image.
+        text_x = width - text_width - 80
         text_y = height - text_height - 120
 
         # Draw text with outline
