@@ -6779,6 +6779,156 @@ class MyEmbedsView(discord.ui.View):
         self.add_item(MyEmbedsSelect(owner_id, rows))
 
 
+# ── -categorychannels selector ────────────────────────────────
+class CategoryChannelsSelect(discord.ui.Select):
+    def __init__(self, owner_id: int, categories, page: int, page_size: int = 25):
+        self.owner_id = owner_id
+        self.categories = categories
+        self.page = page
+        self.page_size = page_size
+
+        start = page * page_size
+        page_categories = categories[start:start + page_size]
+        options = [
+            discord.SelectOption(
+                label=category.name[:100],
+                description=f"{len(category.channels)} channel(s) • ID {category.id}"[:100],
+                value=str(category.id),
+            )
+            for category in page_categories
+        ]
+
+        super().__init__(
+            placeholder="📁 Choose a category…",
+            options=options,
+            min_values=1,
+            max_values=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.owner_id:
+            return await interaction.response.send_message(
+                "❌ This category menu belongs to the administrator who used the command.",
+                ephemeral=True,
+            )
+
+        category_id = int(self.values[0])
+        category = interaction.guild.get_channel(category_id)
+        if not isinstance(category, discord.CategoryChannel):
+            return await interaction.response.edit_message(
+                content="❌ That category no longer exists.",
+                view=None,
+            )
+
+        channels = list(category.channels)
+        header = (
+            f"📁 **{category.name}**\n"
+            f"Category ID: `{category.id}`\n"
+            f"Channels: **{len(channels)}**\n\n"
+        )
+
+        if not channels:
+            return await interaction.response.edit_message(
+                content=header + "No channels are in this category.",
+                view=None,
+            )
+
+        lines = [
+            f"• `{channel.name}` — `{channel.id}` "
+            f"({str(channel.type).replace('ChannelType.', '').replace('_', ' ').title()})"
+            for channel in channels
+        ]
+
+        # Discord message content is limited to 2,000 characters. Keep each
+        # follow-up within the limit while preserving the complete channel list.
+        chunks = []
+        current = header
+        for line in lines:
+            if len(current) + len(line) + 1 > 1900:
+                chunks.append(current)
+                current = ""
+            current += line + "\n"
+        if current:
+            chunks.append(current)
+
+        await interaction.response.edit_message(content=chunks[0], view=None)
+        for chunk in chunks[1:]:
+            await interaction.followup.send(chunk, ephemeral=True)
+
+
+class CategoryChannelsView(discord.ui.View):
+    def __init__(self, owner_id: int, categories, page: int = 0):
+        super().__init__(timeout=180)
+        self.owner_id = owner_id
+        self.categories = categories
+        self.page = page
+        self.page_size = 25
+        self.max_page = max(0, (len(categories) - 1) // self.page_size)
+        self.add_item(CategoryChannelsSelect(owner_id, categories, page, self.page_size))
+
+        previous = discord.ui.Button(
+            label="Previous",
+            emoji="◀️",
+            style=discord.ButtonStyle.secondary,
+            disabled=page == 0,
+        )
+        next_button = discord.ui.Button(
+            label="Next",
+            emoji="▶️",
+            style=discord.ButtonStyle.secondary,
+            disabled=page >= self.max_page,
+        )
+        previous.callback = self.previous_callback
+        next_button.callback = self.next_callback
+        self.add_item(previous)
+        self.add_item(next_button)
+
+    async def _change_page(self, interaction: discord.Interaction, page: int):
+        if interaction.user.id != self.owner_id:
+            return await interaction.response.send_message(
+                "❌ This category menu belongs to the administrator who used the command.",
+                ephemeral=True,
+            )
+
+        view = CategoryChannelsView(self.owner_id, self.categories, page)
+        total_pages = self.max_page + 1
+        await interaction.response.edit_message(
+            content=(
+                "📁 **Choose a category**\n"
+                f"Page **{page + 1}/{total_pages}** "
+                f"({len(self.categories)} categories available)"
+            ),
+            view=view,
+        )
+
+    async def previous_callback(self, interaction: discord.Interaction):
+        await self._change_page(interaction, max(0, self.page - 1))
+
+    async def next_callback(self, interaction: discord.Interaction):
+        await self._change_page(interaction, min(self.max_page, self.page + 1))
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+
+
+@bot.command(name="categorychannels", help="[ADMIN] Choose a category and list all channels in it")
+@commands.has_permissions(administrator=True)
+async def categorychannels_command(ctx):
+    """Show a category selector, then list every channel in the selected category."""
+    categories = sorted(ctx.guild.categories, key=lambda category: category.position)
+    if not categories:
+        return await ctx.send("❌ This server has no categories.")
+
+    view = CategoryChannelsView(ctx.author.id, categories)
+    total_pages = view.max_page + 1
+    await ctx.send(
+        "📁 **Choose a category**\n"
+        f"Page **1/{total_pages}** ({len(categories)} categories available)",
+        view=view,
+    )
+
+
 # ── Commands ──────────────────────────────────────────────────
 @bot.command(name="convertembed")
 async def convertembed_command(ctx):
