@@ -2469,6 +2469,62 @@ class Tournament(commands.Cog):
         self.bot = bot
         init_tournament_db()
 
+    @commands.command(
+        name="checkfixtureimage",
+        help="[ADMIN] Preview a tournament fixture image with random teams and stadium",
+    )
+    @commands.has_permissions(administrator=True)
+    async def checkfixtureimage(self, ctx):
+        """Generate a fixture-image preview without creating a tournament fixture."""
+        try:
+            with open("players.json", "r", encoding="utf-8") as f:
+                teams = [
+                    team.get("team")
+                    for team in json.load(f)
+                    if team.get("team") and get_team_flag_url(team.get("team"))
+                ]
+        except (FileNotFoundError, json.JSONDecodeError):
+            teams = []
+
+        # Keep the preview grounded in the same teams supported by the
+        # tournament flag renderer, with a safe fallback if player data changes.
+        if len(teams) < 2:
+            teams = [
+                "India",
+                "Pakistan",
+                "Australia",
+                "England",
+                "New Zealand",
+                "South Africa",
+            ]
+
+        team1, team2 = random.sample(teams, 2)
+        stadium_channel_id, stadium_name = random.choice(
+            list(MATCH_CHANNELS.items())
+        )
+
+        await ctx.send(
+            f"🖼️ Generating fixture image preview: "
+            f"**{team1} vs {team2}** at **{stadium_name}**…"
+        )
+
+        vs_image = await create_vs_image(team1, team2, stadium_name)
+        if not vs_image:
+            return await ctx.send("❌ Could not generate the fixture image preview.")
+
+        file = discord.File(vs_image, filename="fixture_image_preview.png")
+        embed = discord.Embed(
+            title="Fixture Image Preview",
+            description=(
+                f"**{team1}** vs **{team2}**\n"
+                f"🏟️ **{stadium_name}**\n"
+                f"Channel ID: `{stadium_channel_id}`"
+            ),
+            color=0x00FF00,
+        )
+        embed.set_image(url="attachment://fixture_image_preview.png")
+        await ctx.send(embed=embed, file=file)
+
     @commands.command(name="createtournament",
                       aliases=["ct"],
                       help="[ADMIN] Create a new tournament")
