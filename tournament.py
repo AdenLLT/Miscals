@@ -1476,7 +1476,9 @@ async def create_vs_image(team1, team2, stadium_name):
         draw_final = ImageDraw.Draw(img, 'RGBA')
 
         try:
-            font = ImageFont.truetype("nor.otf", 80)
+            # Keep the stadium label subtle and well inside the right side of
+            # the image so it does not crowd the edge.
+            font = ImageFont.truetype("nor.otf", 38)
         except:
             font = ImageFont.load_default()
 
@@ -1484,14 +1486,15 @@ async def create_vs_image(team1, team2, stadium_name):
         text_width = bbox[2] - bbox[0]
         text_height = bbox[3] - bbox[1]
 
-        # Keep the stadium label on the right side instead of centered,
-        # with enough margin to keep the outline inside the image.
-        text_x = width - text_width - 80
-        text_y = height - text_height - 120
+        # Place the label much farther left than the original edge-aligned
+        # position, while keeping it near the bottom.
+        text_x = width - text_width - 360
+        text_y = height - text_height - 105
 
         # Draw text with outline
-        for offset_x in [-2, 0, 2]:
-            for offset_y in [-2, 0, 2]:
+        outline_size = 1
+        for offset_x in [-outline_size, 0, outline_size]:
+            for offset_y in [-outline_size, 0, outline_size]:
                 if offset_x != 0 or offset_y != 0:
                     draw_final.text((text_x + offset_x, text_y + offset_y),
                                     stadium_name,
