@@ -1266,12 +1266,76 @@ def parse_wicket_message(message_content):
         print(f"❌ Error parsing wicket message: {e}")
         return None
 
+
+async def send_image_with_retry(channel, image_data, filename, content=None):
+    """Send an image while recovering from transient Discord upload failures.
+
+    A discord.File owns its file-like object and the stream may be partially
+    consumed when a request is interrupted.  Reusing the same File on retry
+    can therefore send an empty/partial upload, so a new stream is created for
+    every attempt.
+    """
+    if image_data is None:
+        return False
+
+    if hasattr(image_data, "getvalue"):
+        image_bytes = image_data.getvalue()
+    else:
+        image_bytes = bytes(image_data)
+
+    max_attempts = 4
+    for attempt in range(max_attempts):
+        try:
+            file = discord.File(io.BytesIO(image_bytes), filename=filename)
+            kwargs = {"file": file}
+            if content is not None:
+                kwargs["content"] = content
+            await channel.send(**kwargs)
+            return True
+        except discord.HTTPException as exc:
+            # 429 and 5xx responses are transient.  Permission and payload
+            # errors are not, so do not delay/retry those.
+            if exc.status != 429 and exc.status < 500:
+                print(f"❌ Discord rejected {filename} upload (HTTP {exc.status})")
+                return False
+
+            retry_after = getattr(exc, "retry_after", None)
+            delay = retry_after if retry_after is not None else 2 ** attempt
+            print(
+                f"⚠️ Discord upload failed for {filename} "
+                f"(HTTP {exc.status}), retrying in {delay:.1f}s"
+            )
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as exc:
+            delay = 2 ** attempt
+            print(
+                f"⚠️ Transient upload failure for {filename}: {exc}; "
+                f"retrying in {delay}s"
+            )
+
+        if attempt < max_attempts - 1:
+            await asyncio.sleep(delay)
+
+    print(f"❌ Failed to send {filename} after {max_attempts} attempts")
+    return False
+
+
 class MatchUpdates(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        # Discord can emit several edits for the same cricket update in quick
+        # succession.  Keep image generation and deduplication atomic so two
+        # edits cannot both pass the checks before either one sends.
+        self._message_processing_lock = asyncio.Lock()
 
     @commands.Cog.listener()
     async def on_message(self, message):
+        if message.author.id != CRICKET_BOT_ID:
+            return
+
+        async with self._message_processing_lock:
+            await self._process_message(message)
+
+    async def _process_message(self, message):
         if message.author.id != CRICKET_BOT_ID:
             return
 
@@ -1313,12 +1377,6 @@ class MatchUpdates(commands.Cog):
                         print(f"⏭️ SKIPPING DUPLICATE NOWSTAT (processed {time_diff:.1f}s ago)")
                         continue
 
-                # Record this nowstat as processed
-                sent_nowstat_message_ids.add(msg_nowstat_key)
-                if len(sent_nowstat_message_ids) > 1000:
-                    sent_nowstat_message_ids.clear()
-                last_nowstats[nowstat_key] = current_time
-
                 # Clean up old time-based entries (older than 60 seconds)
                 old_keys = [k for k, v in last_nowstats.items() if current_time - v > 60]
                 for k in old_keys:
@@ -1341,10 +1399,19 @@ class MatchUpdates(commands.Cog):
 
                 if result and result[0]:
                     image_bytes, plain_text = result
-                    file = discord.File(fp=image_bytes, filename="nowstat.png")
-                    await message.channel.send(content=plain_text, file=file)
-                    print(f"   ✅ Sent nowstat for {player_name}")
-                    nowstat_sent = True
+                    if await send_image_with_retry(
+                        message.channel, image_bytes, "nowstat.png", content=plain_text
+                    ):
+                        # Mark only after Discord accepted the upload.  A
+                        # failed upload must remain eligible for a later edit.
+                        sent_nowstat_message_ids.add(msg_nowstat_key)
+                        if len(sent_nowstat_message_ids) > 1000:
+                            sent_nowstat_message_ids.clear()
+                        last_nowstats[nowstat_key] = time.time()
+                        print(f"   ✅ Sent nowstat for {player_name}")
+                        nowstat_sent = True
+                    else:
+                        print(f"   ❌ Could not send nowstat for {player_name}")
                 else:
                     print(f"   ❌ Failed to create nowstat for {player_name}")
 
@@ -1377,8 +1444,6 @@ class MatchUpdates(commands.Cog):
                 if time_diff < 10:
                     print(f"⏭️ SKIPPING DUPLICATE WICKET (processed {time_diff:.1f}s ago)")
                     return
-
-            last_wickets[wicket_key] = current_time
 
             old_keys = [k for k, v in last_wickets.items() if current_time - v > 60]
             for k in old_keys:
@@ -1460,8 +1525,14 @@ class MatchUpdates(commands.Cog):
                 print("❌ Failed to create wicket image")
                 return
 
-            file = discord.File(fp=wicket_image, filename="wicket.png")
-            await message.channel.send(file=file)
+            if not await send_image_with_retry(
+                message.channel, wicket_image, "wicket.png"
+            ):
+                return
+
+            # As with nowstats, a wicket is deduplicated only after the image
+            # has been successfully delivered.
+            last_wickets[wicket_key] = time.time()
             print(f"✅ SENT WICKET IMAGE\n")
 
             # Update live match state with wicket event for commentary
@@ -1494,12 +1565,6 @@ class MatchUpdates(commands.Cog):
                             print(f"⏭️ SKIPPING DUPLICATE POST-WICKET NOWSTAT (processed {time_diff:.1f}s ago)")
                             continue
 
-                    # Record this nowstat as processed
-                    sent_nowstat_message_ids.add(msg_nowstat_key)
-                    if len(sent_nowstat_message_ids) > 1000:
-                        sent_nowstat_message_ids.clear()
-                    last_nowstats[nowstat_key] = current_time_pw
-
                     conn2 = sqlite3.connect('players.db')
                     c2 = conn2.cursor()
                     c2.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (uid,))
@@ -1511,9 +1576,16 @@ class MatchUpdates(commands.Cog):
                     ns_result = await create_nowstat_image(uid, role, message.guild, self.bot)
                     if ns_result and ns_result[0]:
                         ns_bytes, ns_text = ns_result
-                        ns_file = discord.File(fp=ns_bytes, filename="nowstat.png")
-                        await message.channel.send(content=ns_text, file=ns_file)
-                        print(f"   ✅ Sent post-wicket nowstat for {pr[0]}")
+                        if await send_image_with_retry(
+                            message.channel, ns_bytes, "nowstat.png", content=ns_text
+                        ):
+                            sent_nowstat_message_ids.add(msg_nowstat_key)
+                            if len(sent_nowstat_message_ids) > 1000:
+                                sent_nowstat_message_ids.clear()
+                            last_nowstats[nowstat_key] = time.time()
+                            print(f"   ✅ Sent post-wicket nowstat for {pr[0]}")
+                        else:
+                            print(f"   ❌ Could not send post-wicket nowstat for {pr[0]}")
             return
 
         # THIRD: Check for match status updates in embeds (not wickets)
@@ -1547,8 +1619,6 @@ class MatchUpdates(commands.Cog):
             print("ℹ️ Same timeline, skipping")
             return
 
-        last_timelines[channel_id] = current_timeline
-
         # Update live match state for commentary
         match_data['channel_id'] = channel_id
         tl = match_data.get('timeline', [])
@@ -1566,8 +1636,13 @@ class MatchUpdates(commands.Cog):
             print("❌ Failed to create match image")
             return
 
-        file = discord.File(fp=match_image, filename="match_status.png")
-        await message.channel.send(file=file)
+        if not await send_image_with_retry(
+            message.channel, match_image, "match_status.png"
+        ):
+            return
+
+        # Do not suppress a later edit when this upload failed.
+        last_timelines[channel_id] = current_timeline
         print(f"✅ SENT MATCH UPDATE IMAGE\n")
 
     @commands.Cog.listener()

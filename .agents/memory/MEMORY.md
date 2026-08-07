@@ -1,1 +1,2 @@
 - [Discord command sync](discord-command-sync.md) — assign interaction checks directly and copy the current global tree before guild sync.
+- [Discord image uploads](discord-image-uploads.md) — retry interrupted uploads with a fresh stream and commit deduplication only after delivery succeeds.
