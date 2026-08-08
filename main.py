@@ -751,6 +751,17 @@ def init_db():
                   wickets INTEGER,
                   not_out INTEGER,
                   match_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+
+    # Keep leaderboard scopes separate without changing the existing career
+    # stats table.  Older rows remain unscoped; new rows are tagged by the
+    # command that records them.
+    c.execute("PRAGMA table_info(match_stats)")
+    match_stats_columns = {row[1] for row in c.fetchall()}
+    if 'tournament_id' not in match_stats_columns:
+        c.execute("ALTER TABLE match_stats ADD COLUMN tournament_id INTEGER")
+    if 'series_id' not in match_stats_columns:
+        c.execute("ALTER TABLE match_stats ADD COLUMN series_id INTEGER")
+
     # ADD THIS NEW TABLE FOR CAPTAINS
     c.execute('''CREATE TABLE IF NOT EXISTS team_captains
                  (team_name TEXT PRIMARY KEY, player_name TEXT, user_id INTEGER, username TEXT)''')

@@ -45,6 +45,14 @@ def init_series_db():
                   not_out INTEGER DEFAULT 0,
                   FOREIGN KEY (series_id) REFERENCES series(id))''')
 
+    c.execute("PRAGMA table_info(series_match_stats)")
+    series_stats_columns = {row[1] for row in c.fetchall()}
+    if "include_in_lbi" not in series_stats_columns:
+        c.execute(
+            "ALTER TABLE series_match_stats "
+            "ADD COLUMN include_in_lbi INTEGER DEFAULT 1"
+        )
+
     c.execute('''CREATE TABLE IF NOT EXISTS series_teams
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   series_id INTEGER,
@@ -942,9 +950,11 @@ class Series(commands.Cog):
         for match in matches:
             user_id, runs, balls_faced, runs_conceded, balls_bowled, wickets, not_out = map(int, match)
             c.execute("""INSERT INTO series_match_stats
-                         (series_id, user_id, runs, balls_faced, runs_conceded, balls_bowled, wickets, not_out)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                      (series_id, user_id, runs, balls_faced, runs_conceded, balls_bowled, wickets, not_out))
+                         (series_id, user_id, runs, balls_faced, runs_conceded,
+                          balls_bowled, wickets, not_out, include_in_lbi)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                      (series_id, user_id, runs, balls_faced, runs_conceded,
+                       balls_bowled, wickets, not_out, 0 if skip_lbi else 1))
 
         # 2) Insert into match_stats (overall/international stats) — skipped if nolbi
         if not skip_lbi:
@@ -952,9 +962,23 @@ class Series(commands.Cog):
                 user_id, runs, balls_faced, runs_conceded, balls_bowled, wickets, not_out = map(int, match)
                 user_team = get_user_team(user_id)
                 bat_order = 1 if user_team == bat_first else 2
-                c.execute("""INSERT INTO match_stats (user_id, runs, balls_faced, runs_conceded, balls_bowled, wickets, not_out)
-                     VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                  (user_id, runs, balls_faced, runs_conceded, balls_bowled, wickets, not_out))
+                c.execute(
+                    """INSERT INTO match_stats
+                       (tournament_id, series_id, user_id, runs, balls_faced,
+                        runs_conceded, balls_bowled, wickets, not_out)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        None,
+                        series_id,
+                        user_id,
+                        runs,
+                        balls_faced,
+                        runs_conceded,
+                        balls_bowled,
+                        wickets,
+                        not_out,
+                    ),
+                )
 
         # 3) Update series_teams standings
         c.execute("""UPDATE series_teams 

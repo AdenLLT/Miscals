@@ -619,12 +619,97 @@ def get_user_stats(user_id, mode="career"):
     conn.close()
     return result
 
-def get_leaderboard_data(stat_type, series_id=None):
+def get_leaderboard_data(
+    stat_type,
+    series_id=None,
+    scope="career",
+    tournament_id=None,
+):
+    """Return leaderboard rows for the requested competition scope.
+
+    ``series_id`` keeps the existing series leaderboard behavior.  The
+    tournament scope is deliberately separate from career stats because
+    series matches are also written to ``match_stats`` for career records.
+    """
     conn = sqlite3.connect('players.db')
     c = conn.cursor()
 
-    table = "series_match_stats" if series_id else "match_stats"
-    where_clause = f"WHERE series_id = {series_id}" if series_id else ""
+    if series_id is not None:
+        source_sql = """
+            SELECT user_id, runs, balls_faced, runs_conceded,
+                   balls_bowled, wickets, not_out
+            FROM series_match_stats
+            WHERE series_id = ?
+        """
+        source_params = [series_id]
+    elif scope == "tournament":
+        if tournament_id is None:
+            c.execute(
+                """SELECT id FROM tournaments
+                   WHERE is_active = 1 AND is_archived = 0
+                   ORDER BY id DESC LIMIT 1"""
+            )
+            active_tournament = c.fetchone()
+            tournament_id = active_tournament[0] if active_tournament else None
+
+        if tournament_id is None:
+            conn.close()
+            return []
+
+        source_sql = """
+            SELECT m.user_id, m.runs, m.balls_faced, m.runs_conceded,
+                   m.balls_bowled, m.wickets, m.not_out
+            FROM match_stats AS m
+            WHERE m.tournament_id = ?
+        """
+        source_params = [tournament_id]
+    elif scope == "international":
+        # International stats for this command mean the currently running
+        # tournament plus series rows that were not marked ``nolbi``.
+        c.execute(
+            """SELECT id FROM tournaments
+               WHERE is_active = 1 AND is_archived = 0
+               ORDER BY id DESC LIMIT 1"""
+        )
+        active_tournament = c.fetchone()
+        tournament_source = (
+            """SELECT m.user_id, m.runs, m.balls_faced,
+                      m.runs_conceded, m.balls_bowled,
+                      m.wickets, m.not_out
+               FROM match_stats AS m
+               WHERE m.tournament_id = ?"""
+            if active_tournament else
+            "SELECT user_id, runs, balls_faced, runs_conceded, "
+            "balls_bowled, wickets, not_out FROM match_stats WHERE 0"
+        )
+        source_sql = f"""
+            {tournament_source}
+            UNION ALL
+            SELECT sms.user_id, sms.runs, sms.balls_faced,
+                   sms.runs_conceded, sms.balls_bowled,
+                   sms.wickets, sms.not_out
+            FROM series_match_stats AS sms
+            JOIN series AS s ON s.id = sms.series_id
+            WHERE s.id = (
+                SELECT id
+                FROM series
+                WHERE is_active = 1
+                ORDER BY id DESC
+                LIMIT 1
+            )
+            AND sms.include_in_lbi = 1
+        """
+        source_params = [active_tournament[0]] if active_tournament else []
+    else:
+        source_sql = """
+            SELECT user_id, runs, balls_faced, runs_conceded,
+                   balls_bowled, wickets, not_out
+            FROM match_stats
+        """
+        source_params = []
+
+    table = f"({source_sql}) AS scoped_stats"
+    where_clause = "WHERE 1 = 1"
 
     if stat_type == "runs":
         c.execute(f"""
@@ -635,7 +720,7 @@ def get_leaderboard_data(stat_type, series_id=None):
             HAVING total > 0
             ORDER BY total DESC
             LIMIT 100
-        """)
+        """, source_params)
     elif stat_type == "wickets":
         c.execute(f"""
             SELECT user_id, SUM(wickets) as total, SUM(balls_bowled) as balls
@@ -645,7 +730,7 @@ def get_leaderboard_data(stat_type, series_id=None):
             HAVING total > 0
             ORDER BY total DESC
             LIMIT 100
-        """)
+        """, source_params)
     elif stat_type == "economy":
         c.execute(f"""
             SELECT user_id, 
@@ -658,7 +743,7 @@ def get_leaderboard_data(stat_type, series_id=None):
             HAVING balls >= 6
             ORDER BY economy ASC
             LIMIT 100
-        """)
+        """, source_params)
     elif stat_type == "strike_rate":
         c.execute(f"""
             SELECT user_id,
@@ -671,7 +756,7 @@ def get_leaderboard_data(stat_type, series_id=None):
             HAVING balls >= 10
             ORDER BY sr DESC
             LIMIT 100
-        """)
+        """, source_params)
     elif stat_type == "average":
         c.execute(f"""
             SELECT user_id,
@@ -684,7 +769,7 @@ def get_leaderboard_data(stat_type, series_id=None):
             HAVING dismissals > 0
             ORDER BY avg DESC
             LIMIT 100
-        """)
+        """, source_params)
     elif stat_type == "bowling_average":
         c.execute(f"""
             SELECT user_id,
@@ -696,7 +781,7 @@ def get_leaderboard_data(stat_type, series_id=None):
             GROUP BY user_id
             ORDER BY avg ASC
             LIMIT 100
-        """)
+        """, source_params)
     elif stat_type == "centuries":
         c.execute(f"""
             SELECT user_id, COUNT(*) as total
@@ -705,14 +790,7 @@ def get_leaderboard_data(stat_type, series_id=None):
             GROUP BY user_id
             ORDER BY total DESC
             LIMIT 100
-        """) if series_id else c.execute(f"""
-            SELECT user_id, COUNT(*) as total
-            FROM {table}
-            WHERE runs >= 100
-            GROUP BY user_id
-            ORDER BY total DESC
-            LIMIT 100
-        """)
+        """, source_params)
     elif stat_type == "fifties":
         c.execute(f"""
             SELECT user_id, COUNT(*) as total
@@ -721,14 +799,7 @@ def get_leaderboard_data(stat_type, series_id=None):
             GROUP BY user_id
             ORDER BY total DESC
             LIMIT 100
-        """) if series_id else c.execute(f"""
-            SELECT user_id, COUNT(*) as total
-            FROM {table}
-            WHERE runs >= 50 AND runs < 100
-            GROUP BY user_id
-            ORDER BY total DESC
-            LIMIT 100
-        """)
+        """, source_params)
     elif stat_type == "five_wickets":
         c.execute(f"""
             SELECT user_id, COUNT(*) as total
@@ -737,14 +808,7 @@ def get_leaderboard_data(stat_type, series_id=None):
             GROUP BY user_id
             ORDER BY total DESC
             LIMIT 100
-        """) if series_id else c.execute(f"""
-            SELECT user_id, COUNT(*) as total
-            FROM {table}
-            WHERE wickets >= 5
-            GROUP BY user_id
-            ORDER BY total DESC
-            LIMIT 100
-        """)
+        """, source_params)
     elif stat_type == "impact_points":
         c.execute(f"""
             SELECT user_id, 
@@ -764,44 +828,47 @@ def get_leaderboard_data(stat_type, series_id=None):
             GROUP BY user_id
             ORDER BY total_impact DESC
             LIMIT 100
-        """)
+        """, source_params)
     elif stat_type == "highest_score":
         c.execute(f"""
             SELECT user_id, MAX(runs) as highest, balls_faced
             FROM {table}
-            {where_clause} {"AND" if series_id else "WHERE"} runs > 0
+            {where_clause} AND runs > 0
             GROUP BY user_id
             ORDER BY highest DESC
             LIMIT 100
-        """)
+        """, source_params)
     elif stat_type == "best_bowling":
         c.execute(f"""
             SELECT user_id, MAX(wickets) as best_wickets, 
                    runs_conceded, balls_bowled
             FROM {table}
-            {where_clause} {"AND" if series_id else "WHERE"} wickets > 0
+            {where_clause} AND wickets > 0
             GROUP BY user_id
             ORDER BY best_wickets DESC, runs_conceded ASC
             LIMIT 100
-        """)
+        """, source_params)
     elif stat_type == "ducks":
         c.execute(f"""
             SELECT user_id, COUNT(*) as total
             FROM {table}
-            {where_clause} {"AND" if series_id else "WHERE"} runs = 0 AND balls_faced > 0 AND not_out = 0
+            {where_clause} AND runs = 0 AND balls_faced > 0 AND not_out = 0
             GROUP BY user_id
             ORDER BY total DESC
             LIMIT 100
-        """)
+        """, source_params)
     elif stat_type == "most_runs_conceded":
         c.execute(f"""
             SELECT user_id, SUM(runs_conceded) as total
             FROM {table}
-            {where_clause} {"AND" if series_id else "WHERE"} balls_bowled > 0
+            {where_clause} AND balls_bowled > 0
             GROUP BY user_id
             ORDER BY total DESC
             LIMIT 100
-        """)
+        """, source_params)
+    else:
+        conn.close()
+        return []
 
     results = c.fetchall()
     conn.close()
@@ -1077,7 +1144,13 @@ def get_player_emoji(player_name, bot):
 def get_active_tournament():
     conn = sqlite3.connect('players.db')
     c = conn.cursor()
-    c.execute("SELECT id, name, current_round FROM tournaments WHERE is_active = 1 LIMIT 1")
+    c.execute(
+        """SELECT id, name, current_round
+           FROM tournaments
+           WHERE is_active = 1 AND is_archived = 0
+           ORDER BY id DESC
+           LIMIT 1"""
+    )
     result = c.fetchone()
     conn.close()
     return result
@@ -2087,7 +2160,15 @@ class PersonalStatsView(View):
 
 # Leaderboard View with pagination
 class LeaderboardView(View):
-    def __init__(self, ctx, stat_type, bot, series_id=None):
+    def __init__(
+        self,
+        ctx,
+        stat_type,
+        bot,
+        series_id=None,
+        scope="career",
+        tournament_id=None,
+    ):
         super().__init__(timeout=180)
         self.ctx = ctx
         self.stat_type = stat_type
@@ -2096,6 +2177,8 @@ class LeaderboardView(View):
         self.message = None
         self.graphic_created = False
         self.series_id = series_id
+        self.scope = scope
+        self.tournament_id = tournament_id
 
     async def create_leaderboard_embed(self, page=0):
         titles = {
@@ -2115,7 +2198,12 @@ class LeaderboardView(View):
             "most_runs_conceded": "💸 Most Runs Conceded"
         }
 
-        data = get_leaderboard_data(self.stat_type, self.series_id)
+        data = get_leaderboard_data(
+            self.stat_type,
+            self.series_id,
+            self.scope,
+            self.tournament_id,
+        )
 
         if not data:
             embed = discord.Embed(
@@ -2189,7 +2277,14 @@ class LeaderboardView(View):
                 embed.description = description
 
                 total_pages = ((len(data) - 1) // players_per_page) + 2  # +1 for graphic page, +1 for ceiling
-                embed.set_footer(text=f"Page {page + 1} of {total_pages} • Tournament Statistics")
+                scope_label = {
+                    "tournament": "Tournament Statistics",
+                    "international": "International Statistics (Current Tournament + Series)",
+                    "career": "Career Statistics",
+                }.get(self.scope, "Statistics")
+                if self.series_id is not None:
+                    scope_label = "Series Statistics"
+                embed.set_footer(text=f"Page {page + 1} of {total_pages} • {scope_label}")
                 return embed, None
         else:
             # All other stats: paginated (10 per page)
@@ -2266,11 +2361,23 @@ class LeaderboardView(View):
             embed.description = description
 
             total_pages = ((len(data) - 1) // players_per_page) + 1
-            embed.set_footer(text=f"Page {page + 1} of {total_pages} • Tournament Statistics")
+            scope_label = {
+                "tournament": "Tournament Statistics",
+                "international": "International Statistics (Current Tournament + Series)",
+                "career": "Career Statistics",
+            }.get(self.scope, "Statistics")
+            if self.series_id is not None:
+                scope_label = "Series Statistics"
+            embed.set_footer(text=f"Page {page + 1} of {total_pages} • {scope_label}")
             return embed, None
 
     def update_buttons(self):
-        data = get_leaderboard_data(self.stat_type, self.series_id)
+        data = get_leaderboard_data(
+            self.stat_type,
+            self.series_id,
+            self.scope,
+            self.tournament_id,
+        )
 
         if self.stat_type in ["runs", "wickets"]:
             total_pages = ((len(data) - 1) // 10) + 2  # +1 for graphic, +1 for ceiling
@@ -2527,7 +2634,12 @@ class LeaderboardView(View):
             return
 
         await interaction.response.defer()
-        data = get_leaderboard_data(self.stat_type, self.series_id)
+        data = get_leaderboard_data(
+            self.stat_type,
+            self.series_id,
+            self.scope,
+            self.tournament_id,
+        )
 
         if self.stat_type in ["runs", "wickets"]:
             total_pages = ((len(data) - 1) // 10) + 2
@@ -3004,8 +3116,25 @@ class CricketStats(commands.Cog):
 
         for match in matches:
             user_id, runs, balls_faced, runs_conceded, balls_bowled, wickets, not_out = map(int, match)
-            c.execute("""INSERT INTO match_stats (user_id, runs, balls_faced, runs_conceded, balls_bowled, wickets, not_out)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)""", (user_id, runs, balls_faced, runs_conceded, balls_bowled, wickets, not_out))
+            active_tournament = get_active_tournament()
+            tournament_id = active_tournament[0] if active_tournament else None
+            c.execute(
+                """INSERT INTO match_stats
+                   (tournament_id, series_id, user_id, runs, balls_faced,
+                    runs_conceded, balls_bowled, wickets, not_out)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    tournament_id,
+                    None,
+                    user_id,
+                    runs,
+                    balls_faced,
+                    runs_conceded,
+                    balls_bowled,
+                    wickets,
+                    not_out,
+                ),
+            )
             team = get_user_team(user_id)
             if team:
                 if team not in team_stats:
@@ -3282,13 +3411,19 @@ class CricketStats(commands.Cog):
             embed = discord.Embed(
                 title="❌ No Active Tournament",
                 description="There is no active tournament running right now!\n\n"
-                            "💡 Use `-lbi` to view **International Statistics** (all-time stats)",
+                            "💡 Use `-lbi` to view **current tournament + included series statistics**",
                 color=0xFF0000
             )
             await ctx.send(embed=embed)
             return
 
-        view = LeaderboardView(ctx, "runs", self.bot)
+        view = LeaderboardView(
+            ctx,
+            "runs",
+            self.bot,
+            scope="tournament",
+            tournament_id=tournament[0],
+        )
         embed, graphic = await view.create_leaderboard_embed(0)
 
         if graphic:
@@ -3490,9 +3625,13 @@ class CricketStats(commands.Cog):
             file=file
         )
 
-    @commands.command(name="lbi", aliases=["internationallb"], help="View international (all-time) leaderboards")
+    @commands.command(
+        name="lbi",
+        aliases=["internationallb"],
+        help="View current tournament plus included series leaderboards",
+    )
     async def lbi_command(self, ctx):
-        """International leaderboard - shows all-time stats with blue/white theme"""
+        """Show current tournament stats plus current series stats not marked nolbi."""
 
         class InternationalLeaderboardView(LeaderboardView):
             async def create_leaderboard_embed(self, page=0):
@@ -3500,16 +3639,29 @@ class CricketStats(commands.Cog):
                 embed.color = 0x1E90FF
 
                 if page == 0 and self.stat_type in ["runs", "wickets"]:
-                    data = get_leaderboard_data(self.stat_type, self.series_id)
+                    data = get_leaderboard_data(
+                        self.stat_type,
+                        self.series_id,
+                        self.scope,
+                        self.tournament_id,
+                    )
                     graphic = await create_top5_graphic_international(self.stat_type, data, self.ctx.guild, self.bot)
 
                 if embed.footer:
-                    footer_text = embed.footer.text.replace("Tournament Statistics", "International Statistics (All-Time)")
+                    footer_text = embed.footer.text.replace(
+                        "Tournament Statistics",
+                        "International Statistics (Current Tournament + Series)",
+                    )
                     embed.set_footer(text=footer_text)
 
                 return embed, graphic
 
-        view = InternationalLeaderboardView(ctx, "runs", self.bot)
+        view = InternationalLeaderboardView(
+            ctx,
+            "runs",
+            self.bot,
+            scope="international",
+        )
         embed, graphic = await view.create_leaderboard_embed(0)
 
         if graphic:
