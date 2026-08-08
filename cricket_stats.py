@@ -663,28 +663,9 @@ def get_leaderboard_data(
         """
         source_params = [tournament_id]
     elif scope == "international":
-        # International stats for this command mean the currently running
-        # tournament plus series rows that were not marked ``nolbi``.
-        c.execute(
-            """SELECT id FROM tournaments
-               WHERE is_active = 1 AND is_archived = 0
-               ORDER BY id DESC LIMIT 1"""
-        )
-        active_tournament = c.fetchone()
-        tournament_source = (
-            """SELECT m.user_id, m.runs, m.balls_faced,
-                      m.runs_conceded, m.balls_bowled,
-                      m.wickets, m.not_out
-               FROM match_stats AS m
-               WHERE m.tournament_id = ?
-                 AND m.include_in_lbi = 1"""
-            if active_tournament else
-            "SELECT user_id, runs, balls_faced, runs_conceded, "
-            "balls_bowled, wickets, not_out FROM match_stats WHERE 0"
-        )
-        source_sql = f"""
-            {tournament_source}
-            UNION ALL
+        # LBI is the international/series leaderboard.  Tournament rows must
+        # never be included here, even when a tournament is running.
+        source_sql = """
             SELECT sms.user_id, sms.runs, sms.balls_faced,
                    sms.runs_conceded, sms.balls_bowled,
                    sms.wickets, sms.not_out
@@ -699,7 +680,7 @@ def get_leaderboard_data(
             )
             AND sms.include_in_lbi = 1
         """
-        source_params = [active_tournament[0]] if active_tournament else []
+        source_params = []
     else:
         source_sql = """
             SELECT user_id, runs, balls_faced, runs_conceded,
@@ -3717,10 +3698,13 @@ class CricketStats(commands.Cog):
     @commands.command(
         name="lbi",
         aliases=["internationallb"],
-        help="View current tournament plus included series leaderboards",
+        help="View the current included series leaderboard",
     )
     async def lbi_command(self, ctx):
-        """Show current tournament stats plus current series stats not marked nolbi."""
+        """Show current series stats that are not marked ``nolbi``.
+
+        Tournament stats are intentionally excluded from LBI.
+        """
 
         class InternationalLeaderboardView(LeaderboardView):
             async def create_leaderboard_embed(self, page=0):
@@ -3739,7 +3723,7 @@ class CricketStats(commands.Cog):
                 if embed.footer:
                     footer_text = embed.footer.text.replace(
                         "Tournament Statistics",
-                        "International Statistics (Current Tournament + Series)",
+                        "International Statistics (Current Series)",
                     )
                     embed.set_footer(text=footer_text)
 
