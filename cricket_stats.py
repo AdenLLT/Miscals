@@ -14,6 +14,8 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter
 # ========== CARD CACHE CONFIG ==========
 CARD_CACHE_GUILD_ID    = 886642304335609937
 CARD_CACHE_CHANNEL_ID  = 886676549204582440
+LBI_SYNC_ALLOWED_USER_ID = 765965975761715241
+LBI_SYNC_SOURCE_DB = "attached_assets/players_1786197675052.db"
 # Message format posted to the cache channel:
 #   content: "CARD_CACHE uid:<user_id> ovr:<main_ovr>"
 #   attachment: the player card PNG
@@ -663,22 +665,15 @@ def get_leaderboard_data(
         """
         source_params = [tournament_id]
     elif scope == "international":
-        # LBI is the international/series leaderboard.  Tournament rows must
+        # LBI uses the full overall/international history. Tournament rows must
         # never be included here, even when a tournament is running.
         source_sql = """
-            SELECT sms.user_id, sms.runs, sms.balls_faced,
-                   sms.runs_conceded, sms.balls_bowled,
-                   sms.wickets, sms.not_out
-            FROM series_match_stats AS sms
-            JOIN series AS s ON s.id = sms.series_id
-            WHERE s.id = (
-                SELECT id
-                FROM series
-                WHERE is_active = 1
-                ORDER BY id DESC
-                LIMIT 1
-            )
-            AND sms.include_in_lbi = 1
+            SELECT m.user_id, m.runs, m.balls_faced,
+                   m.runs_conceded, m.balls_bowled,
+                   m.wickets, m.not_out
+            FROM match_stats AS m
+            WHERE m.tournament_id IS NULL
+              AND m.include_in_lbi = 1
         """
         source_params = []
     else:
@@ -3481,7 +3476,7 @@ class CricketStats(commands.Cog):
             embed = discord.Embed(
                 title="❌ No Active Tournament",
                 description="There is no active tournament running right now!\n\n"
-                            "💡 Use `-lbi` to view **current tournament + included series statistics**",
+                            "💡 Use `-lbi` to view **full international statistics**",
                 color=0xFF0000
             )
             await ctx.send(embed=embed)
@@ -3698,10 +3693,10 @@ class CricketStats(commands.Cog):
     @commands.command(
         name="lbi",
         aliases=["internationallb"],
-        help="View the current included series leaderboard",
+        help="View the full international leaderboard",
     )
     async def lbi_command(self, ctx):
-        """Show current series stats that are not marked ``nolbi``.
+        """Show all overall/international stats that are not marked ``nolbi``.
 
         Tournament stats are intentionally excluded from LBI.
         """
@@ -3723,7 +3718,7 @@ class CricketStats(commands.Cog):
                 if embed.footer:
                     footer_text = embed.footer.text.replace(
                         "Tournament Statistics",
-                        "International Statistics (Current Series)",
+                        "International Statistics (All-Time)",
                     )
                     embed.set_footer(text=footer_text)
 
@@ -4068,8 +4063,7 @@ class CricketStats(commands.Cog):
     @commands.command(name="testcard", help="Preview your stats card")
     async def testcard_command(self, ctx):
         """Restricted to one specific user — previews the stats card regardless of invite count."""
-        ALLOWED_USER_ID = 765965975761715241
-        if ctx.author.id != ALLOWED_USER_ID:
+        if ctx.author.id != LBI_SYNC_ALLOWED_USER_ID:
             await ctx.send("❌ You don't have permission to use this command.")
             return
 
@@ -4087,6 +4081,101 @@ class CricketStats(commands.Cog):
             )
         else:
             await ctx.send("❌ Could not generate the card. Make sure you have a claimed player and match data.")
+
+    @commands.command(
+        name="synclbi",
+        help="[OWNER ONLY] Sync career/LBI stats from the attached snapshot",
+    )
+    async def synclbi_command(self, ctx):
+        """Restore career and international rows from the attached snapshot.
+
+        The snapshot predates the competition-scope columns. Imported rows are
+        therefore explicitly marked as non-tournament and LBI-included.
+        Existing tournament-scoped rows are preserved.
+        """
+        if ctx.author.id != LBI_SYNC_ALLOWED_USER_ID:
+            await ctx.send("❌ You don't have permission to use this command.")
+            return
+
+        if not os.path.isfile(LBI_SYNC_SOURCE_DB):
+            await ctx.send(f"❌ Sync source is missing: `{LBI_SYNC_SOURCE_DB}`")
+            return
+
+        source = sqlite3.connect(
+            f"file:{LBI_SYNC_SOURCE_DB}?mode=ro",
+            uri=True,
+        )
+        target = sqlite3.connect("players.db")
+        try:
+            source_cur = source.cursor()
+            target_cur = target.cursor()
+
+            source_cur.execute(
+                """SELECT user_id, runs, balls_faced, runs_conceded,
+                          balls_bowled, wickets, not_out, match_date
+                   FROM match_stats
+                   ORDER BY id"""
+            )
+            source_match_rows = source_cur.fetchall()
+
+            source_cur.execute(
+                """SELECT user_id, total_runs, total_balls_faced,
+                          times_not_out, matches_played,
+                          total_runs_conceded, total_balls_bowled,
+                          total_wickets
+                   FROM stat_overrides"""
+            )
+            source_override_rows = source_cur.fetchall()
+
+            if not source_match_rows:
+                await ctx.send("❌ The attached snapshot has no career/LBI rows.")
+                return
+
+            # Do not touch rows already tied to the running tournament.
+            target_cur.execute(
+                "DELETE FROM match_stats WHERE tournament_id IS NULL"
+            )
+            target_cur.executemany(
+                """INSERT INTO match_stats
+                   (user_id, runs, balls_faced, runs_conceded, balls_bowled,
+                    wickets, not_out, match_date, tournament_id, series_id,
+                    include_in_lbi)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 1)""",
+                source_match_rows,
+            )
+
+            target_cur.execute("DELETE FROM stat_overrides")
+            target_cur.executemany(
+                """INSERT INTO stat_overrides
+                   (user_id, total_runs, total_balls_faced, times_not_out,
+                    matches_played, total_runs_conceded, total_balls_bowled,
+                    total_wickets)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                source_override_rows,
+            )
+            target.commit()
+
+            total_runs, total_wickets = target_cur.execute(
+                """SELECT COALESCE(SUM(runs), 0), COALESCE(SUM(wickets), 0)
+                   FROM match_stats
+                   WHERE tournament_id IS NULL AND include_in_lbi = 1"""
+            ).fetchone()
+            tournament_rows = target_cur.execute(
+                "SELECT COUNT(*) FROM match_stats WHERE tournament_id IS NOT NULL"
+            ).fetchone()[0]
+        except Exception:
+            target.rollback()
+            raise
+        finally:
+            source.close()
+            target.close()
+
+        await ctx.send(
+            "✅ **LBI and `-statsi` stats synced**\n"
+            f"📊 Imported **{len(source_match_rows):,}** career/LBI rows\n"
+            f"🏏 Total: **{total_runs:,} runs** · **{total_wickets:,} wickets**\n"
+            f"🛡️ Preserved **{tournament_rows:,}** tournament-scoped rows"
+        )
 
 async def setup(bot):
     await bot.add_cog(CricketStats(bot))
