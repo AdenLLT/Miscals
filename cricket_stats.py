@@ -2028,21 +2028,25 @@ class PersonalStatsView(View):
 
         flag = get_team_flag(team_name) if team_name else ""
         if self.mode == "ongoing":
-            # Determine if it's a series or tournament
-            conn = sqlite3.connect('players.db')
-            c = conn.cursor()
-            c.execute("SELECT name FROM series WHERE is_active = 1 LIMIT 1")
-            series = c.fetchone()
-            c.execute("SELECT name FROM tournaments WHERE is_active = 1 LIMIT 1")
-            tourney = c.fetchone()
-            conn.close()
-
-            if series:
-                embed.title = f"{flag + '  ' if flag else ''}✦ {series[0]} Statistics"
-            elif tourney:
-                embed.title = f"{flag + '  ' if flag else ''}✦ {tourney[0]} Statistics"
+            # Tournament rows take precedence when both a tournament and an
+            # old/parallel series are marked active.  The stats query uses the
+            # tournament scope too, so the title must describe that same data.
+            tourney = get_active_tournament()
+            if tourney:
+                embed.title = f"{flag + '  ' if flag else ''}✦ {tourney[1]} Statistics"
             else:
-                embed.title = f"{flag + '  ' if flag else ''}✦ Ongoing Statistics"
+                conn = sqlite3.connect('players.db')
+                c = conn.cursor()
+                c.execute(
+                    "SELECT name FROM series WHERE is_active = 1 "
+                    "ORDER BY id DESC LIMIT 1"
+                )
+                series = c.fetchone()
+                conn.close()
+                if series:
+                    embed.title = f"{flag + '  ' if flag else ''}✦ {series[0]} Statistics"
+                else:
+                    embed.title = f"{flag + '  ' if flag else ''}✦ Ongoing Statistics"
         else:
             if team_name:
                 embed.title = f"{flag}  ✦ Career Statistics"
@@ -2083,45 +2087,27 @@ class PersonalStatsView(View):
         embed.add_field(name="🎳 Bowling", value=bowling_text, inline=True)
 
         # ── OVR Rating ──
-        FALLBACK_OVR = 60
-
-        bat_unlocked = (total_balls_faced or 0) >= 60
-        bowl_unlocked = (total_balls_bowled or 0) >= 60
-
-        if bat_unlocked:
-            dismissals_for_ovr = matches_played - (times_not_out or 0)
-            if dismissals_for_ovr > 0:
-                batting_avg_for_ovr = float(total_runs or 0) / dismissals_for_ovr
-            else:
-                batting_avg_for_ovr = float(total_runs or 0) / max(matches_played, 1)
-            bat_ovr = calc_batting_ovr(batting_avg_for_ovr)
-            bat_ovr_str = str(bat_ovr)
-        else:
-            bat_ovr = FALLBACK_OVR
-            bat_ovr_str = f"{FALLBACK_OVR}*"
-
-        if bowl_unlocked:
-            bowl_avg_for_ovr = (float(total_runs_conceded or 0) / total_wickets) if (total_wickets or 0) > 0 else 0.0
-            bowl_ovr = calc_bowling_ovr(bowl_avg_for_ovr)
-            bowl_ovr_str = str(bowl_ovr)
-        else:
-            bowl_ovr = FALLBACK_OVR
-            bowl_ovr_str = f"{FALLBACK_OVR}*"
-
-        role_for_ovr = player_data['role'] if player_data else "Batsman"
-
-        # ── <18 matches nerf: reduce bat/bowl by 10%, then derive main OVR ──
-        if (matches_played or 0) < 18:
-            bat_ovr = round(bat_ovr * 0.90)
-            bowl_ovr = round(bowl_ovr * 0.90)
-            bat_ovr_str = str(bat_ovr)
-            bowl_ovr_str = str(bowl_ovr)
-        main_ovr = calc_player_ovr(bat_ovr, bowl_ovr, role_for_ovr)
+        # OVR is the player's persistent career/card rating, not a
+        # tournament-only rating.  This keeps `-stats`, `-statsi`, `-lbi`,
+        # and the cached player card in sync while the other fields above
+        # remain scoped to the current competition.
+        bat_ovr, bowl_ovr, main_ovr, career_matches = get_player_ovr(
+            self.user_id,
+            mode="career",
+        )
+        if bat_ovr is None:
+            bat_ovr = bowl_ovr = 60
+            main_ovr = 60
+        bat_ovr_str = str(bat_ovr)
+        bowl_ovr_str = str(bowl_ovr)
 
         ovr_text = f"**OVR:** {main_ovr}  •  **Bat OVR:** {bat_ovr_str}  •  **Bowl OVR:** {bowl_ovr_str}"
         embed.add_field(name="⭐ OVR Rating", value=ovr_text, inline=False)
 
-        if not bat_unlocked or not bowl_unlocked:
+        career_stats = get_user_stats(self.user_id, mode="career")
+        career_bat_unlocked = bool(career_stats and (career_stats[1] or 0) >= 60)
+        career_bowl_unlocked = bool(career_stats and (career_stats[3] or 0) >= 60)
+        if not career_bat_unlocked or not career_bowl_unlocked:
             footer_text = "Nations Player 2025-2026 • * = provisional OVR (bat 60 balls / bowl 60 balls to unlock)"
         else:
             footer_text = "Nations Player 2025-2026"
@@ -3295,6 +3281,105 @@ class CricketStats(commands.Cog):
         )
 
 
+    @commands.command(
+        name="unsyncaddstats",
+        help="[ADMIN] Reverse stats added by syncaddstats",
+    )
+    @commands.has_any_role(1452028308735922339)
+    async def unsyncaddstats_command(self, ctx):
+        """Remove tournament-only rows previously added by ``-syncaddstats``."""
+        tournament = get_active_tournament()
+        if not tournament:
+            await ctx.send("❌ No active tournament is running.")
+            return
+
+        if not ctx.message.reference:
+            await ctx.send("❌ Please reply to the message used with `-syncaddstats`!")
+            return
+
+        replied_msg = await ctx.channel.fetch_message(
+            ctx.message.reference.message_id
+        )
+        content = replied_msg.content
+        code_blocks = re.findall(
+            r"```(?:python)?\s*([\s\S]*?)```",
+            content,
+        )
+        source = code_blocks[0] if code_blocks else content
+        matches = re.findall(
+            r"(\d+),\s*(\d+),\s*(\d+),\s*(\d+),\s*(\d+),\s*(\d+),\s*(\d+)",
+            source,
+        )
+
+        if not matches:
+            await ctx.send("❌ No valid statistics found in the replied message!")
+            return
+
+        conn = sqlite3.connect("players.db")
+        c = conn.cursor()
+        removed = 0
+        try:
+            for match in matches:
+                (
+                    user_id,
+                    runs,
+                    balls_faced,
+                    runs_conceded,
+                    balls_bowled,
+                    wickets,
+                    not_out,
+                ) = map(int, match)
+                c.execute(
+                    """DELETE FROM match_stats
+                       WHERE id = (
+                           SELECT id
+                           FROM match_stats
+                           WHERE tournament_id = ?
+                             AND series_id IS NULL
+                             AND include_in_lbi = 0
+                             AND user_id = ?
+                             AND runs = ?
+                             AND balls_faced = ?
+                             AND runs_conceded = ?
+                             AND balls_bowled = ?
+                             AND wickets = ?
+                             AND not_out = ?
+                           ORDER BY id DESC
+                           LIMIT 1
+                       )""",
+                    (
+                        tournament[0],
+                        user_id,
+                        runs,
+                        balls_faced,
+                        runs_conceded,
+                        balls_bowled,
+                        wickets,
+                        not_out,
+                    ),
+                )
+                removed += c.rowcount
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+        not_found = len(matches) - removed
+        response = (
+            f"✅ **Reversed {removed} synchronized player stat record(s)**\n"
+            f"🏏 Tournament: **{tournament[1]}**\n"
+            f"🚫 No standings, match result, or international records were changed"
+        )
+        if not_found:
+            response += (
+                f"\n⚠️ **{not_found}** record(s) were not found as sync-only rows "
+                "in this tournament and were left untouched."
+            )
+        await ctx.send(response)
+
+
     @commands.command(name="unaddstats", aliases=["uas"], help="[ADMIN] Remove match stats from bot message")
     @commands.has_any_role(1452028308735922339)
     async def unaddstats_command(self, ctx):
@@ -3460,13 +3545,40 @@ class CricketStats(commands.Cog):
         view = PersonalStatsView(ctx, user_id, mode="ongoing")
         embed = await view.create_stats_embed("overview")
 
-        card_file = await self._build_card_for_user(user_id, ctx)
-        if card_file:
-            file = discord.File(card_file, filename="statscard.png")
-            embed.set_image(url="attachment://statscard.png")
-            await ctx.send(embed=embed, file=file)
-        else:
+        # Reuse the same career-wide card as `-statsi`.  The embed's text is
+        # ongoing/tournament-scoped, but a player's OVR card is persistent.
+        bat_ovr, bowl_ovr, main_ovr, _ = get_player_ovr(user_id, mode="career")
+        card_url = None
+        if main_ovr is not None:
+            card_cache = await scan_card_cache(self.bot)
+            cached = card_cache.get(user_id)
+            if cached and cached["ovr"] == main_ovr:
+                card_url = cached["url"]
+            else:
+                card_file = await self._build_card_for_user(user_id, ctx)
+                if card_file:
+                    next_version = (cached["version"] + 1) if cached else 1
+                    new_msg = await post_card_to_cache(
+                        self.bot,
+                        user_id,
+                        main_ovr,
+                        card_file,
+                        version=next_version,
+                    )
+                    if new_msg:
+                        card_url = new_msg.attachments[0].url
+
+        if card_url:
+            embed.set_image(url=card_url)
             await ctx.send(embed=embed)
+        else:
+            card_file = await self._build_card_for_user(user_id, ctx)
+            if card_file:
+                file = discord.File(card_file, filename="statscard.png")
+                embed.set_image(url="attachment://statscard.png")
+                await ctx.send(embed=embed, file=file)
+            else:
+                await ctx.send(embed=embed)
 
     @commands.command(name="leaderboard", aliases=["lb"], help="View tournament leaderboards")
     async def leaderboard_command(self, ctx):
