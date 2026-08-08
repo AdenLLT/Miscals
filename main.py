@@ -761,6 +761,10 @@ def init_db():
         c.execute("ALTER TABLE match_stats ADD COLUMN tournament_id INTEGER")
     if 'series_id' not in match_stats_columns:
         c.execute("ALTER TABLE match_stats ADD COLUMN series_id INTEGER")
+    if 'include_in_lbi' not in match_stats_columns:
+        c.execute(
+            "ALTER TABLE match_stats ADD COLUMN include_in_lbi INTEGER DEFAULT 1"
+        )
 
     # ADD THIS NEW TABLE FOR CAPTAINS
     c.execute('''CREATE TABLE IF NOT EXISTS team_captains

@@ -577,31 +577,30 @@ def get_user_stats(user_id, mode="career"):
     params = [user_id]
 
     if mode == "ongoing":
-        # Check for active tournament
-        c.execute("SELECT id FROM tournaments WHERE is_active = 1 LIMIT 1")
+        # Tournament stats take precedence for ongoing personal statistics.
+        # This keeps sync-only rows visible to current tournament users without
+        # mixing active series rows into their tournament totals.
+        c.execute(
+            """SELECT id FROM tournaments
+               WHERE is_active = 1 AND is_archived = 0
+               ORDER BY id DESC LIMIT 1"""
+        )
         tourney = c.fetchone()
 
-        # Check for active series
-        c.execute("SELECT id FROM series WHERE is_active = 1 LIMIT 1")
-        series = c.fetchone()
-
-        if tourney or series:
-            conditions = []
-            if tourney:
-                # We don't have tournament_id in match_stats, but we can filter by date or assume current matches
-                # However, the user said "ongoing tournament", and typically match_stats are reset or we use a different table
-                # For tournaments, stats are usually tracked in match_stats but we might need a way to filter.
-                # If there's no tournament_id in match_stats, we'll look at series_match_stats for series.
-                pass
-
+        if tourney:
+            where_clause = "WHERE user_id = ? AND tournament_id = ?"
+            params.append(tourney[0])
+        else:
+            # Preserve the existing series-only behavior when no tournament
+            # is running.
+            c.execute(
+                "SELECT id FROM series WHERE is_active = 1 ORDER BY id DESC LIMIT 1"
+            )
+            series = c.fetchone()
             if series:
                 table = "series_match_stats"
                 where_clause = "WHERE user_id = ? AND series_id = ?"
                 params.append(series[0])
-            elif tourney:
-                # If it's a tournament and we use match_stats, we might just use the whole table if it's "ongoing"
-                # But usually -statsi is the career one.
-                pass
 
     c.execute(f"""
         SELECT 
@@ -677,7 +676,8 @@ def get_leaderboard_data(
                       m.runs_conceded, m.balls_bowled,
                       m.wickets, m.not_out
                FROM match_stats AS m
-               WHERE m.tournament_id = ?"""
+               WHERE m.tournament_id = ?
+                 AND m.include_in_lbi = 1"""
             if active_tournament else
             "SELECT user_id, runs, balls_faced, runs_conceded, "
             "balls_bowled, wickets, not_out FROM match_stats WHERE 0"
@@ -3120,12 +3120,14 @@ class CricketStats(commands.Cog):
             tournament_id = active_tournament[0] if active_tournament else None
             c.execute(
                 """INSERT INTO match_stats
-                   (tournament_id, series_id, user_id, runs, balls_faced,
-                    runs_conceded, balls_bowled, wickets, not_out)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (tournament_id, series_id, include_in_lbi, user_id,
+                    runs, balls_faced, runs_conceded, balls_bowled,
+                    wickets, not_out)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     tournament_id,
                     None,
+                    1,
                     user_id,
                     runs,
                     balls_faced,
@@ -3228,6 +3230,93 @@ class CricketStats(commands.Cog):
                     await fantasy_channel.send(embed=fantasy_embed)
         except Exception as e:
             print(f"Error calculating fantasy points: {e}")
+
+
+    @commands.command(
+        name="syncaddstats",
+        help="[ADMIN] Add stats to the current tournament without recording a match result",
+    )
+    @commands.has_any_role(1452028308735922339)
+    async def syncaddstats_command(self, ctx):
+        """Add player stats to the active tournament only.
+
+        Unlike ``-addstats``, this command does not ask for team scores and
+        does not update tournament standings, fixtures, match results,
+        international statistics, or fantasy points.
+        """
+        tournament = get_active_tournament()
+        if not tournament:
+            await ctx.send("❌ No active tournament is running.")
+            return
+
+        if not ctx.message.reference:
+            await ctx.send("❌ Please reply to a message containing match statistics!")
+            return
+
+        replied_msg = await ctx.channel.fetch_message(
+            ctx.message.reference.message_id
+        )
+        content = replied_msg.content
+
+        code_block_pattern = r"```(?:python)?\s*([\s\S]*?)```"
+        code_blocks = re.findall(code_block_pattern, content)
+        if not code_blocks:
+            await ctx.send("❌ No code block found in the message!")
+            return
+
+        pattern = r"(\d+),\s*(\d+),\s*(\d+),\s*(\d+),\s*(\d+),\s*(\d+),\s*(\d+)"
+        matches = re.findall(pattern, code_blocks[0])
+        if not matches:
+            await ctx.send("❌ No valid statistics found in the first code block!")
+            return
+
+        tournament_id = tournament[0]
+        conn = sqlite3.connect("players.db")
+        c = conn.cursor()
+        try:
+            for match in matches:
+                (
+                    user_id,
+                    runs,
+                    balls_faced,
+                    runs_conceded,
+                    balls_bowled,
+                    wickets,
+                    not_out,
+                ) = map(int, match)
+
+                c.execute(
+                    """INSERT INTO match_stats
+                       (tournament_id, series_id, include_in_lbi, user_id,
+                        runs, balls_faced, runs_conceded, balls_bowled,
+                        wickets, not_out)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        tournament_id,
+                        None,
+                        0,
+                        user_id,
+                        runs,
+                        balls_faced,
+                        runs_conceded,
+                        balls_bowled,
+                        wickets,
+                        not_out,
+                    ),
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+        await ctx.send(
+            f"✅ **Synchronized {len(matches)} player stat record(s)**\n"
+            f"🏏 Added to the current tournament: **{tournament[1]}**\n"
+            f"📊 Included in `-lb` and current tournament personal stats\n"
+            f"🚫 Excluded from `-lbi`; no match result or standings were recorded"
+        )
 
 
     @commands.command(name="unaddstats", aliases=["uas"], help="[ADMIN] Remove match stats from bot message")
