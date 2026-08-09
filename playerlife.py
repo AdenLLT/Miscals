@@ -12,6 +12,13 @@ from discord import app_commands
 from discord.ui import View, Button, Select
 from datetime import datetime, timedelta
 
+
+def _feed_db_connect():
+    """Open a short-lived feed connection with SQLite contention handling."""
+    conn = sqlite3.connect('players.db', timeout=30.0)
+    conn.execute("PRAGMA busy_timeout = 30000")
+    return conn
+
 # ============================================================
 # OPENROUTER AI CONFIG STARTS HERE
 # ============================================================
@@ -968,8 +975,10 @@ async def _post_cricketgram_batch(bot, page: int):
         print(f"[BG_FEED] Channel {CRICKETGRAM_CHANNEL_ID} not found — skipping")
         return
 
-    player_data = get_feed_player_data(bot=bot)
-    tourney_name, standings = get_tournament_context()
+    player_data, (tourney_name, standings) = await asyncio.gather(
+        asyncio.to_thread(get_feed_player_data, bot),
+        asyncio.to_thread(get_tournament_context),
+    )
     if not player_data:
         simple_players = get_cricket_players()
         player_data = {p: {'discord': f'@{p.lower().split()[0]}fan', 'team': 'Unknown',
@@ -1151,8 +1160,8 @@ Note: for team-focused posts where no specific player is mentioned, set player_n
     return prompt
 
 
-def get_feed_from_cache(cache_date: str, language_filter: str, page: int):
-    conn = sqlite3.connect('players.db')
+def _get_feed_from_cache_sync(cache_date: str, language_filter: str, page: int):
+    conn = _feed_db_connect()
     c = conn.cursor()
     try:
         c.execute(
@@ -1168,8 +1177,14 @@ def get_feed_from_cache(cache_date: str, language_filter: str, page: int):
     return None
 
 
-def save_feed_to_cache(cache_date: str, language_filter: str, page: int, posts: list):
-    conn = sqlite3.connect('players.db')
+async def get_feed_from_cache(cache_date: str, language_filter: str, page: int):
+    return await asyncio.to_thread(
+        _get_feed_from_cache_sync, cache_date, language_filter, page
+    )
+
+
+def _save_feed_to_cache_sync(cache_date: str, language_filter: str, page: int, posts: list):
+    conn = _feed_db_connect()
     c = conn.cursor()
     try:
         c.execute(
@@ -1182,16 +1197,59 @@ def save_feed_to_cache(cache_date: str, language_filter: str, page: int, posts: 
     conn.close()
 
 
+async def save_feed_to_cache(cache_date: str, language_filter: str, page: int, posts: list):
+    await asyncio.to_thread(
+        _save_feed_to_cache_sync, cache_date, language_filter, page, posts
+    )
+
+
+def _delete_feed_page_sync(cache_date: str, language_filter: str, page: int):
+    conn = _feed_db_connect()
+    try:
+        c = conn.cursor()
+        c.execute(
+            "DELETE FROM ai_feed_cache WHERE cache_date=? AND language_filter=? AND page_number=?",
+            (cache_date, language_filter, page)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+async def delete_feed_page(cache_date: str, language_filter: str, page: int):
+    await asyncio.to_thread(
+        _delete_feed_page_sync, cache_date, language_filter, page
+    )
+
+
+def _clear_feed_date_sync(cache_date: str):
+    conn = _feed_db_connect()
+    try:
+        c = conn.cursor()
+        c.execute("DELETE FROM ai_feed_cache WHERE cache_date = ?", (cache_date,))
+        deleted = c.rowcount
+        conn.commit()
+        return deleted
+    finally:
+        conn.close()
+
+
+async def clear_feed_date(cache_date: str):
+    return await asyncio.to_thread(_clear_feed_date_sync, cache_date)
+
+
 async def get_feed_page(language_filter: str, page: int, bot=None) -> tuple:
     """Returns (posts, is_fallback). Caches AI results, uses fallback on rate limit."""
     today = datetime.utcnow().strftime('%Y-%m-%d')
-    cached = get_feed_from_cache(today, language_filter, page)
+    cached = await get_feed_from_cache(today, language_filter, page)
     if cached:
         return cached, False
 
     # Get rich player data with real stats and discord handles
-    player_data = get_feed_player_data(bot=bot)
-    tourney_name, standings = get_tournament_context()
+    player_data, (tourney_name, standings) = await asyncio.gather(
+        asyncio.to_thread(get_feed_player_data, bot),
+        asyncio.to_thread(get_tournament_context),
+    )
 
     # Fall back to simple player list if no claimed players exist yet
     if not player_data:
@@ -1233,7 +1291,7 @@ async def get_feed_page(language_filter: str, page: int, bot=None) -> tuple:
                         _found = str(_eo)
                         break
                 _p['player_emoji'] = _found
-        save_feed_to_cache(today, language_filter, page, posts)
+        await save_feed_to_cache(today, language_filter, page, posts)
         return posts, False
     except RuntimeError as e:
         if 'RATE_LIMITED' in str(e):
@@ -1568,17 +1626,10 @@ class FeedView(View):
             return
         # Force re-generate by deleting cache for this page
         today = datetime.utcnow().strftime('%Y-%m-%d')
-        conn = sqlite3.connect('players.db')
-        c = conn.cursor()
         try:
-            c.execute(
-                "DELETE FROM ai_feed_cache WHERE cache_date=? AND language_filter=? AND page_number=?",
-                (today, self.language_filter, self.page)
-            )
-            conn.commit()
+            await delete_feed_page(today, self.language_filter, self.page)
         except Exception:
             pass
-        conn.close()
         await self._load_and_update(interaction)
 
     async def _load_and_update(self, interaction: discord.Interaction):
@@ -1976,7 +2027,7 @@ class PlayerLife(commands.Cog):
         if lang == 'hindi':
             lang = 'hinglish'
 
-        ensure_life(ctx.author.id)
+        await asyncio.to_thread(ensure_life, ctx.author.id)
         view = FeedView(ctx, initial_page=0, language_filter=lang, bot=self.bot)
 
         loading_embed = build_feed_embed([], 0, lang, is_loading=True)
@@ -2017,7 +2068,7 @@ class PlayerLife(commands.Cog):
         todo = []
         for lang in langs:
             for page in range(pages):
-                if not get_feed_from_cache(today, lang, page):
+                if not await get_feed_from_cache(today, lang, page):
                     todo.append((lang, page))
 
         skipped_already = pages * len(langs) - len(todo)
@@ -2054,8 +2105,10 @@ class PlayerLife(commands.Cog):
         status_msg = await ctx.send(embed=status_embed)
 
         # Fetch player data and tournament context once
-        player_data = get_feed_player_data(bot=self.bot)
-        tourney_name, standings = get_tournament_context()
+        player_data, (tourney_name, standings) = await asyncio.gather(
+            asyncio.to_thread(get_feed_player_data, self.bot),
+            asyncio.to_thread(get_tournament_context),
+        )
         if not player_data:
             simple_players = get_cricket_players()
             player_data = {p: {
@@ -2109,7 +2162,7 @@ class PlayerLife(commands.Cog):
                             raw = raw[4:]
                     raw = raw.strip()
                     posts = json.loads(raw)
-                    save_feed_to_cache(today, lang, page, posts)
+                    await save_feed_to_cache(today, lang, page, posts)
                     done += 1
                     success = True
                     print(f"[FEED GEN] ✅ Success: lang={lang} page={page+1} | {len(posts)} posts saved | done={done}/{total}")
@@ -2201,17 +2254,11 @@ class PlayerLife(commands.Cog):
     async def cleartodayfeed(self, ctx):
         """Wipe today's feed cache so -genposttoday can start fresh."""
         today = datetime.utcnow().strftime('%Y-%m-%d')
-        conn = sqlite3.connect('players.db')
-        c = conn.cursor()
         try:
-            c.execute("DELETE FROM ai_feed_cache WHERE cache_date = ?", (today,))
-            deleted = c.rowcount
-            conn.commit()
+            deleted = await clear_feed_date(today)
         except Exception as e:
-            conn.close()
             await ctx.send(f"❌ Failed to clear cache: {e}")
             return
-        conn.close()
 
         embed = discord.Embed(
             title="🗑️ Today's Feed Cache Cleared",

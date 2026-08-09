@@ -22,6 +22,24 @@ import aiohttp
 from discord.ui import Select, View
 from discord.ext import commands, tasks
 from discord.ext.commands.cooldowns import BucketType
+
+# SQLite is shared by the bot's cogs and by background tasks.  Keep the
+# existing lightweight connection style, but make every connection wait for
+# short-lived writer contention instead of failing immediately.
+_sqlite_connect = sqlite3.connect
+
+
+def _connect_sqlite(*args, **kwargs):
+    kwargs.setdefault("timeout", 30.0)
+    conn = _sqlite_connect(*args, **kwargs)
+    conn.execute("PRAGMA busy_timeout = 30000")
+    return conn
+
+
+# All cogs import the same sqlite3 module object, so this also protects their
+# existing sqlite3.connect(...) calls without requiring a risky broad rewrite.
+sqlite3.connect = _connect_sqlite
+
 intents = discord.Intents.default()
 intents.members = True
 intents.presences = True 
@@ -30,6 +48,8 @@ intents.voice_states = True  # Required for voice
 intents.guilds = True  # Required for voice
 mydb = sqlite3.connect("players.db")
 crsr = mydb.cursor()
+mydb.execute("PRAGMA journal_mode = WAL")
+mydb.execute("PRAGMA synchronous = NORMAL")
 mydb.commit()
 
 DEFAULT_PLAYER_IMAGE_URL = "https://i.ibb.co/GvWNRX0K/Untitled-design-4.png"
@@ -66,9 +86,20 @@ async def backup_db_to_channel():
     try:
         channel = bot.get_channel(DB_BACKUP_CHANNEL_ID)
         if channel:
+            # Include committed changes still held in the WAL before copying
+            # the database file for Discord backup.
+            await asyncio.to_thread(_checkpoint_database)
             await channel.send(file=discord.File('players.db'))
     except Exception as e:
         print(f"[backup] DB backup failed (non-critical): {e}")
+
+
+def _checkpoint_database():
+    conn = sqlite3.connect("players.db")
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    finally:
+        conn.close()
 
 class MyHelp(commands.MinimalHelpCommand):
     async def send_pages(self):
@@ -691,7 +722,17 @@ async def quarterfinals(ctx):
 
 @bot.listen()
 async def on_command_error(ctx, error):
+    if isinstance(error, commands.CommandInvokeError):
+        error = error.original
     if isinstance(error, commands.CommandNotFound):
+        return
+    if isinstance(error, commands.CommandOnCooldown):
+        await ctx.send(
+            f"⏳ Please wait **{error.retry_after:.1f}s** before using that command again."
+        )
+        return
+    if isinstance(error, sqlite3.OperationalError) and "locked" in str(error).lower():
+        await ctx.send("⏳ The database is busy finishing another update. Please try again in a moment.")
         return
     await ctx.send(f"❌ Error: {error}")
 

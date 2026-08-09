@@ -1348,6 +1348,21 @@ class MatchUpdates(commands.Cog):
         full_message_text = get_full_message_text(message)
         print(f"📋 Full message text for nowstat scan:\n{full_message_text[:500]}")
 
+        # The monitored bot also emits cooldown and command-error embeds.
+        # They are not cricket updates and must not be fed to the match
+        # parsers, which can otherwise interpret their mentions as players.
+        ignored_markers = (
+            "cooldown",
+            "on cooldown",
+            "command error",
+            "command not found",
+            "unknown command",
+            "error occurred",
+        )
+        if any(marker in full_message_text.lower() for marker in ignored_markers):
+            print("⏭️ Ignoring cooldown/command-error message from cricket bot")
+            return
+
         players_to_show = parse_nowstat_message(full_message_text)
         nowstat_sent = False
         if players_to_show:
