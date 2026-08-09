@@ -3,6 +3,7 @@ from cricket_stats import ensure_card_in_cache, startup_sync_card_cache
 import discord
 import os
 import json
+import hashlib
 import re
 import random
 import sqlite3
@@ -34,6 +35,8 @@ mydb.commit()
 DEFAULT_PLAYER_IMAGE_URL = "https://i.ibb.co/GvWNRX0K/Untitled-design-4.png"
 
 DB_BACKUP_CHANNEL_ID = 1511452654906114139
+SQUAD_CACHE_CHANNEL_ID = 1480246123598843974
+SQUAD_CACHE_OWNER_ID = 765965975761715241
 
 async def restore_db_from_channel():
     """Download the last players.db attachment from the backup channel and use it."""
@@ -1684,6 +1687,135 @@ def get_team_vice_captain(team_name):
     conn.close()
     return result[0] if result else None
 
+def squad_cache_fingerprint(team_data, guild):
+    """Fingerprint all data that can change the rendered squad image."""
+    players = []
+    for player in team_data.get("players", []):
+        representative = get_representative(player["name"])
+        member = guild.get_member(representative[0]) if representative else None
+        avatar_url = str(member.avatar.url) if member and member.avatar else None
+        players.append({
+            "name": player.get("name"),
+            "role": player.get("role"),
+            "image": player.get("image"),
+            "representative": representative,
+            "avatar_url": avatar_url,
+        })
+
+    fingerprint_data = {
+        "team": team_data.get("team"),
+        "flag_url": get_team_flag_url(team_data["team"]),
+        "captain": get_team_captain(team_data["team"]),
+        "vice_captain": get_team_vice_captain(team_data["team"]),
+        "players": players,
+    }
+    payload = json.dumps(
+        fingerprint_data,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()[:16]
+
+
+async def scan_squad_image_cache(bot_instance):
+    """Find the newest cached image for each team in the squad cache channel."""
+    channel = bot_instance.get_channel(SQUAD_CACHE_CHANNEL_ID)
+    if not channel:
+        return {}
+
+    cache = {}
+    pattern = re.compile(
+        r"^SQUAD_CACHE team:(?P<team>.+?) hash:(?P<hash>[a-f0-9]+)"
+        r"(?: \((?P<version>\d+)\))?$"
+    )
+    async for message in channel.history(limit=None):
+        if not message.attachments:
+            continue
+        match = pattern.search(message.content.strip())
+        if not match:
+            continue
+        team_name = match.group("team")
+        version = int(match.group("version") or 1)
+        key = team_name.lower()
+        current = cache.get(key)
+        if current is None or version > current["version"]:
+            cache[key] = {
+                "team_name": team_name,
+                "hash": match.group("hash"),
+                "version": version,
+                "message_id": message.id,
+                "url": message.attachments[0].url,
+            }
+    return cache
+
+
+async def post_squad_image_to_cache(
+    bot_instance,
+    team_name,
+    fingerprint,
+    image_bytes,
+    version=1,
+):
+    """Post a versioned squad image to the cache channel."""
+    channel = bot_instance.get_channel(SQUAD_CACHE_CHANNEL_ID)
+    if not channel:
+        return None
+    image_bytes.seek(0)
+    try:
+        return await channel.send(
+            content=f"SQUAD_CACHE team:{team_name} hash:{fingerprint} ({version})",
+            file=discord.File(
+                image_bytes,
+                filename=f"{team_name}_squad.png",
+            ),
+        )
+    finally:
+        # The same generated stream may be sent to the requesting channel
+        # when cache delivery fails, so always leave it reusable.
+        image_bytes.seek(0)
+
+
+async def refresh_squad_image_cache(team_name, guild):
+    """Refresh an existing team cache after a squad-affecting update."""
+    try:
+        teams_data = load_players()
+        team_data = next(
+            (
+                team for team in teams_data
+                if team.get("team", "").lower() == team_name.lower()
+            ),
+            None,
+        )
+        if not team_data:
+            return False
+
+        cache = await scan_squad_image_cache(bot)
+        cached = cache.get(team_data["team"].lower())
+        if not cached:
+            return False
+
+        fingerprint = squad_cache_fingerprint(team_data, guild)
+        if cached["hash"] == fingerprint:
+            return False
+
+        image_bytes = await create_squad_image(team_data["team"], team_data, guild)
+        if not image_bytes:
+            return False
+
+        new_message = await post_squad_image_to_cache(
+            bot,
+            team_data["team"],
+            fingerprint,
+            image_bytes,
+            version=cached["version"] + 1,
+        )
+        return bool(new_message)
+    except Exception as exc:
+        print(f"[SquadCache] Refresh failed for {team_name}: {exc}")
+        return False
+
+
 def set_team_vice_captain(team_name, player_name, user_id, username):
     """Set or replace a team's vice-captain."""
     conn = sqlite3.connect('players.db')
@@ -1846,6 +1978,10 @@ async def claim_command(ctx, user: discord.Member, *, player_name: str):
               (player['name'], user.id, user.name))
     conn.commit()
     conn.close()
+
+    asyncio.get_event_loop().create_task(
+        refresh_squad_image_cache(team_name, ctx.guild)
+    )
 
     await ctx.send(
         f"✅ {user.mention} is now representing **{player['name']}** from {team_name}!"
@@ -2071,6 +2207,10 @@ async def specialclaim_command(ctx, team_name: str, *, rest: str = ""):
         conn.commit()
         conn.close()
 
+        asyncio.get_event_loop().create_task(
+            refresh_squad_image_cache(actual_team_name, ctx.guild)
+        )
+
         await ctx.send(f"✅ {member.mention} is now representing **{matched_player['name']}** from {actual_team_name}!")
 
         # Assign team role
@@ -2177,6 +2317,10 @@ async def unclaim_command(ctx, *, player_name: str):
               (player['name'],))
     conn.commit()
     conn.close()
+
+    asyncio.get_event_loop().create_task(
+        refresh_squad_image_cache(team_name, ctx.guild)
+    )
 
     await ctx.send(
         f"✅ Removed @{existing[0]} as the representative of **{player['name']}**."
@@ -2595,6 +2739,12 @@ async def unrepresent_command(ctx):
 
     conn.commit()
     conn.close()
+
+    _, team_names = find_player(player_name)
+    if team_names:
+        asyncio.get_event_loop().create_task(
+            refresh_squad_image_cache(team_names[0], ctx.guild)
+        )
 
     await msg.edit(embed=discord.Embed(
         title="✅ Done",
@@ -3156,6 +3306,93 @@ async def playerlist_command(ctx):
         view = PlayerListView(pages, ctx)
         view.message = await ctx.send(embed=pages[0], view=view)
 
+
+@bot.command(
+    name="cachesquadimage",
+    help="[OWNER] Build/cache all current squad images",
+)
+async def cachesquadimage_command(ctx):
+    """Build every current squad image and upload it to the squad cache."""
+    if ctx.author.id != SQUAD_CACHE_OWNER_ID:
+        return
+
+    teams_data = load_players()
+    if not teams_data:
+        await ctx.send("❌ No player data available.")
+        return
+
+    cache_channel = bot.get_channel(SQUAD_CACHE_CHANNEL_ID)
+    if not cache_channel:
+        await ctx.send("❌ Squad cache channel is unavailable.")
+        return
+
+    status = await ctx.send(
+        f"⏳ Caching **{len(teams_data)}** squad images..."
+    )
+    cache = await scan_squad_image_cache(bot)
+    uploaded = 0
+    skipped = 0
+    failed = []
+
+    for team_data in teams_data:
+        team_name = team_data["team"]
+        fingerprint = squad_cache_fingerprint(team_data, ctx.guild)
+        cached = cache.get(team_name.lower())
+        if cached and cached["hash"] == fingerprint:
+            skipped += 1
+            continue
+
+        try:
+            image_bytes = await create_squad_image(
+                team_name,
+                team_data,
+                ctx.guild,
+            )
+            if not image_bytes:
+                failed.append(f"{team_name}: image generation returned nothing")
+                continue
+
+            version = (cached["version"] + 1) if cached else 1
+            message = await post_squad_image_to_cache(
+                bot,
+                team_name,
+                fingerprint,
+                image_bytes,
+                version=version,
+            )
+            if message:
+                uploaded += 1
+                cache[team_name.lower()] = {
+                    "team_name": team_name,
+                    "hash": fingerprint,
+                    "version": version,
+                    "message_id": message.id,
+                    "url": message.attachments[0].url,
+                }
+            else:
+                failed.append(f"{team_name}: cache channel unavailable")
+        except Exception as exc:
+            failed.append(f"{team_name}: {exc}")
+
+    summary = (
+        f"✅ Uploaded/updated: **{uploaded}**\n"
+        f"⏭️ Already current: **{skipped}**\n"
+        f"❌ Failed: **{len(failed)}**"
+    )
+    embed = discord.Embed(
+        title="🏏 Squad Image Cache Complete",
+        description=summary,
+        color=0x00A86B if not failed else 0xFFA500,
+    )
+    if failed:
+        embed.add_field(
+            name="Issues",
+            value="\n".join(f"• {item}" for item in failed[:15]),
+            inline=False,
+        )
+    await status.edit(content=None, embed=embed)
+
+
 @bot.command(name="viewteam", aliases=["vt"], help="View all players in a specific team")
 async def viewteam_command(ctx, *, team_name: str):
     # Send loading message
@@ -3180,8 +3417,37 @@ async def viewteam_command(ctx, *, team_name: str):
         await ctx.send(f"❌ Team '{team_name}' not found.\n\n**Available teams:** {available_teams}")
         return
 
-    # Generate squad image
-    squad_image = await create_squad_image(team_data['team'], team_data, ctx.guild)
+    # Use the cached image whenever the current squad fingerprint matches.
+    # A changed roster/claim/avatar/captain causes a new version to be built
+    # and uploaded before the result is shown.
+    squad_fingerprint = squad_cache_fingerprint(team_data, ctx.guild)
+    squad_cache = await scan_squad_image_cache(bot)
+    cached_squad = squad_cache.get(team_data["team"].lower())
+    squad_image = None
+    cached_squad_url = None
+    if cached_squad and cached_squad["hash"] == squad_fingerprint:
+        cached_squad_url = cached_squad["url"]
+    else:
+        squad_image = await create_squad_image(
+            team_data['team'],
+            team_data,
+            ctx.guild,
+        )
+        if squad_image:
+            version = (cached_squad["version"] + 1) if cached_squad else 1
+            try:
+                cached_message = await post_squad_image_to_cache(
+                    bot,
+                    team_data["team"],
+                    squad_fingerprint,
+                    squad_image,
+                    version=version,
+                )
+                if cached_message:
+                    cached_squad_url = cached_message.attachments[0].url
+                    squad_image = None
+            except (discord.Forbidden, discord.HTTPException) as exc:
+                print(f"[SquadCache] Could not cache {team_data['team']}: {exc}")
 
     flag = get_team_flag(team_data['team'])
     flag_url = get_team_flag_url(team_data['team'])
@@ -3210,8 +3476,10 @@ async def viewteam_command(ctx, *, team_name: str):
         color=get_team_color(team_data['team'])
     )
 
-    # Set generated squad image as main embed image
-    if squad_image:
+    # Set the cached squad image as the main embed image.
+    if cached_squad_url:
+        embed.set_image(url=cached_squad_url)
+    elif squad_image:
         file = discord.File(squad_image, filename="squad.png")
         embed.set_image(url="attachment://squad.png")
 
@@ -3801,6 +4069,7 @@ async def sync_left_command(ctx):
 
     removed_count = 0
     removed_list = []
+    affected_teams = set()
 
     for player_name, user_id in all_claims:
         # ctx.guild.get_member relies on the member cache (requires intents.members = True)
@@ -3808,6 +4077,9 @@ async def sync_left_command(ctx):
 
         # If member is None, they are likely not in the server anymore
         if member is None:
+            _, team_names = find_player(player_name)
+            if team_names:
+                affected_teams.add(team_names[0])
             # Remove from representatives
             c.execute("DELETE FROM player_representatives WHERE player_name = ?", (player_name,))
 
@@ -3820,6 +4092,11 @@ async def sync_left_command(ctx):
 
     conn.commit()
     conn.close()
+
+    for affected_team in affected_teams:
+        asyncio.get_event_loop().create_task(
+            refresh_squad_image_cache(affected_team, ctx.guild)
+        )
 
     if removed_count > 0:
         # Create summary embed
@@ -3879,6 +4156,9 @@ async def setcaptain_command(ctx, team_name: str, *, username: str):
 
     # Set as captain
     set_team_captain(team_data['team'], player_name, user_id, username)
+    asyncio.get_event_loop().create_task(
+        refresh_squad_image_cache(team_data['team'], ctx.guild)
+    )
 
     flag = get_team_flag(team_data['team'])
     embed = discord.Embed(
@@ -3925,6 +4205,9 @@ async def removecaptain_command(ctx, *, team_name: str):
     # Remove captain
     remove_team_captain(team_data['team'])
     remove_team_vice_captain(team_data['team'])
+    asyncio.get_event_loop().create_task(
+        refresh_squad_image_cache(team_data['team'], ctx.guild)
+    )
 
     flag = get_team_flag(team_data['team'])
     embed = discord.Embed(
@@ -4064,6 +4347,9 @@ class ViceCaptainSelectView(View):
             player_name,
             rep_info[0],
             rep_info[1]
+        )
+        asyncio.get_event_loop().create_task(
+            refresh_squad_image_cache(self.team_data['team'], interaction.guild)
         )
 
         for child in self.children:
@@ -4295,6 +4581,7 @@ async def syncplayers_command(ctx):
 
     removed_count = 0
     removed_list = []
+    affected_teams = set()
 
     for player_name, user_id, username in all_claims:
         # Check if member is still in the server
@@ -4302,6 +4589,9 @@ async def syncplayers_command(ctx):
 
         # If member is None, they are not in the server anymore
         if member is None:
+            _, team_names = find_player(player_name)
+            if team_names:
+                affected_teams.add(team_names[0])
             # Remove from representatives
             c.execute("DELETE FROM player_representatives WHERE player_name = ?", (player_name,))
 
@@ -4314,6 +4604,11 @@ async def syncplayers_command(ctx):
 
     conn.commit()
     conn.close()
+
+    for affected_team in affected_teams:
+        asyncio.get_event_loop().create_task(
+            refresh_squad_image_cache(affected_team, ctx.guild)
+        )
 
     if removed_count > 0:
         # Create summary embed
@@ -5986,6 +6281,7 @@ async def deletereal_command(ctx, *, player_name: str):
     ))
 
     deletion_log = []
+    _, deleted_player_teams = find_player(exact_player_name)
 
     conn = sqlite3.connect('players.db')
     c = conn.cursor()
@@ -6021,6 +6317,11 @@ async def deletereal_command(ctx, *, player_name: str):
     conn.commit()
 
     conn.close()
+
+    for affected_team in deleted_player_teams or []:
+        asyncio.get_event_loop().create_task(
+            refresh_squad_image_cache(affected_team, ctx.guild)
+        )
 
     # 5. Remove from elite players
     if exact_player_name in elite_players:
