@@ -19,6 +19,7 @@ from typing import Dict, Optional
 from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import aiohttp
+import tempfile
 from discord.ui import Select, View
 from discord.ext import commands, tasks
 from discord.ext.commands.cooldowns import BucketType
@@ -27,10 +28,68 @@ from discord.ext.commands.cooldowns import BucketType
 # existing lightweight connection style, but make every connection wait for
 # short-lived writer contention instead of failing immediately.
 _sqlite_connect = sqlite3.connect
+_SQLITE_RETRY_ATTEMPTS = 5
+_SQLITE_RETRY_DELAYS = (0.05, 0.15, 0.35, 0.75, 1.5)
+
+
+def _is_sqlite_lock_error(error):
+    return isinstance(error, sqlite3.OperationalError) and any(
+        marker in str(error).lower()
+        for marker in ("database is locked", "database table is locked")
+    )
+
+
+def _retry_sqlite_operation(operation, label):
+    for attempt in range(_SQLITE_RETRY_ATTEMPTS):
+        try:
+            return operation()
+        except sqlite3.OperationalError as error:
+            if not _is_sqlite_lock_error(error) or attempt == _SQLITE_RETRY_ATTEMPTS - 1:
+                raise
+            time.sleep(_SQLITE_RETRY_DELAYS[attempt])
+    raise RuntimeError(f"SQLite retry loop exited unexpectedly: {label}")
+
+
+class _RetryCursor(sqlite3.Cursor):
+    def execute(self, sql, parameters=()):
+        return _retry_sqlite_operation(
+            lambda: super(_RetryCursor, self).execute(sql, parameters),
+            "cursor.execute",
+        )
+
+    def executemany(self, sql, parameters):
+        return _retry_sqlite_operation(
+            lambda: super(_RetryCursor, self).executemany(sql, parameters),
+            "cursor.executemany",
+        )
+
+
+class _RetryConnection(sqlite3.Connection):
+    def cursor(self, factory=None):
+        return super().cursor(factory or _RetryCursor)
+
+    def execute(self, sql, parameters=()):
+        return _retry_sqlite_operation(
+            lambda: super(_RetryConnection, self).execute(sql, parameters),
+            "connection.execute",
+        )
+
+    def executemany(self, sql, parameters):
+        return _retry_sqlite_operation(
+            lambda: super(_RetryConnection, self).executemany(sql, parameters),
+            "connection.executemany",
+        )
+
+    def commit(self):
+        return _retry_sqlite_operation(
+            lambda: super(_RetryConnection, self).commit(),
+            "connection.commit",
+        )
 
 
 def _connect_sqlite(*args, **kwargs):
     kwargs.setdefault("timeout", 30.0)
+    kwargs.setdefault("factory", _RetryConnection)
     conn = _sqlite_connect(*args, **kwargs)
     conn.execute("PRAGMA busy_timeout = 30000")
     return conn
@@ -83,23 +142,37 @@ async def restore_db_from_channel():
 
 async def backup_db_to_channel():
     """Send the current players.db to the backup channel."""
+    backup_path = None
     try:
         channel = bot.get_channel(DB_BACKUP_CHANNEL_ID)
         if channel:
-            # Include committed changes still held in the WAL before copying
-            # the database file for Discord backup.
-            await asyncio.to_thread(_checkpoint_database)
-            await channel.send(file=discord.File('players.db'))
+            # Use SQLite's online backup API instead of copying the main file
+            # or forcing a WAL TRUNCATE checkpoint. Both of those approaches
+            # can omit committed WAL data or contend with live writers.
+            backup_path = await asyncio.to_thread(_create_consistent_backup)
+            await channel.send(file=discord.File(backup_path, filename='players.db'))
     except Exception as e:
         print(f"[backup] DB backup failed (non-critical): {e}")
-
-
-def _checkpoint_database():
-    conn = sqlite3.connect("players.db")
-    try:
-        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     finally:
-        conn.close()
+        if backup_path:
+            try:
+                os.unlink(backup_path)
+            except OSError:
+                pass
+
+
+def _create_consistent_backup():
+    fd, backup_path = tempfile.mkstemp(prefix="players-backup-", suffix=".db")
+    os.close(fd)
+    source = sqlite3.connect("players.db", timeout=30.0)
+    target = sqlite3.connect(backup_path, timeout=30.0)
+    try:
+        source.backup(target)
+        target.commit()
+        return backup_path
+    finally:
+        target.close()
+        source.close()
 
 class MyHelp(commands.MinimalHelpCommand):
     async def send_pages(self):
@@ -731,7 +804,9 @@ async def on_command_error(ctx, error):
             f"⏳ Please wait **{error.retry_after:.1f}s** before using that command again."
         )
         return
-    if isinstance(error, sqlite3.OperationalError) and "locked" in str(error).lower():
+    if _is_sqlite_lock_error(error):
+        command_name = getattr(ctx.command, "qualified_name", "unknown")
+        print(f"[SQLite] lock persisted after retries in command={command_name}: {error!r}")
         await ctx.send("⏳ The database is busy finishing another update. Please try again in a moment.")
         return
     await ctx.send(f"❌ Error: {error}")
