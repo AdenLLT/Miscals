@@ -1780,11 +1780,27 @@ def get_team_captain(team_name):
 def set_team_captain(team_name, player_name, user_id, username):
     """Set a player as team captain"""
     conn = sqlite3.connect('players.db')
-    c = conn.cursor()
-    c.execute("INSERT OR REPLACE INTO team_captains VALUES (?, ?, ?, ?)",
-              (team_name, player_name, user_id, username))
-    conn.commit()
-    conn.close()
+    try:
+        c = conn.cursor()
+        c.execute("INSERT OR REPLACE INTO team_captains VALUES (?, ?, ?, ?)",
+                  (team_name, player_name, user_id, username))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_player_representative_by_username(username):
+    """Look up a representative without holding the connection across awaits."""
+    conn = sqlite3.connect('players.db')
+    try:
+        c = conn.cursor()
+        c.execute(
+            "SELECT player_name, user_id FROM player_representatives WHERE username = ?",
+            (username,),
+        )
+        return c.fetchone()
+    finally:
+        conn.close()
 
 def remove_team_captain(team_name):
     """Remove captain from a team"""
@@ -4251,12 +4267,12 @@ async def setcaptain_command(ctx, team_name: str, *, username: str):
         await ctx.send(f"❌ Team '{team_name}' not found.\n\n**Available teams:** {available_teams}")
         return
 
-    # Get player info from database
-    conn = sqlite3.connect('players.db')
-    c = conn.cursor()
-    c.execute("SELECT player_name, user_id FROM player_representatives WHERE username = ?", (username,))
-    result = c.fetchone()
-    conn.close()
+    # Keep synchronous SQLite work off Discord's event loop. In particular,
+    # commit() can wait on SQLite's busy timeout when another command writes.
+    result = await asyncio.to_thread(
+        get_player_representative_by_username,
+        username,
+    )
 
     if not result:
         await ctx.send(f"❌ No player representative found with username `{username}`.\nMake sure they have claimed a player first.")
@@ -4270,8 +4286,15 @@ async def setcaptain_command(ctx, team_name: str, *, username: str):
         await ctx.send(f"❌ **{player_name}** (represented by @{username}) is not from **{team_data['team']}**!")
         return
 
-    # Set as captain
-    set_team_captain(team_data['team'], player_name, user_id, username)
+    # Set as captain off the event loop; the shared SQLite retry/timeout layer
+    # may wait briefly for another writer to finish.
+    await asyncio.to_thread(
+        set_team_captain,
+        team_data['team'],
+        player_name,
+        user_id,
+        username,
+    )
     asyncio.get_event_loop().create_task(
         refresh_squad_image_cache(team_data['team'], ctx.guild)
     )
