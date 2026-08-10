@@ -42,6 +42,20 @@ def init_minigame_db():
         user_id   INTEGER PRIMARY KEY,
         last_drop TIMESTAMP
     )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS minigame_fantasy_points (
+        user_id      INTEGER,
+        player_name  TEXT,
+        total_points REAL DEFAULT 0,
+        PRIMARY KEY (user_id, player_name)
+    )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS minigame_fantasy_points_log (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id       INTEGER,
+        player_name   TEXT,
+        match_id      INTEGER,
+        points_earned REAL,
+        timestamp     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )''')
     conn.commit()
     conn.close()
 
@@ -105,13 +119,17 @@ def get_captains(user_id: int):
 
 def set_captains(user_id: int, captain: str, vc: str):
     conn = _db()
-    c = conn.cursor()
-    c.execute(
-        "INSERT OR REPLACE INTO minigame_captains (user_id, captain, vc) VALUES (?,?,?)",
-        (user_id, captain, vc)
-    )
-    conn.commit()
-    conn.close()
+    try:
+        c = conn.cursor()
+        # Leadership is a one-time election.  Use INSERT OR IGNORE so an
+        # already elected pair cannot be replaced by a stale menu interaction.
+        c.execute(
+            "INSERT OR IGNORE INTO minigame_captains (user_id, captain, vc) VALUES (?,?,?)",
+            (user_id, captain, vc)
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def clear_invalid_captains(user_id: int):
@@ -121,7 +139,249 @@ def clear_invalid_captains(user_id: int):
     new_cap = cap if cap in squad_names else None
     new_vc  = vc  if vc  in squad_names else None
     if new_cap != cap or new_vc != vc:
-        set_captains(user_id, new_cap or '', new_vc or '')
+        conn = _db()
+        try:
+            c = conn.cursor()
+            c.execute(
+                "UPDATE minigame_captains SET captain=?, vc=? WHERE user_id=?",
+                (new_cap or '', new_vc or '', user_id)
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def _format_points(points) -> str:
+    """Format whole fantasy points without an unnecessary decimal."""
+    value = float(points or 0)
+    return str(int(value)) if value.is_integer() else f"{value:.1f}"
+
+
+def get_squad_fantasy_breakdown(user_id: int):
+    """Return every squad player and their cumulative fantasy contribution."""
+    conn = _db()
+    try:
+        c = conn.cursor()
+        c.execute(
+            """
+            SELECT s.player_name, s.claimed_uid, s.role, s.team,
+                   COALESCE(p.total_points, 0),
+                   COALESCE(l.captain, ''), COALESCE(l.vc, '')
+            FROM minigame_squads AS s
+            LEFT JOIN minigame_fantasy_points AS p
+              ON p.user_id = s.user_id AND p.player_name = s.player_name
+            LEFT JOIN minigame_captains AS l ON l.user_id = s.user_id
+            WHERE s.user_id = ?
+            ORDER BY s.role, s.player_name
+            """,
+            (user_id,),
+        )
+        return c.fetchall()
+    finally:
+        conn.close()
+
+
+def get_squad_fantasy_leaderboard():
+    """Return all minigame squads ordered by their cumulative fantasy points."""
+    conn = _db()
+    try:
+        c = conn.cursor()
+        c.execute(
+            """
+            SELECT s.user_id,
+                   COALESCE(SUM(p.total_points), 0) AS total_points,
+                   COUNT(*) AS player_count
+            FROM minigame_squads AS s
+            LEFT JOIN minigame_fantasy_points AS p
+              ON p.user_id = s.user_id AND p.player_name = s.player_name
+            GROUP BY s.user_id
+            ORDER BY total_points DESC, s.user_id ASC
+            """
+        )
+        return c.fetchall()
+    finally:
+        conn.close()
+
+
+def reset_squad_fantasy_points():
+    """Clear fantasy points while keeping every user's collected squad."""
+    conn = _db()
+    try:
+        c = conn.cursor()
+        c.execute("SELECT COUNT(DISTINCT user_id) FROM minigame_fantasy_points")
+        users_count = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM minigame_fantasy_points_log")
+        logs_count = c.fetchone()[0]
+        c.execute("DELETE FROM minigame_fantasy_points")
+        c.execute("DELETE FROM minigame_fantasy_points_log")
+        conn.commit()
+        return users_count, logs_count
+    finally:
+        conn.close()
+
+
+def calculate_squad_fantasy_points_for_match(matches, bot=None):
+    """Award the existing fantasy formula to current minigame squads.
+
+    The base impact formula intentionally remains the old match-fantasy rule:
+    runs + (wickets * 20).  Captain and VC multipliers are applied only to the
+    owner whose minigame squad contains that player.
+    """
+    conn = _db()
+    try:
+        c = conn.cursor()
+        player_impact_points = {}
+
+        user_ids = [int(match[0]) for match in matches]
+        if user_ids:
+            placeholders = ",".join("?" for _ in user_ids)
+            c.execute(
+                f"SELECT user_id, player_name FROM player_representatives "
+                f"WHERE user_id IN ({placeholders})",
+                user_ids,
+            )
+            names_by_user_id = dict(c.fetchall())
+        else:
+            names_by_user_id = {}
+
+        for match in matches:
+            user_id, runs, balls_faced, runs_conceded, balls_bowled, wickets, not_out = map(int, match)
+            player_name = names_by_user_id.get(user_id)
+            if not player_name:
+                continue
+            player_impact_points[player_name] = runs + (wickets * 20)
+
+        if not player_impact_points:
+            return {}
+
+        c.execute(
+            """
+            SELECT s.user_id, s.player_name,
+                   COALESCE(l.captain, ''), COALESCE(l.vc, '')
+            FROM minigame_squads AS s
+            LEFT JOIN minigame_captains AS l ON l.user_id = s.user_id
+            WHERE s.player_name IN ({})
+            """.format(",".join("?" for _ in player_impact_points)),
+            list(player_impact_points),
+        )
+        squad_players = c.fetchall()
+
+        points_awarded = {}
+        for squad_user_id, player_name, captain, vc in squad_players:
+            impact = player_impact_points[player_name]
+            if impact <= 0:
+                continue
+            multiplier = 2 if player_name == captain else 1.5 if player_name == vc else 1
+            points = impact * multiplier
+
+            c.execute(
+                """
+                INSERT INTO minigame_fantasy_points (user_id, player_name, total_points)
+                VALUES (?, ?, ?)
+                ON CONFLICT(user_id, player_name) DO UPDATE SET
+                    total_points = total_points + excluded.total_points
+                """,
+                (squad_user_id, player_name, points),
+            )
+            c.execute(
+                """
+                INSERT INTO minigame_fantasy_points_log
+                    (user_id, player_name, match_id, points_earned)
+                VALUES (?, ?, NULL, ?)
+                """,
+                (squad_user_id, player_name, points),
+            )
+            points_awarded[squad_user_id] = points_awarded.get(squad_user_id, 0) + points
+
+        conn.commit()
+        return points_awarded
+    finally:
+        conn.close()
+
+
+class SquadFantasyLeaderboardView(View):
+    """Paginated leaderboard for fantasy points earned by squad owners."""
+    def __init__(self, ctx, bot, all_entries, items_per_page=10):
+        super().__init__(timeout=120)
+        self.ctx = ctx
+        self.bot = bot
+        self.all_entries = all_entries
+        self.items_per_page = items_per_page
+        self.current_page = 0
+        self.max_pages = max(
+            1,
+            (len(all_entries) + items_per_page - 1) // items_per_page,
+        )
+        self._refresh_buttons()
+
+    def _refresh_buttons(self):
+        self.children[0].disabled = self.current_page == 0
+        self.children[1].disabled = self.current_page >= self.max_pages - 1
+
+    def get_page_embed(self):
+        start = self.current_page * self.items_per_page
+        end = start + self.items_per_page
+        page_entries = self.all_entries[start:end]
+
+        lines = []
+        for rank, (user_id, points, player_count) in enumerate(
+            page_entries,
+            start=start + 1,
+        ):
+            medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(rank, "")
+            member = self.ctx.guild.get_member(user_id)
+            label = member.mention if member else f"<@{user_id}>"
+            lines.append(
+                f"{medal} **{rank}.** {label} — "
+                f"**{_format_points(points)} pts** "
+                f"({player_count} players)"
+            )
+
+        embed = discord.Embed(
+            title="🏆 Squad Fantasy Leaderboard",
+            description=(
+                "Top users by fantasy points earned from players in their "
+                "**-mysquad**.\n\n"
+                + ("\n".join(lines) if lines else "No squads yet!")
+            ),
+            color=0xFFD700,
+        )
+        embed.set_footer(text=f"Page {self.current_page + 1}/{self.max_pages}")
+        return embed
+
+    @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.gray)
+    async def previous_button(self, interaction: discord.Interaction, button):
+        if interaction.user.id != self.ctx.author.id:
+            return await interaction.response.send_message(
+                "❌ Not your leaderboard!", ephemeral=True
+            )
+        if self.current_page == 0:
+            return await interaction.response.send_message(
+                "This is the first page.", ephemeral=True
+            )
+        self.current_page -= 1
+        self._refresh_buttons()
+        await interaction.response.edit_message(
+            embed=self.get_page_embed(),
+            view=self,
+        )
+
+    @discord.ui.button(label="Next ▶️", style=discord.ButtonStyle.gray)
+    async def next_button(self, interaction: discord.Interaction, button):
+        if interaction.user.id != self.ctx.author.id:
+            return await interaction.response.send_message(
+                "❌ Not your leaderboard!", ephemeral=True
+            )
+        if self.current_page >= self.max_pages - 1:
+            return await interaction.response.send_message(
+                "This is the last page.", ephemeral=True
+            )
+        self.current_page += 1
+        self._refresh_buttons()
+        await interaction.response.edit_message(
+            embed=self.get_page_embed(),
+            view=self,
+        )
 
 
 def get_last_drop(user_id: int):
@@ -276,6 +536,12 @@ class ElectView(View):
     async def _confirm_cb(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
             return await interaction.response.send_message("❌ Not your menu!", ephemeral=True)
+        existing_captain, existing_vc = get_captains(self.user_id)
+        if existing_captain and existing_vc:
+            return await interaction.response.send_message(
+                "🔒 Your Captain and Vice-Captain choices are already locked.",
+                ephemeral=True,
+            )
         if not self.captain_choice:
             return await interaction.response.send_message(
                 "❌ Please select a **Captain** first!", ephemeral=True
@@ -289,6 +555,7 @@ class ElectView(View):
                 "❌ Captain and Vice-Captain can't be the same player!", ephemeral=True
             )
         set_captains(self.user_id, self.captain_choice, self.vc_choice)
+        saved_captain, saved_vc = get_captains(self.user_id)
         cap_emoji  = _get_player_emoji(self.captain_choice, self.bot)
         vc_emoji   = _get_player_emoji(self.vc_choice,      self.bot)
         cap_line   = f"{cap_emoji} **{self.captain_choice}**" if cap_emoji else f"**{self.captain_choice}**"
@@ -297,7 +564,8 @@ class ElectView(View):
             title="✅ Leadership Elected!",
             description=(
                 f"👑 **Captain (2X):** {cap_line}\n"
-                f"🥈 **Vice-Captain (1.5X):** {vc_line}"
+                f"🥈 **Vice-Captain (1.5X):** {vc_line}\n\n"
+                "🔒 These choices are now locked."
             ),
             color=0xFFD700
         )
@@ -511,8 +779,43 @@ class MiniPlayerGame(commands.Cog):
         embed.set_footer(text=f"Cleaned by {ctx.author}")
         await ctx.send(embed=embed)
 
+    def _build_fantasy_embed(self, ctx, squad, fantasy_rows, title):
+        captain, vc = get_captains(ctx.author.id)
+        total_points = sum(float(row[4] or 0) for row in fantasy_rows)
+
+        embed = discord.Embed(
+            title=title,
+            description=(
+                f"✅ **Total Fantasy Points:** {_format_points(total_points)}\n"
+                f"**Squad:** {len(squad)}/{MAX_SQUAD_SIZE} players"
+            ),
+            color=0xFFD700,
+        )
+
+        lines = []
+        for pname, claimed_uid, role, team, points, row_captain, row_vc in fantasy_rows:
+            emoji = _get_player_emoji(pname, self.bot)
+            flag = _flag(team)
+            marker = " 👑 **C 2X**" if pname == captain else " 🥈 **VC 1.5X**" if pname == vc else ""
+            prefix = f"{emoji} " if emoji else ""
+            lines.append(
+                f"{prefix}**{pname}** {flag}{marker} — "
+                f"**{_format_points(points)} pts**"
+            )
+
+        if lines:
+            embed.add_field(name="Player Contributions", value="\n".join(lines), inline=False)
+        if captain or vc:
+            embed.set_footer(
+                text=(
+                    f"👑 Captain: {captain or '—'} (2X)  •  "
+                    f"🥈 Vice-Captain: {vc or '—'} (1.5X)"
+                )
+            )
+        return embed
+
     # ── -mysquad ─────────────────────────────────────────────
-    @commands.command(name="mysquad", help="View your mini player squad.")
+    @commands.command(name="mysquad", aliases=["squad"], help="View your mini player squad.")
     async def mysquad_command(self, ctx):
         user_id = ctx.author.id
         squad   = get_squad(user_id)
@@ -525,63 +828,43 @@ class MiniPlayerGame(commands.Cog):
             )
             return await ctx.send(embed=embed)
 
-        clear_invalid_captains(user_id)
-        captain, vc = get_captains(user_id)
-
-        # Group by category
-        cats: dict = {"WK": [], "BAT": [], "BOWL": [], "ALR": []}
-        for pname, claimed_uid, role, team in squad:
-            cats[_role_category(role)].append((pname, claimed_uid, team))
-
-        cat_labels = {
-            "WK":   "🧤 Wicketkeepers",
-            "BAT":  "🏏 Batsmen",
-            "BOWL": "⚡ Bowlers",
-            "ALR":  "⭐ All-Rounders",
-        }
-
-        embed = discord.Embed(
-            title=f"📋 {ctx.author.display_name}'s Squad",
-            description=f"**{len(squad)}/{MAX_SQUAD_SIZE} players**   •   Use **-elect** to set C / VC",
-            color=0x1E8449
+        embed = self._build_fantasy_embed(
+            ctx,
+            squad,
+            get_squad_fantasy_breakdown(user_id),
+            f"📋 {ctx.author.display_name}'s Squad",
         )
-
-        for cat, label in cat_labels.items():
-            players = cats.get(cat, [])
-            if not players:
-                continue
-            lines = []
-            for pname, claimed_uid, team in players:
-                flag  = _flag(team)
-                emoji = _get_player_emoji(pname, self.bot)
-
-                try:
-                    u      = self.bot.get_user(claimed_uid)
-                    handle = u.name if u else f"uid:{claimed_uid}"
-                except Exception:
-                    handle = f"uid:{claimed_uid}"
-
-                e_str = f"{emoji} " if emoji else ""
-                line  = f"{e_str}{pname} (@{handle}) {flag}"
-
-                if pname == captain:
-                    line = f"**(C) 2X** {e_str}**{pname}** (@{handle}) {flag}"
-                elif pname == vc:
-                    line = f"**(VC) 1.5X** {e_str}**{pname}** (@{handle}) {flag}"
-
-                lines.append(line)
-
-            embed.add_field(name=label, value="\n".join(lines), inline=False)
-
-        footer_parts = []
-        if captain:
-            footer_parts.append(f"👑 Captain: {captain} (2X)")
-        if vc:
-            footer_parts.append(f"🥈 Vice-Captain: {vc} (1.5X)")
-        if footer_parts:
-            embed.set_footer(text="  |  ".join(footer_parts))
-
         await ctx.send(embed=embed)
+
+    # ── -fantasy ──────────────────────────────────────────────
+    @commands.command(name="fantasy", help="View your squad's fantasy points.")
+    async def fantasy_command(self, ctx):
+        squad = get_squad(ctx.author.id)
+        if not squad:
+            return await ctx.send(
+                "❌ Your squad is empty! Use **-drop** to get players first."
+            )
+
+        fantasy_rows = get_squad_fantasy_breakdown(ctx.author.id)
+        embed = self._build_fantasy_embed(
+            ctx,
+            squad,
+            fantasy_rows,
+            f"🏆 {ctx.author.display_name}'s Fantasy Points",
+        )
+        await ctx.send(embed=embed)
+
+    # ── -fantasylb ────────────────────────────────────────────
+    @commands.command(name="fantasylb", aliases=["flb"], help="View the squad fantasy leaderboard.")
+    async def fantasy_leaderboard_command(self, ctx):
+        entries = get_squad_fantasy_leaderboard()
+        if not entries:
+            return await ctx.send(
+                "❌ No squads yet! Use **-drop** to collect players first."
+            )
+
+        view = SquadFantasyLeaderboardView(ctx, self.bot, entries)
+        await ctx.send(embed=view.get_page_embed(), view=view)
 
     # ── -elect ───────────────────────────────────────────────
     @commands.command(name="elect", help="Elect Captain and Vice-Captain from your squad.")
@@ -600,6 +883,11 @@ class MiniPlayerGame(commands.Cog):
 
         squad_names       = [r[0] for r in squad]
         captain, vc       = get_captains(user_id)
+        if captain and vc:
+            return await ctx.send(
+                f"🔒 Your Captain (**{captain}**) and Vice-Captain (**{vc}**) "
+                "choices are already locked and cannot be changed."
+            )
 
         embed = discord.Embed(
             title="👑 Elect Captain & Vice-Captain",
