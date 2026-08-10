@@ -738,6 +738,80 @@ def member_has_team_role(member):
     return any(role.id in team_role_ids for role in member.roles)
 
 
+def get_leadership_teams(user_id):
+    """Return teams for which a Discord user is the current captain or VC."""
+    conn = sqlite3.connect('players.db')
+    try:
+        c = conn.cursor()
+        c.execute(
+            """
+            SELECT team_name FROM team_captains WHERE user_id = ?
+            UNION
+            SELECT team_name FROM team_vice_captains WHERE user_id = ?
+            """,
+            (user_id, user_id),
+        )
+        return [row[0] for row in c.fetchall()]
+    finally:
+        conn.close()
+
+
+@bot.command(name="call", help="[CAPTAIN/VC] Alert your team about a World Cup match")
+@commands.cooldown(1, 30, BucketType.user)
+async def call_command(ctx):
+    """Ping the team role and DM all non-bot members of the team."""
+    author_team_keys = {
+        team_key
+        for team_key, role_id in TEAM_ROLE_IDS.items()
+        if any(role.id == role_id for role in ctx.author.roles)
+    }
+    leadership_teams = await asyncio.to_thread(
+        get_leadership_teams,
+        ctx.author.id,
+    )
+    leadership_team_keys = {team_name.lower() for team_name in leadership_teams}
+    team_key = next(
+        (team_key for team_key in author_team_keys if team_key in leadership_team_keys),
+        None,
+    )
+
+    if not team_key:
+        await ctx.send("❌ Only a team's captain or vice-captain can use `-call`.")
+        return
+
+    team_role = ctx.guild.get_role(TEAM_ROLE_IDS[team_key])
+    if not team_role:
+        await ctx.send(f"❌ Could not find the Discord role for **{team_key.title()}**.")
+        return
+
+    # This channel mention renders as a clickable #channel link in the DM.
+    call_embed = discord.Embed(
+        title="Captain's Call 🔔 🧢",
+        description=f"‼️ Join World Cup Match: {ctx.channel.mention}",
+        color=get_team_color(team_key),
+    )
+
+    await ctx.send(
+        team_role.mention,
+        allowed_mentions=discord.AllowedMentions(
+            roles=True,
+            users=False,
+            everyone=False,
+        ),
+    )
+
+    members = [member for member in team_role.members if not member.bot]
+    failed = 0
+    for member in members:
+        try:
+            await member.send(embed=call_embed)
+        except (discord.Forbidden, discord.HTTPException):
+            failed += 1
+
+    if failed:
+        await ctx.send(f"⚠️ I couldn't DM **{failed}** team member(s).")
+
+
 @bot.command(name="dmteam", help="[OWNER] DM everyone on a team")
 async def dmteam(ctx, team_name: str, *, message: str):
     if ctx.author.id != 765965975761715241:
