@@ -359,6 +359,7 @@ _last_commentator_idx: int = 0   # index into current active 3-commentator list
 _match_exclusion: dict = {}   # {(teamA, teamB): int}
 _current_match_key: tuple = ()
 _current_active_keys: list = []   # the 3 active keys for the current match
+_active_commentary_channel_id = None
 
 # ── Fixed exclamation openers for big moments ─────────────────────────────────
 _SIX_OPENERS = [
@@ -372,6 +373,38 @@ _FOUR_OPENERS = [
 _WICKET_OPENERS = [
     "🚨 **OUT!**", "🎯 **WICKET!**", "❌ **GONE!**", "🔥 **THAT'S OUT!**", "🚨 **WICKET!**", "💥 **GOT HIM!**",
 ]
+
+
+def reset_commentary_state(channel_id):
+    """Stop and clear commentary state for a completed channel match."""
+    global _last_timeline_key, _last_wicket_id, _last_commentator_idx
+    global _current_match_key, _current_active_keys, _active_commentary_channel_id
+
+    if (
+        _active_commentary_channel_id is not None
+        and _active_commentary_channel_id != channel_id
+    ):
+        return
+
+    _last_timeline_key = ""
+    _last_wicket_id = ""
+    _last_commentator_idx = 0
+    _current_match_key = ()
+    _current_active_keys = []
+    _active_commentary_channel_id = None
+    _history.clear()
+
+
+def _state_is_current(state):
+    """Return False when a newer update or match completion replaced state."""
+    import matchupdates
+
+    current = matchupdates._live_match_states.get(state.get('channel_id'))
+    return bool(
+        current
+        and current.get('state_version') == state.get('state_version')
+        and current.get('source_message_key') == state.get('source_message_key')
+    )
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -558,12 +591,14 @@ def _build_match_block(state: dict, bot) -> str:
     if buname:
         lines.append(f"Bowler: {_format_player(buid, buname, bfname, guild, bot)} — {bstats}")
 
-    timeline = state.get('timeline', [])
-    if timeline:
-        balls_in_cur = len(timeline) % 6
-        cur_over_balls = timeline[-balls_in_cur:] if balls_in_cur else timeline[-6:]
-        over_num = len(timeline) // 6
-        lines.append(f"Current over {over_num}: {' | '.join(cur_over_balls)}")
+    # Commentary must be grounded in the cricket bot's observed source
+    # message, not in the timeline parsed for the generated status image.
+    observed_text = state.get('source_message_text', '').strip()
+    if observed_text:
+        lines.append(
+            "Observed cricket-bot update (use this as the source of truth):\n"
+            + observed_text[:12000]
+        )
 
     return "\n".join(lines)
 
@@ -696,6 +731,7 @@ Return ONLY valid JSON, no markdown fences:
 
 async def background_commentary(bot):
     global _last_timeline_key, _last_wicket_id, _last_commentator_idx
+    global _active_commentary_channel_id
 
     await asyncio.sleep(20)
     print("[COMMENTARY] AI commentary system started.")
@@ -718,11 +754,11 @@ async def background_commentary(bot):
             if not channel:
                 await asyncio.sleep(12)
                 continue
+            _active_commentary_channel_id = channel_id
 
-            tkey      = state.get('timeline_key', '')
+            tkey      = state.get('source_message_key', '')
             wicket    = state.get('pending_wicket')
-            last_ball = state.get('last_ball', '')
-            over_done = state.get('over_completed', False)
+            observed_event = state.get('observed_event', 'ball')
 
             is_new_state  = tkey != _last_timeline_key
             wicket_id     = f"{(wicket or {}).get('out_player_name','')}_{(wicket or {}).get('runs','')}"
@@ -741,18 +777,15 @@ async def background_commentary(bot):
             if is_new_wicket:
                 event = 'wicket'
                 _last_wicket_id = wicket_id
-            elif over_done:
-                event = 'over_end'
-            elif last_ball == '6':
-                event = 'boundary_6'
-            elif last_ball == '4':
-                event = 'boundary_4'
             else:
-                event = 'ball'
+                event = observed_event
 
             _last_timeline_key = tkey
 
             # Generate commentary
+            if not _state_is_current(state):
+                await asyncio.sleep(2)
+                continue
             result = await _generate_commentary(state, event, active_keys, bot)
             if not result or not result.get('text'):
                 await asyncio.sleep(10)
@@ -768,6 +801,9 @@ async def background_commentary(bot):
                 await asyncio.sleep(10)
                 continue
 
+            if not _state_is_current(state):
+                await asyncio.sleep(2)
+                continue
             await webhook.send(content=c_text, username=c_info['name'], avatar_url=c_info['avatar'])
 
             _history.append({"key": c_key, "name": c_info['name'], "text": c_text})

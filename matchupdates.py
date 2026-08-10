@@ -133,7 +133,12 @@ EMOJI_MAPPING = {
 
 # Store last processed timeline per channel
 last_timelines = {}
+last_source_messages = {}
 
+# Match state is kept per channel so a completed game cannot leak into
+# another channel's commentary or suppress its first update.
+_live_match_states = {}
+_match_channel_versions = {}
 
 # Live match state — read by commentary.py
 _live_match_state: dict = {}
@@ -146,6 +151,82 @@ last_nowstats = {}
 
 # Track message IDs that have already triggered a nowstat (message-level dedup)
 sent_nowstat_message_ids = set()
+
+
+def is_match_finished_message(text):
+    """Return True for the cricket bot's final MVP/duration announcement."""
+    normalized = re.sub(r'\s+', ' ', text or '').strip().lower()
+    has_mvp = bool(re.search(r'most valuable player\s+is\s+<@!?\d+>', normalized))
+    has_duration = bool(
+        re.search(
+            r'this match lasted\s+\*?\d+\s+minutes?(?:\s+and\s+\d+\s+seconds?)?\s*!?\*?',
+            normalized,
+        )
+    )
+    return has_mvp or has_duration
+
+
+def publish_live_match_state(channel_id, updates):
+    """Publish one channel's state and invalidate older commentary work."""
+    version = _match_channel_versions.get(channel_id, 0) + 1
+    state = dict(_live_match_states.get(channel_id, {}))
+    state.update(updates)
+    state['channel_id'] = channel_id
+    state['state_version'] = version
+    _match_channel_versions[channel_id] = version
+    _live_match_states[channel_id] = state
+
+    _live_match_state.clear()
+    _live_match_state.update(state)
+    return state
+
+
+def reset_match_channel_state(channel_id):
+    """Stop match updates/commentary and clear deduplication for one channel."""
+    last_timelines.pop(channel_id, None)
+    last_source_messages.pop(channel_id, None)
+    _live_match_states.pop(channel_id, None)
+    _match_channel_versions[channel_id] = _match_channel_versions.get(channel_id, 0) + 1
+
+    channel_prefix = f"{channel_id}_"
+    for store in (last_wickets, last_nowstats):
+        for key in list(store):
+            if str(key).startswith(channel_prefix):
+                store.pop(key, None)
+
+    # commentary.py reads this compatibility snapshot.  Clear it only when
+    # the channel being reset is the channel currently being commented on.
+    if _live_match_state.get('channel_id') == channel_id:
+        _live_match_state.clear()
+        if _live_match_states:
+            latest = max(
+                _live_match_states.values(),
+                key=lambda state: state.get('last_updated', 0),
+            )
+            _live_match_state.update(latest)
+
+    # Commentary keeps its own change-detection and conversation state. Reset
+    # it as well so a new match in this channel cannot inherit old context.
+    try:
+        from commentary import reset_commentary_state
+        reset_commentary_state(channel_id)
+    except ImportError:
+        # Commentary may not have been imported during early startup.
+        pass
+
+
+def detect_observed_event(text):
+    """Classify an event from the cricket bot's source message, not an image."""
+    normalized = (text or '').lower()
+    if re.search(r'\b(?:is\s+(?:duck\s+)?out|wicket|dismissed)\b', normalized):
+        return 'wicket'
+    if re.search(r'\b(?:six|maximum)\b', normalized):
+        return 'boundary_6'
+    if re.search(r'\b(?:four|boundary)\b', normalized):
+        return 'boundary_4'
+    if re.search(r'\b(?:end|complete|completed)\s+of\s+the\s+over\b', normalized):
+        return 'over_end'
+    return 'ball'
 
 
 def parse_nowstat_message(content):
@@ -1348,6 +1429,15 @@ class MatchUpdates(commands.Cog):
         full_message_text = get_full_message_text(message)
         print(f"📋 Full message text for nowstat scan:\n{full_message_text[:500]}")
 
+        # The final result announcement is the authoritative end of the game.
+        # Reset before any nowstat, wicket, or match-image parser can consume
+        # the message and before commentary can see stale live state.
+        channel_id = message.channel.id
+        if is_match_finished_message(full_message_text):
+            print(f"🏁 MATCH FINISHED — resetting channel {channel_id}")
+            reset_match_channel_state(channel_id)
+            return
+
         # The monitored bot also emits cooldown and command-error embeds.
         # They are not cricket updates and must not be fed to the match
         # parsers, which can otherwise interpret their mentions as players.
@@ -1551,9 +1641,16 @@ class MatchUpdates(commands.Cog):
             print(f"✅ SENT WICKET IMAGE\n")
 
             # Update live match state with wicket event for commentary
-            _live_match_state['pending_wicket'] = wicket_data
-            _live_match_state['channel_id']     = channel_id
-            _live_match_state['last_updated']   = time.time()
+            publish_live_match_state(
+                channel_id,
+                {
+                    'pending_wicket': wicket_data,
+                    'source_message_text': full_message_text,
+                    'source_message_key': f"{message.id}|{full_message_text}",
+                    'observed_event': detect_observed_event(full_message_text),
+                    'last_updated': time.time(),
+                },
+            )
 
             # After wicket image, send nowstat for next batsman/bowler
             # if this same message also contains "Next batsman/bowler" info
@@ -1629,19 +1726,28 @@ class MatchUpdates(commands.Cog):
         channel_id = message.channel.id
 
         current_timeline = '|'.join(match_data['timeline'])
+        source_message_key = f"{message.id}|{full_message_text}"
 
-        if channel_id in last_timelines and last_timelines[channel_id] == current_timeline:
+        if (
+            channel_id in last_timelines
+            and last_timelines[channel_id] == current_timeline
+            and last_source_messages.get(channel_id) == source_message_key
+        ):
             print("ℹ️ Same timeline, skipping")
             return
 
         # Update live match state for commentary
-        match_data['channel_id'] = channel_id
         tl = match_data.get('timeline', [])
-        match_data['last_ball']      = tl[-1] if tl else ''
-        match_data['over_completed'] = len(tl) > 0 and len(tl) % 6 == 0
+        # Keep the parsed timeline for rendering the status image, but do not
+        # make it the source of truth for commentary. Commentary receives the
+        # original cricket-bot message below.
+        match_data['last_ball']      = ''
+        match_data['over_completed'] = False
         match_data['timeline_key']   = current_timeline
+        match_data['source_message_text'] = full_message_text
+        match_data['source_message_key'] = source_message_key
+        match_data['observed_event'] = detect_observed_event(full_message_text)
         match_data['last_updated']   = time.time()
-        _live_match_state.update(match_data)
 
         print(f"\n🎨 CREATING MATCH IMAGE...")
 
@@ -1658,6 +1764,8 @@ class MatchUpdates(commands.Cog):
 
         # Do not suppress a later edit when this upload failed.
         last_timelines[channel_id] = current_timeline
+        last_source_messages[channel_id] = source_message_key
+        publish_live_match_state(channel_id, match_data)
         print(f"✅ SENT MATCH UPDATE IMAGE\n")
 
     @commands.Cog.listener()

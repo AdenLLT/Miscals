@@ -2,3 +2,4 @@
 - [Discord image uploads](discord-image-uploads.md) — retry interrupted uploads with a fresh stream and commit deduplication only after delivery succeeds.
 - [Leaderboard competition scopes](leaderboard-competition-scopes.md) — tag new match rows at write time; exclude untagged history from competition leaderboards.
 - [Discord SQLite concurrency](discord-sqlite-concurrency.md) — keep blocking SQLite off the event loop and checkpoint WAL files before uploading backups.
+- [Match commentary source](match-commentary-source.md) — ground commentary in observed cricket-bot messages and invalidate channel state on final results.
