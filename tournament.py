@@ -4307,6 +4307,97 @@ class Tournament(commands.Cog):
                 f"✅ Successfully reserved **{count}** matches in Round {current_round}!"
             )
 
+    @commands.command(
+        name="resetcurrentround",
+        aliases=["rcr"],
+        help="[ADMIN] Reset all unplayed fixtures in the active tournament's current round",
+    )
+    @commands.has_permissions(administrator=True)
+    async def resetcurrentround(self, ctx):
+        """Delete the active tournament's current round so it can be reposted."""
+        tournament = get_active_tournament()
+        if not tournament:
+            await ctx.send("❌ No active tournament found!")
+            return
+
+        tournament_id, tournament_name, current_round = tournament
+        if current_round <= 0:
+            await ctx.send("❌ The active tournament has no current round to reset.")
+            return
+
+        conn = sqlite3.connect("players.db")
+        conn.execute("PRAGMA busy_timeout = 5000")
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """SELECT COUNT(*)
+                   FROM fixtures
+                   WHERE tournament_id = ? AND round_number = ? AND is_played = 1""",
+                (tournament_id, current_round),
+            )
+            played_count = cursor.fetchone()[0]
+            if played_count:
+                await ctx.send(
+                    f"❌ Cannot reset Round {current_round}: **{played_count}** "
+                    "fixture(s) have already been played."
+                )
+                return
+
+            cursor.execute(
+                """SELECT COUNT(*)
+                   FROM fixtures
+                   WHERE tournament_id = ? AND round_number = ?""",
+                (tournament_id, current_round),
+            )
+            fixture_count = cursor.fetchone()[0]
+            cursor.execute(
+                """SELECT COUNT(*)
+                   FROM tournament_round_info
+                   WHERE tournament_id = ? AND round_number = ?""",
+                (tournament_id, current_round),
+            )
+            metadata_count = cursor.fetchone()[0]
+
+            cursor.execute(
+                """SELECT MAX(round_number)
+                   FROM fixtures
+                   WHERE tournament_id = ? AND round_number < ?""",
+                (tournament_id, current_round),
+            )
+            previous_round = cursor.fetchone()[0] or 0
+
+            conn.execute("BEGIN")
+            cursor.execute(
+                """DELETE FROM fixtures
+                   WHERE tournament_id = ? AND round_number = ?""",
+                (tournament_id, current_round),
+            )
+            deleted_fixtures = cursor.rowcount
+            cursor.execute(
+                """DELETE FROM tournament_round_info
+                   WHERE tournament_id = ? AND round_number = ?""",
+                (tournament_id, current_round),
+            )
+            deleted_metadata = cursor.rowcount
+            cursor.execute(
+                "UPDATE tournaments SET current_round = ? WHERE id = ?",
+                (previous_round, tournament_id),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+        await ctx.send(
+            f"✅ Reset **{tournament_name} — Round {current_round}**.\n"
+            f"Deleted **{deleted_fixtures}** fixture(s) and "
+            f"**{deleted_metadata}** round metadata row(s).\n"
+            f"Current round is now **{previous_round}**. "
+            "You can repost the preseeded fixtures for all groups."
+        )
+
     @commands.command(name="setfpp", help="[ADMIN] Set FPP for a team")
     @commands.has_permissions(administrator=True)
     async def setfpp(self, ctx, team_name: str, fpp_change: int):
