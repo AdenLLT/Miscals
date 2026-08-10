@@ -1,0 +1,1947 @@
+import discord
+from discord.ext import commands
+import json
+import random
+import re
+import time
+from PIL import Image, ImageDraw, ImageFont
+import io
+import sqlite3
+import asyncio
+import aiohttp
+
+# The bot user ID to monitor
+CRICKET_BOT_ID = 753191385296928808
+
+# MANUAL TEAM ABBREVIATIONS
+TEAM_ABBREVIATIONS = {
+    "India": "IND",
+    "Pakistan": "PAK",
+    "Australia": "AUS",
+    "England": "ENG",
+    "New Zealand": "NZ",
+    "South Africa": "SA",
+    "West Indies": "WI",
+    "Sri Lanka": "SL",
+    "Bangladesh": "BAN",
+    "Afghanistan": "AFG",
+    "Netherlands": "NED",
+    "Scotland": "SCO",
+    "Ireland": "IRE",
+    "Zimbabwe": "ZIM",
+    "UAE": "UAE",
+    "Canada": "CAN",
+    "USA": "USA"
+}
+
+# Load players from JSON
+def load_players():
+    try:
+        with open('players.json', 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except:
+        return []
+
+# Find player by name (flexible matching)
+def find_player_team(player_name):
+    """Find which team a player belongs to"""
+    teams_data = load_players()
+    player_name_lower = player_name.lower()
+
+    # First try exact match
+    for team_data in teams_data:
+        for player in team_data['players']:
+            if player['name'].lower() == player_name_lower:
+                return team_data['team']
+
+    # If no exact match, try partial match
+    for team_data in teams_data:
+        for player in team_data['players']:
+            if player_name_lower in player['name'].lower():
+                return team_data['team']
+            # Try last name
+            last_name = player['name'].split()[-1].lower()
+            if player_name_lower == last_name:
+                return team_data['team']
+
+    return None
+
+# Get player representative
+def get_representative(player_name):
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute("SELECT user_id, username FROM player_representatives WHERE player_name = ?", 
+              (player_name,))
+    result = c.fetchone()
+    conn.close()
+    return result
+
+# Get team flag URL for downloading
+def get_team_flag_url(team_name):
+    flag_codes = {
+        "India": "1f1ee-1f1f3",
+        "Pakistan": "1f1f5-1f1f0",
+        "Australia": "1f1e6-1f1fa",
+        "England": "1f3f4-e0067-e0062-e0065-e006e-e0067-e007f",
+        "New Zealand": "1f1f3-1f1ff",
+        "South Africa": "1f1ff-1f1e6",
+        "West Indies": "1f3f4",
+        "Sri Lanka": "1f1f1-1f1f0",
+        "Bangladesh": "1f1e7-1f1e9",
+        "Afghanistan": "1f1e6-1f1eb",
+        "Netherlands": "1f1f3-1f1f1",
+        "Scotland": "1f3f4-e0067-e0062-e0073-e0063-e0074-e007f",
+        "Ireland": "1f1ee-1f1ea",
+        "Zimbabwe": "1f1ff-1f1fc",
+        "UAE": "1f1e6-1f1ea",
+        "Canada": "1f1e8-1f1e6",
+        "USA": "1f1fa-1f1f8",
+        "Italy": "1f1ee-1f1f9",
+        "Nepal": "1f1f3-1f1f5",
+        "Namibia": "1f1f3-1f1e6",
+        "Hong Kong": "1f1ed-1f1f0",
+        "Oman": "1f1f4-1f1f2",
+        "Papua New Guinea": "1f1f5-1f1ec",
+        "Uganda": "1f1fa-1f1ec",
+        "Malaysia": "1f1f2-1f1fe",
+        "Spain": "1f1ea-1f1f8",
+        "Germany": "1f1e9-1f1ea",
+        "Japan": "1f1ef-1f1f5",
+        "Portugal": "1f1f5-1f1f9",
+        "Denmark": "1f1e9-1f1f0"
+    }
+    code = flag_codes.get(team_name)
+    if code:
+        return f"https://cdnjs.cloudflare.com/ajax/libs/twemoji/14.0.2/72x72/{code}.png"
+    return None
+
+# Emoji to number mapping
+EMOJI_MAPPING = {
+    'emoji_29': '0',
+    'emoji_28': '1',
+    'emoji_30': '2',
+    'emoji_31': '3',
+    'emoji_32': '4',
+    'emoji_33': '5',
+    'emoji_34': '6',
+    'emoji_35': 'W',
+    'PP1_emoji_30': '2LB',
+    'PP2_emoji_31': '4LB',
+    'PP3_emoji_32': '6LB',
+    'PP4_emoji_33': '8LB'
+}
+
+# Store last processed timeline per channel
+last_timelines = {}
+last_source_messages = {}
+
+# Match state is kept per channel so a completed game cannot leak into
+# another channel's commentary or suppress its first update.
+_live_match_states = {}
+_match_channel_versions = {}
+
+# Live match state — read by commentary.py
+_live_match_state: dict = {}
+
+# Store last processed wickets to prevent duplicates (username + timestamp)
+last_wickets = {}
+
+# Store last processed nowstats to prevent duplicates (user_id + role + timestamp)
+last_nowstats = {}
+
+# Track message IDs that have already triggered a nowstat (message-level dedup)
+sent_nowstat_message_ids = set()
+
+
+def is_match_finished_message(text):
+    """Return True for the cricket bot's final MVP/duration announcement."""
+    normalized = re.sub(r'\s+', ' ', text or '').strip().lower()
+    has_mvp = bool(re.search(r'most valuable player\s+is\s+<@!?\d+>', normalized))
+    has_duration = bool(
+        re.search(
+            r'this match lasted\s+\*?\d+\s+minutes?(?:\s+and\s+\d+\s+seconds?)?\s*!?\*?',
+            normalized,
+        )
+    )
+    return has_mvp or has_duration
+
+
+def publish_live_match_state(channel_id, updates):
+    """Publish one channel's state and invalidate older commentary work."""
+    version = _match_channel_versions.get(channel_id, 0) + 1
+    state = dict(_live_match_states.get(channel_id, {}))
+    state.update(updates)
+    state['channel_id'] = channel_id
+    state['state_version'] = version
+    _match_channel_versions[channel_id] = version
+    _live_match_states[channel_id] = state
+
+    _live_match_state.clear()
+    _live_match_state.update(state)
+    return state
+
+
+def reset_match_channel_state(channel_id):
+    """Stop match updates/commentary and clear deduplication for one channel."""
+    last_timelines.pop(channel_id, None)
+    last_source_messages.pop(channel_id, None)
+    _live_match_states.pop(channel_id, None)
+    _match_channel_versions[channel_id] = _match_channel_versions.get(channel_id, 0) + 1
+
+    channel_prefix = f"{channel_id}_"
+    for store in (last_wickets, last_nowstats):
+        for key in list(store):
+            if str(key).startswith(channel_prefix):
+                store.pop(key, None)
+
+    # commentary.py reads this compatibility snapshot.  Clear it only when
+    # the channel being reset is the channel currently being commented on.
+    if _live_match_state.get('channel_id') == channel_id:
+        _live_match_state.clear()
+        if _live_match_states:
+            latest = max(
+                _live_match_states.values(),
+                key=lambda state: state.get('last_updated', 0),
+            )
+            _live_match_state.update(latest)
+
+    # Commentary keeps its own change-detection and conversation state. Reset
+    # it as well so a new match in this channel cannot inherit old context.
+    try:
+        from commentary import reset_commentary_state
+        reset_commentary_state(channel_id)
+    except ImportError:
+        # Commentary may not have been imported during early startup.
+        pass
+
+
+def detect_observed_event(text):
+    """Classify an event from the cricket bot's source message, not an image."""
+    normalized = (text or '').lower()
+    if re.search(r'\b(?:is\s+(?:duck\s+)?out|wicket|dismissed)\b', normalized):
+        return 'wicket'
+    if re.search(r'\b(?:six|maximum)\b', normalized):
+        return 'boundary_6'
+    if re.search(r'\b(?:four|boundary)\b', normalized):
+        return 'boundary_4'
+    if re.search(r'\b(?:end|complete|completed)\s+of\s+the\s+over\b', normalized):
+        return 'over_end'
+    return 'ball'
+
+
+def parse_nowstat_message(content):
+    """
+    Parse cricket bot messages for nowstat triggers.
+    Handles:
+    - Opening batters are: - <@ID>
+    - Opening bowler is: - <@ID>
+    - Next batsman: <@ID>   (anywhere in text, including standalone line)
+    - Next bowler to bowl is: <@ID>  (anywhere in text)
+
+    Returns list of (user_id, role) tuples, deduplicated. Empty list = no trigger.
+    """
+    results = []
+    seen_ids = set()
+
+    def add(uid, role):
+        if uid not in seen_ids:
+            seen_ids.add(uid)
+            results.append((uid, role))
+
+    # Opening batters block
+    opening_bat_match = re.search(
+        r'Opening batters? are:\s*((?:\s*-\s*<@!?\d+>\s*)+)',
+        content, re.IGNORECASE
+    )
+    if opening_bat_match:
+        ids = re.findall(r'<@!?(\d+)>', opening_bat_match.group(1))
+        for uid in ids:
+            add(int(uid), 'bat')
+
+    # Opening bowler block
+    opening_bowl_match = re.search(
+        r'Opening bowler is:\s*((?:\s*-\s*<@!?\d+>\s*)+)',
+        content, re.IGNORECASE
+    )
+    if opening_bowl_match:
+        ids = re.findall(r'<@!?(\d+)>', opening_bowl_match.group(1))
+        for uid in ids:
+            add(int(uid), 'bowl')
+
+    if results:
+        return results
+
+    # "Next batsman: <@ID>" or "Next batsman: <@ID> OR <@ID>" — can appear anywhere in message/embed text
+    next_bat_section = re.search(r'Next batsman[^:\n]*:?\s*\n?\s*(.+?)(?:\n|$)', content, re.IGNORECASE)
+    if next_bat_section:
+        # Extract all user IDs from this section (handles "OR" separated IDs)
+        ids = re.findall(r'<@!?(\d+)>', next_bat_section.group(1))
+        for uid in ids:
+            add(int(uid), 'bat')
+        if results:
+            return results
+
+    # "Next bowler to bowl is: <@ID>" — can appear anywhere
+    next_bowl = re.search(r'Next bowler[^:\n]*:?\s*\n?\s*<@!?(\d+)>', content, re.IGNORECASE)
+    if next_bowl:
+        add(int(next_bowl.group(1)), 'bowl')
+        return results
+
+    return None
+
+
+def get_player_international_stats(user_id):
+    """Get career stats for a player from match_stats table"""
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+    c.execute("""
+        SELECT 
+            COUNT(*) as matches,
+            COALESCE(SUM(runs), 0) as total_runs,
+            COALESCE(SUM(balls_faced), 0) as total_balls_faced,
+            COALESCE(SUM(runs_conceded), 0) as total_runs_conceded,
+            COALESCE(SUM(balls_bowled), 0) as total_balls_bowled,
+            COALESCE(SUM(wickets), 0) as total_wickets,
+            COALESCE(SUM(not_out), 0) as times_not_out,
+            COALESCE(MAX(runs), 0) as highest_score
+        FROM match_stats
+        WHERE user_id = ?
+    """, (user_id,))
+    result = c.fetchone()
+
+    # Best bowling figure
+    c.execute("""
+        SELECT wickets, runs_conceded FROM match_stats
+        WHERE user_id = ? AND wickets > 0
+        ORDER BY wickets DESC, runs_conceded ASC
+        LIMIT 1
+    """, (user_id,))
+    best_bowling = c.fetchone()
+
+    # Fifties and hundreds
+    c.execute("SELECT COUNT(*) FROM match_stats WHERE user_id = ? AND runs >= 50 AND runs < 100", (user_id,))
+    fifties = c.fetchone()[0]
+
+    c.execute("SELECT COUNT(*) FROM match_stats WHERE user_id = ? AND runs >= 100", (user_id,))
+    hundreds = c.fetchone()[0]
+
+    # 3-fers and 5-fers
+    c.execute("SELECT COUNT(*) FROM match_stats WHERE user_id = ? AND wickets >= 3 AND wickets < 5", (user_id,))
+    three_fers = c.fetchone()[0]
+
+    c.execute("SELECT COUNT(*) FROM match_stats WHERE user_id = ? AND wickets >= 5", (user_id,))
+    five_fers = c.fetchone()[0]
+
+    conn.close()
+
+    if not result:
+        return None
+
+    matches, total_runs, total_balls_faced, total_runs_conceded, total_balls_bowled, total_wickets, times_not_out, highest_score = result
+
+    dismissals = matches - times_not_out
+    bat_avg = total_runs / dismissals if dismissals > 0 else total_runs
+    bat_sr = (total_runs / total_balls_faced * 100) if total_balls_faced > 0 else 0
+    economy = (total_runs_conceded / (total_balls_bowled / 6)) if total_balls_bowled > 0 else 0
+    bowl_avg = (total_runs_conceded / total_wickets) if total_wickets > 0 else 0
+    best_bowling_str = f"{best_bowling[0]}/{best_bowling[1]}" if best_bowling else "0/0"
+
+    return {
+        'matches': matches,
+        'runs': total_runs,
+        'bat_avg': bat_avg,
+        'bat_sr': bat_sr,
+        'highest_score': highest_score,
+        'fifties': fifties,
+        'hundreds': hundreds,
+        'wickets': total_wickets,
+        'bowl_avg': bowl_avg,
+        'economy': economy,
+        'best_bowling': best_bowling_str,
+        'three_fers': three_fers,
+        'five_fers': five_fers,
+    }
+
+
+def get_icc_ranking(user_id, stat_type):
+    """Get ICC ranking for a player (runs or wickets)"""
+    conn = sqlite3.connect('players.db')
+    c = conn.cursor()
+
+    if stat_type == "runs":
+        c.execute("""
+            SELECT user_id, SUM(runs) as total
+            FROM match_stats
+            GROUP BY user_id
+            ORDER BY total DESC
+        """)
+    else:
+        c.execute("""
+            SELECT user_id, SUM(wickets) as total
+            FROM match_stats
+            GROUP BY user_id
+            ORDER BY total DESC
+        """)
+
+    rows = c.fetchall()
+    conn.close()
+
+    for idx, (uid, _) in enumerate(rows, 1):
+        if uid == user_id:
+            return idx
+    return None
+
+
+async def fetch_discord_avatar(user_id, bot, size=40):
+    """Fetch a user's discord avatar as a circular PIL Image"""
+    try:
+        user = bot.get_user(user_id) or await bot.fetch_user(user_id)
+        if not user or not user.avatar:
+            return None
+        avatar_url = str(user.avatar.with_size(128).url)
+        async with aiohttp.ClientSession() as session:
+            async with session.get(avatar_url) as resp:
+                if resp.status == 200:
+                    data = await resp.read()
+                    avatar_img = Image.open(io.BytesIO(data)).convert('RGBA')
+                    avatar_img = avatar_img.resize((size, size), Image.Resampling.LANCZOS)
+                    mask = Image.new('L', (size, size), 0)
+                    ImageDraw.Draw(mask).ellipse((0, 0, size, size), fill=255)
+                    avatar_img.putalpha(mask)
+                    return avatar_img
+    except Exception as e:
+        print(f"Error fetching avatar: {e}")
+    return None
+
+
+async def create_nowstat_image(user_id, role, guild, bot):
+    try:
+        img = Image.open("nowstat.png").convert('RGBA')
+        draw = ImageDraw.Draw(img)
+        width, height = img.size
+
+        # --- Get player info ---
+        conn = sqlite3.connect('players.db')
+        c = conn.cursor()
+        c.execute("SELECT player_name, username FROM player_representatives WHERE user_id = ?", (user_id,))
+        result = c.fetchone()
+        conn.close()
+
+        if not result:
+            print(f"❌ No player found for user_id {user_id}")
+            return None, None
+
+        player_name, db_username = result
+        team = find_player_team(player_name)
+
+        # Get player data from players.json
+        player_image_url = None
+        batting_style = ''
+        bowling_style = ''
+        try:
+            with open('players.json', 'r', encoding='utf-8') as f:
+                teams_data = json.load(f)
+            for team_data in teams_data:
+                for player in team_data['players']:
+                    if player['name'] == player_name:
+                        player_image_url = player.get('image')
+                        batting_style = player.get('batting_style', '')
+                        bowling_style = player.get('bowling_style', '')
+                        break
+        except Exception as e:
+            print(f"Error loading players.json: {e}")
+
+        stats = get_player_international_stats(user_id)
+        icc_rank = get_icc_ranking(user_id, "runs" if role == 'bat' else "wickets")
+
+        member = guild.get_member(user_id)
+        discord_username = member.name if member else db_username
+
+        # Load fonts
+        try:
+            name_font = ImageFont.truetype("nor.otf", 75)
+            username_font = ImageFont.truetype("nor.otf", 45)
+            big_stat_font = ImageFont.truetype("nor.otf", 60)
+            stat_label_font = ImageFont.truetype("nor.otf", 40)
+            stat_value_font = ImageFont.truetype("nor.otf", 55)
+        except:
+            name_font = ImageFont.load_default()
+            username_font = name_font
+            big_stat_font = name_font
+            stat_label_font = name_font
+            stat_value_font = name_font
+
+        WHITE = (255, 255, 255)
+
+        # === LEFT: Player image ===
+        player_img_size = min(width // 4, height - 20)
+        player_img_x = 10
+        player_img_y = (height - player_img_size) // 2
+
+        if player_image_url:
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(player_image_url) as resp:
+                        if resp.status == 200:
+                            pdata = await resp.read()
+                            p_img = Image.open(io.BytesIO(pdata)).convert('RGBA')
+                            p_img = p_img.resize((player_img_size, player_img_size), Image.Resampling.LANCZOS)
+                            img.paste(p_img, (player_img_x, player_img_y), p_img)
+            except Exception as e:
+                print(f"Error loading player image: {e}")
+
+        # === RIGHT: Team flag ===
+        flag_size = 140
+        flag_x = width - flag_size - 10
+        flag_y = 20
+
+        if team:
+            if team.lower() == "west indies":
+                try:
+                    flag_img = Image.open("westindies.jpg").convert('RGBA')
+                    flag_img = flag_img.resize((flag_size, flag_size), Image.Resampling.LANCZOS)
+                    img.paste(flag_img, (flag_x, flag_y), flag_img)
+                except Exception as e:
+                    print(f"Error loading WI flag: {e}")
+            else:
+                flag_url = get_team_flag_url(team)
+                if flag_url:
+                    try:
+                        async with aiohttp.ClientSession() as session:
+                            async with session.get(flag_url) as resp:
+                                if resp.status == 200:
+                                    fdata = await resp.read()
+                                    flag_img = Image.open(io.BytesIO(fdata)).convert('RGBA')
+                                    flag_img = flag_img.resize((flag_size, flag_size), Image.Resampling.LANCZOS)
+                                    img.paste(flag_img, (flag_x, flag_y), flag_img)
+                    except Exception as e:
+                        print(f"Error loading flag: {e}")
+
+        # === CENTER CONTENT ===
+        content_x = player_img_x + player_img_size + 25
+        current_y = 10
+
+        # 1. Player Name + Big Stats
+        name_text = player_name.upper()
+        draw.text((content_x, current_y), name_text, fill=WHITE, font=name_font)
+
+        name_bbox = draw.textbbox((content_x, current_y), name_text, font=name_font)
+        stats_x = name_bbox[2] + 40
+
+        if stats:
+            main_stat_val = str(stats['runs']) if role == 'bat' else str(stats['wickets'])
+            main_stat_label = "RUNS" if role == 'bat' else "WKTS"
+            rank_text = f"#{icc_rank}" if icc_rank else "N/A"
+
+            col_labels = ["MATCHES", main_stat_label, "RANK"]
+            col_values = [str(stats['matches']), main_stat_val, rank_text]
+
+            # Adjust layout based on player name length
+            name_is_long = len(player_name) >= 18
+            if name_is_long:
+                # Long name: shift left, smaller fonts, tighter spacing
+                try:
+                    s_label_font = ImageFont.truetype("nor.otf", 30)
+                    s_value_font = ImageFont.truetype("nor.otf", 45)
+                except:
+                    s_label_font = stat_label_font
+                    s_value_font = big_stat_font
+                col_spacing = 220
+                extra_right_offset = 60  # much less offset to shift left
+            else:
+                s_label_font = stat_label_font
+                s_value_font = big_stat_font
+                col_spacing = 280
+                extra_right_offset = 120  # slightly left of previous 250
+
+            for ci, (lbl, val) in enumerate(zip(col_labels, col_values)):
+                cx = stats_x + extra_right_offset + ci * col_spacing
+                draw.text((cx, current_y + 5), lbl, fill=WHITE, font=s_label_font)
+                # Values drop a little further below label
+                draw.text((cx, current_y + 55), val, fill=WHITE, font=s_value_font)
+
+        current_y += 85
+
+        # 2. Discord User
+        avatar_img = await fetch_discord_avatar(user_id, bot, size=55)
+        if avatar_img:
+            img.paste(avatar_img, (content_x, current_y), avatar_img)
+            draw.text((content_x + 65, current_y + 5), f"@{discord_username}", fill=WHITE, font=username_font)
+        else:
+            draw.text((content_x, current_y + 5), f"@{discord_username}", fill=WHITE, font=username_font)
+
+        current_y += 75
+
+        # 3. Divider
+        draw.line([(content_x, current_y), (width - 20, current_y)], fill=(200, 200, 200), width=4)
+        current_y += 25
+
+        # 4. Detailed Stats
+        if stats:
+            if role == 'bat':
+                display_stats = [
+                    ("AVG", f"{stats['bat_avg']:.1f}"),
+                    ("SR", f"{stats['bat_sr']:.1f}"),
+                    ("HS", str(stats['highest_score'])),
+                    ("50s", str(stats['fifties'])),
+                    ("100s", str(stats['hundreds'])),
+                ]
+            else:
+                display_stats = [
+                    ("AVG", f"{stats['bowl_avg']:.1f}"),
+                    ("ECO", f"{stats['economy']:.1f}"),
+                    ("BEST", stats['best_bowling']),
+                    ("3w", str(stats['three_fers'])),
+                    ("5w", str(stats['five_fers'])),
+                ]
+
+            available_width = width - content_x - 30
+            col_width = available_width // len(display_stats)
+            for i, (label, value) in enumerate(display_stats):
+                sx = content_x + (i * col_width)
+                draw.text((sx, current_y), label, fill=WHITE, font=stat_label_font)
+                draw.text((sx, current_y + 45), value, fill=WHITE, font=stat_value_font)
+        else:
+            draw.text((content_x, current_y), "No stats yet", fill=WHITE, font=stat_label_font)
+
+        # Convert to bytes
+        output = io.BytesIO()
+        img.save(output, format='PNG')
+        output.seek(0)
+
+        if role == 'bat':
+            plain_text = (f"__{batting_style}__ **Batsman** Walks Onto The Crease! 🏏"
+                          if batting_style else "Batsman Walks Onto The Crease! 🏏")
+        else:
+            plain_text = (f"__{bowling_style}__ **Bowler** comes into the Attack 💥"
+                          if bowling_style else "Bowler comes into the Attack 💥")
+
+        return output, plain_text
+
+    except Exception as e:
+        print(f"❌ Error creating nowstat image: {e}")
+        import traceback
+        traceback.print_exc()
+        return None, None
+
+
+def get_full_message_text(message):
+    """
+    Build a single string from ALL parts of a discord message:
+    plain content + all embed titles/descriptions/fields/footers.
+    This ensures nowstat triggers regardless of where the bot puts it.
+    """
+    parts = []
+
+    if message.content:
+        parts.append(message.content)
+
+    for embed in message.embeds:
+        if embed.title:
+            parts.append(embed.title)
+        if embed.description:
+            parts.append(embed.description)
+        for field in embed.fields:
+            parts.append(field.name)
+            parts.append(field.value)
+        if embed.footer and embed.footer.text:
+            parts.append(embed.footer.text)
+        if embed.author and embed.author.name:
+            parts.append(embed.author.name)
+
+    return "\n".join(parts)
+
+
+def resolve_user_id_by_username(guild, username):
+    """Try to find a Discord member by their username and return their user ID, or None."""
+    if guild:
+        member = discord.utils.get(guild.members, name=username)
+        if member:
+            return member.id
+    return None
+
+
+def parse_embed_fields(embed, guild=None):
+    """Parse the embed fields to extract match data - FIXED VERSION"""
+
+    data = {}
+
+    try:
+        # Combine all field values into one text for easier searching
+        full_text = ""
+        for field in embed.fields:
+            full_text += f"{field.name}: {field.value}\n"
+
+        print(f"\n📄 FULL EMBED TEXT:\n{full_text}")
+
+        # --- 1. CHECK INNINGS NUMBER ---
+        innings_match = re.search(r'Innings:\s*\*\*(ONE|TWO)\*\*', full_text)
+        innings = innings_match.group(1) if innings_match else "ONE"
+        data['innings'] = innings
+        print(f"   📍 Innings: {innings}")
+
+        # --- 2. EXTRACT ALL TEAM SCORES ---
+        team_pattern = r'([A-Za-z\s]+)\s*[^\:]*:\s*(\d+/\d+)\s*\((\d+\.\d+)\s*overs\)'
+        all_teams = re.findall(team_pattern, full_text)
+
+        if len(all_teams) < 2:
+            print("   ⚠️ Less than 2 teams found, will still try to extract timeline")
+        else:
+            team_info = {}
+            for team_name, score, overs in all_teams:
+                team_name_clean = team_name.strip()
+                team_info[team_name_clean] = {
+                    'score': score,
+                    'overs': float(overs),
+                    'runs': int(score.split('/')[0])
+                }
+                print(f"   📊 {team_name_clean}: {score} ({overs} overs)")
+
+            teams_sorted = sorted(team_info.items(), key=lambda x: x[1]['overs'], reverse=True)
+
+            if innings == "ONE":
+                batting_team_name = teams_sorted[0][0]
+                batting_team_info = teams_sorted[0][1]
+
+                data['team_a_score'] = batting_team_info['score']
+                data['overs'] = str(batting_team_info['overs'])
+                print(f"   ✅ Innings 1: {batting_team_name} is batting: {batting_team_info['score']} ({batting_team_info['overs']})")
+
+            elif innings == "TWO":
+                innings1_team_name = teams_sorted[0][0]
+                innings1_team_info = teams_sorted[0][1]
+
+                batting_team_name = teams_sorted[1][0]
+                batting_team_info = teams_sorted[1][1]
+
+                data['team_a_score'] = batting_team_info['score']
+                data['overs'] = str(batting_team_info['overs'])
+
+                data['innings2_batting_team'] = batting_team_name
+                data['innings2_opposition_team'] = innings1_team_name
+
+                print(f"   ✅ Innings 2: {batting_team_name} is batting: {batting_team_info['score']} ({batting_team_info['overs']})")
+
+                target = innings1_team_info['runs'] + 1
+                data['target'] = f"Target {target}"
+                print(f"   🎯 TARGET: {target} ({innings1_team_name} made {innings1_team_info['runs']} in innings 1)")
+
+        # --- 2. EXTRACT BATTERS ---
+        batters_section = re.search(r'Batters:\s*(.+?)(?:Bowler:|Partnership:|$)', full_text, re.DOTALL)
+        if batters_section:
+            batters_text = batters_section.group(1)
+            batter_lines = [line.strip() for line in batters_text.split('\n') if line.strip() and 'runs' in line.lower()]
+
+            batter_count = 0
+
+            for line in batter_lines:
+                if 'no batsman' in line.lower():
+                    continue
+
+                clean_line = line.replace('*', '').strip()
+                match = re.search(r'^(.+?)(?:\s*\(<@!?(\d+)>\))?:\s*(\d+)\s*\((\d+)\)\s*runs', clean_line)
+
+                if match:
+                    username = match.group(1).strip()
+                    user_id_str = match.group(2)
+                    runs = match.group(3)
+                    balls = match.group(4)
+                    is_on_strike = '**' in line
+
+                    batter_count += 1
+                    prefix = f"batsman{batter_count}"
+
+                    conn = sqlite3.connect('players.db')
+                    c = conn.cursor()
+
+                    resolved_uid = None
+                    if user_id_str:
+                        resolved_uid = int(user_id_str)
+                        c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (resolved_uid,))
+                    else:
+                        resolved_uid = resolve_user_id_by_username(guild, username)
+                        if resolved_uid:
+                            c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (resolved_uid,))
+                        else:
+                            c.execute("SELECT player_name FROM player_representatives WHERE username = ?", (username,))
+
+                    result = c.fetchone()
+                    conn.close()
+
+                    full_name = result[0] if result else username
+                    last_name = full_name.split()[-1] if result else username
+                    team = find_player_team(full_name)
+
+                    data[f'{prefix}_username'] = username
+                    data[f'{prefix}_user_id'] = resolved_uid
+                    data[f'{prefix}_name'] = last_name
+                    data[f'{prefix}_full_name'] = full_name
+                    data[f'{prefix}_score'] = f"{runs}({balls})"
+                    data[f'{prefix}_team'] = team if team else ""
+
+                    if team and 'batting_team' not in data:
+                        data['batting_team'] = team
+                        data['team_a_name'] = TEAM_ABBREVIATIONS.get(team, team[:3].upper())
+
+                    if is_on_strike:
+                        data['on_strike'] = batter_count
+
+        # --- 3. EXTRACT BOWLER ---
+        bowler_section = re.search(r'Bowler:\s*(.+?)(?:\n|$)', full_text)
+        if bowler_section:
+            bowler_line = bowler_section.group(1).strip()
+            clean_line = bowler_line.replace('*', '').strip()
+            match = re.search(r'^(.+?)(?:\s*\(<@!?(\d+)>\))?:\s*(\d+)\s*-\s*(\d+)\s*\((\d+(?:\.\d+)?)\s*overs?\)', clean_line)
+
+            if match:
+                username = match.group(1).strip()
+                user_id_str = match.group(2)
+                runs = match.group(3)
+                wickets = match.group(4)
+                overs = match.group(5)
+
+                conn = sqlite3.connect('players.db')
+                c = conn.cursor()
+
+                resolved_uid = None
+                if user_id_str:
+                    resolved_uid = int(user_id_str)
+                    c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (resolved_uid,))
+                else:
+                    resolved_uid = resolve_user_id_by_username(guild, username)
+                    if resolved_uid:
+                        c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (resolved_uid,))
+                    else:
+                        c.execute("SELECT player_name FROM player_representatives WHERE username = ?", (username,))
+
+                result = c.fetchone()
+                conn.close()
+
+                full_name = result[0] if result else username
+                last_name = full_name.split()[-1] if result else username
+                team = find_player_team(full_name)
+
+                data['bowler_username'] = username
+                data['bowler_user_id'] = resolved_uid
+                data['bowler_name'] = last_name
+                data['bowler_full_name'] = full_name
+                data['bowler_stats'] = f"{wickets}-{runs} ({overs})"
+                data['bowler_team'] = team if team else ""
+
+                if team:
+                    data['team_b_name'] = team
+
+        # --- 4. EXTRACT TIMELINE ---
+        timeline_match = re.search(r'Timeline:\s*(.+?)(?:\n|$)', full_text)
+        if timeline_match:
+            timeline_text = timeline_match.group(1)
+            timeline = []
+            for match in re.finditer(r':(?:(PP\d+)_)?emoji_(\d+):', timeline_text):
+                prefix = match.group(1)
+                num = match.group(2)
+
+                if prefix:
+                    key = f'{prefix}_emoji_{num}'
+                else:
+                    key = f'emoji_{num}'
+
+                timeline.append(EMOJI_MAPPING.get(key, '?'))
+
+            data['timeline'] = timeline
+
+        return data
+
+    except Exception as e:
+        print(f"❌ Error parsing embed fields: {e}")
+        import traceback
+        traceback.print_exc()
+        return {}
+
+def get_current_over_balls(timeline):
+    """Extract only the balls from the current over (reset after every 6 balls)"""
+    if not timeline:
+        return []
+
+    total_balls = len(timeline)
+    current_over_position = total_balls % 6
+
+    if current_over_position == 0:
+        return timeline[-6:] if len(timeline) >= 6 else timeline
+
+    return timeline[-current_over_position:]
+
+def get_dynamic_font_size(text, max_width, base_size=45):
+    """Calculate font size that fits text within max_width"""
+    estimated_width = len(text) * (base_size * 0.6)
+
+    if estimated_width <= max_width:
+        return base_size
+
+    scale_factor = max_width / estimated_width
+    return int(base_size * scale_factor)
+
+async def create_match_image(match_data, guild):
+    """Create match status image by overlaying text on match.png"""
+
+    try:
+        img = Image.open("match.png").convert('RGBA')
+        draw = ImageDraw.Draw(img)
+        width, height = img.size
+
+        print(f"🖼️ Image size: {width}x{height}")
+
+        # Load fonts
+        try:
+            base_player_font_size = 90
+            username_font = ImageFont.truetype("canva.otf", 1)
+            score_font = ImageFont.truetype("nor.otf", 68)
+            biggie_font = ImageFont.truetype("nor.otf", 115)
+            vs_font = ImageFont.truetype("nor.otf", 35)
+            small_font = ImageFont.truetype("nor.otf", 30)
+            ball_font = ImageFont.truetype("nor.otf", 35)
+            target_font = ImageFont.truetype("nor.otf", 40)
+            usersmol_font = ImageFont.truetype("nor.otf", 40)
+            bowlersmol_font = ImageFont.truetype("nor.otf", 50)
+        except:
+            username_font = ImageFont.load_default()
+            score_font = ImageFont.load_default()
+            vs_font = ImageFont.load_default()
+            small_font = ImageFont.load_default()
+            ball_font = ImageFont.load_default()
+            target_font = ImageFont.load_default()
+
+        RED = (255, 0, 0)
+        PURPLE = (73, 0, 208)
+        WHITE = (255, 255, 255)
+        BLACK = (0, 0, 0)
+
+        team_a_name = match_data.get('team_a_name', '')
+        team_b_name = match_data.get('team_b_name', '')
+        batting_team = match_data.get('batting_team', '')
+        team_a_score = match_data.get('team_a_score', '0-0')
+        overs = match_data.get('overs', '0.0')
+        target = match_data.get('target', None)
+        batsman1_name = match_data.get('batsman1_name', '')
+        batsman1_username = match_data.get('batsman1_username', '')
+        batsman1_score = match_data.get('batsman1_score', '0(0)')
+        batsman1_team = match_data.get('batsman1_team', '')
+        batsman2_name = match_data.get('batsman2_name', '')
+        batsman2_username = match_data.get('batsman2_username', '')
+        batsman2_score = match_data.get('batsman2_score', '0(0)')
+        batsman2_team = match_data.get('batsman2_team', '')
+        bowler_name = match_data.get('bowler_name', '')
+        bowler_username = match_data.get('bowler_username', '')
+        bowler_stats = match_data.get('bowler_stats', '0-0(0.0)')
+        bowler_team = match_data.get('bowler_team', '')
+        timeline = match_data.get('timeline', [])
+        on_strike = match_data.get('on_strike', 1)
+
+        print(f"📊 Match Data:")
+        print(f"   Teams: {team_a_name} vs {team_b_name}")
+        print(f"   Batting Team: {batting_team}")
+        print(f"   Score: {team_a_score} ({overs} overs)")
+        print(f"   Target: {target}")
+
+        center_x = width // 2
+        center_y = 80
+
+        if team_a_name:
+            draw.text((center_x - 200, center_y + 80), team_a_name, fill=PURPLE, font=biggie_font, anchor="mm")
+
+        if team_b_name:
+            draw.text((center_x - 60, center_y + 200), f"VS {team_b_name}", fill=WHITE, font=vs_font, anchor="mm")
+
+        draw.text((center_x + 95, center_y + 68), team_a_score, fill=WHITE, font=score_font, anchor="mm")
+        draw.text((center_x + 150, center_y + 200), f"{overs} OV", fill=PURPLE, font=usersmol_font, anchor="mm")
+
+        if target:
+            draw.text((center_x + 40, center_y - 40), target, fill=WHITE, font=usersmol_font, anchor="mm")
+            print(f"   🎯 Drew target: {target}")
+
+        left_x = 150
+        batsman1_y = 160
+        batsman2_y = 220
+        flag_size = 180
+
+        try:
+            triangle = Image.open("redt.png").convert('RGBA')
+            triangle = triangle.resize((100, 50), Image.Resampling.LANCZOS)
+        except Exception as e:
+            print(f"⚠️ Warning loading triangle: {e}")
+            triangle = None
+
+        if batting_team:
+            flag_url = get_team_flag_url(batting_team)
+            if flag_url:
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(flag_url) as resp:
+                            if resp.status == 200:
+                                flag_data = await resp.read()
+                                flag_img = Image.open(io.BytesIO(flag_data)).convert('RGBA')
+                                flag_img = flag_img.resize((flag_size, flag_size), Image.Resampling.LANCZOS)
+                                flag_y = (batsman1_y + batsman2_y) // 2 - 20
+                                img.paste(flag_img, (left_x - 130, flag_y - 100), flag_img)
+                except Exception as e:
+                    print(f"   ⚠️ Error loading batting flag: {e}")
+
+        max_name_width = 180
+
+        if batsman1_name and batsman1_username:
+            if triangle and on_strike == 1:
+                img.paste(triangle, (left_x + 65, batsman1_y - 80), triangle)
+
+            font_size = get_dynamic_font_size(batsman1_name.upper(), max_name_width, base_player_font_size)
+            try:
+                player_font = ImageFont.truetype("nor.otf", font_size)
+            except:
+                player_font = ImageFont.load_default()
+
+            draw.text((left_x + 150, batsman1_y - 50), batsman1_name.upper(), fill=PURPLE, font=player_font, anchor="lm")
+            draw.text((left_x + 350, batsman1_y - 50), batsman1_score, fill=PURPLE, font=usersmol_font, anchor="lm")
+            draw.text((left_x + 150, batsman1_y - 15), f"@{batsman1_username}", fill=BLACK, font=username_font, anchor="lm")
+
+        if batsman2_name and batsman2_username:
+            if triangle and on_strike == 2:
+                img.paste(triangle, (left_x + 65, batsman2_y - 7), triangle)
+
+            font_size = get_dynamic_font_size(batsman2_name.upper(), max_name_width, base_player_font_size)
+            try:
+                player_font = ImageFont.truetype("nor.otf", font_size)
+            except:
+                player_font = ImageFont.load_default()
+
+            draw.text((left_x + 150, batsman2_y + 20), batsman2_name.upper(), fill=PURPLE, font=player_font, anchor="lm")
+            draw.text((left_x + 350, batsman2_y + 20), batsman2_score, fill=PURPLE, font=usersmol_font, anchor="lm")
+            draw.text((left_x + 150, batsman2_y + 50), f"@{batsman2_username}", fill=BLACK, font=username_font, anchor="lm")
+
+        right_x = width - 150
+        bowler_y = 155
+        bowler_flag_size = 180
+
+        if bowler_name and bowler_username:
+            if bowler_team:
+                flag_url = get_team_flag_url(bowler_team)
+                if flag_url:
+                    try:
+                        async with aiohttp.ClientSession() as session:
+                            async with session.get(flag_url) as resp:
+                                if resp.status == 200:
+                                    flag_data = await resp.read()
+                                    flag_img = Image.open(io.BytesIO(flag_data)).convert('RGBA')
+                                    flag_img = flag_img.resize((bowler_flag_size, bowler_flag_size), Image.Resampling.LANCZOS)
+                                    img.paste(flag_img, (right_x - 50, bowler_y - 100), flag_img)
+                    except Exception as e:
+                        print(f"   ⚠️ Error loading flag: {e}")
+
+            draw.text((right_x - 140, bowler_y - 90), f"@{bowler_username}", fill=BLACK, font=username_font, anchor="rm")
+
+            try:
+                bowler_fixed_font = ImageFont.truetype("nor.otf", 90)
+            except:
+                bowler_fixed_font = ImageFont.load_default()
+
+            draw.text((right_x - 100, bowler_y - 30), bowler_name.upper(), fill=PURPLE, font=bowlersmol_font, anchor="rm")
+            draw.text((right_x - 130, bowler_y + 30), bowler_stats, fill=PURPLE, font=bowlersmol_font, anchor="rm")
+
+        circle_start_x = width - 420
+        circle_y = height - 38
+        circle_spacing = 70
+        circle_radius = 28
+
+        current_over_balls = get_current_over_balls(timeline)
+
+        for i, ball in enumerate(current_over_balls):
+            x = circle_start_x + (i * circle_spacing)
+
+            if ball == 'W':
+                fill_color = (217, 17, 17)
+            elif ball == '0':
+                fill_color = (100, 100, 100)
+            elif ball == '6':
+                fill_color = (191, 7, 232)
+            elif ball == '4':
+                fill_color = (41, 232, 7)
+            elif 'LB' in ball:
+                fill_color = (255, 165, 0)
+            else:
+                fill_color = (27, 22, 107)
+
+            draw.ellipse([(x - circle_radius, circle_y - circle_radius),
+                         (x + circle_radius, circle_y + circle_radius)],
+                        fill=fill_color, outline=(255, 255, 255), width=4)
+
+            if 'LB' in ball:
+                try:
+                    lb_font = ImageFont.truetype("nor.otf", 24)
+                except:
+                    lb_font = ImageFont.load_default()
+                draw.text((x, circle_y), ball, fill=(255, 255, 255), font=lb_font, anchor="mm")
+            else:
+                draw.text((x, circle_y), ball, fill=(255, 255, 255), font=ball_font, anchor="mm")
+
+        output = io.BytesIO()
+        img.save(output, format='PNG')
+        output.seek(0)
+
+        return output
+
+    except Exception as e:
+        print(f"❌ Error creating match image: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+async def create_wicket_image(wicket_data, guild):
+    """Create wicket OUT image"""
+    try:
+        img = Image.open("out.png").convert('RGBA')
+        draw = ImageDraw.Draw(img)
+        width, height = img.size
+
+        try:
+            player_name_font = ImageFont.truetype("nor.otf", 90)
+            username_font = ImageFont.truetype("nor.otf", 40)
+            score_font = ImageFont.truetype("nor.otf", 120)
+            balls_font = ImageFont.truetype("nor.otf", 60)
+            dismissal_font = ImageFont.truetype("nor.otf", 70)
+        except:
+            player_name_font = ImageFont.load_default()
+            username_font = ImageFont.load_default()
+            score_font = ImageFont.load_default()
+            balls_font = ImageFont.load_default()
+            dismissal_font = ImageFont.load_default()
+
+        WHITE = (255, 255, 255)
+        YELLOW = (255, 207, 0)
+
+        out_player_name = wicket_data.get('out_player_name', 'UNKNOWN')
+        out_username = wicket_data.get('out_username', 'unknown')
+        runs = wicket_data.get('runs', '0')
+        balls = wicket_data.get('balls', '0')
+        dismissal_text = wicket_data.get('dismissal_text', '')
+        dismissal_usernames = wicket_data.get('dismissal_usernames', '')
+        team_name = wicket_data.get('team', '')
+
+        is_caught = 'c ' in dismissal_text and ' b ' in dismissal_text
+
+        center_x = width // 2
+        player_y = height // 2 - 80
+
+        name_size = 90
+        if len(out_player_name) > 15:
+            name_size = 65
+
+        try:
+            player_name_font = ImageFont.truetype("nor.otf", name_size)
+        except:
+            player_name_font = ImageFont.load_default()
+
+        draw.text((center_x - 90, player_y - 20), out_player_name, fill=WHITE, font=player_name_font, anchor="mm")
+        draw.text((center_x - 90, player_y + 40), f"@{out_username}", fill=WHITE, font=username_font, anchor="mm")
+
+        score_x = center_x + 300
+        score_y = player_y
+
+        draw.text((score_x, score_y), runs, fill=YELLOW, font=score_font, anchor="lm")
+
+        bbox = draw.textbbox((score_x, score_y), runs, font=score_font)
+        runs_width = bbox[2] - bbox[0]
+        draw.text((score_x + runs_width + 20, score_y + 20), balls, fill=WHITE, font=balls_font, anchor="lm")
+
+        dismissal_y = height - 110
+
+        if is_caught:
+            parts = dismissal_text.split(' b ')
+            draw.text((center_x - 200, dismissal_y), parts[0], fill=YELLOW, font=dismissal_font, anchor="mm")
+            draw.text((center_x + 350, dismissal_y), f"b {parts[1]}", fill=YELLOW, font=dismissal_font, anchor="mm")
+        else:
+            draw.text((center_x, dismissal_y), dismissal_text, fill=YELLOW, font=dismissal_font, anchor="mm")
+
+        if dismissal_usernames:
+            if is_caught:
+                usernames = dismissal_usernames.split()
+                draw.text((center_x - 200, dismissal_y + 60), usernames[0], fill=WHITE, font=username_font, anchor="mm")
+                draw.text((center_x + 350, dismissal_y + 60), usernames[1], fill=WHITE, font=username_font, anchor="mm")
+            else:
+                draw.text((center_x, dismissal_y + 60), dismissal_usernames, fill=WHITE, font=username_font, anchor="mm")
+
+        if team_name:
+            flag_url = get_team_flag_url(team_name)
+            flag_size = 180
+
+            if team_name.lower() == "west indies":
+                try:
+                    flag_img = Image.open("westindies.jpg").convert('RGBA')
+                    flag_img = flag_img.resize((flag_size, flag_size), Image.Resampling.LANCZOS)
+                    mask = Image.new('L', (flag_size, flag_size), 0)
+                    mask_draw = ImageDraw.Draw(mask)
+                    mask_draw.ellipse((0, 0, flag_size, flag_size), fill=255)
+                    circular_flag = Image.new('RGBA', (flag_size, flag_size), (0, 0, 0, 0))
+                    circular_flag.paste(flag_img, (0, 0), mask)
+                    flag_x = width - flag_size - 50
+                    flag_y = (height // 2) - (flag_size // 2)
+                    img.paste(circular_flag, (flag_x, flag_y), circular_flag)
+                except Exception as e:
+                    print(f"❌ Error loading West Indies flag: {e}")
+            elif flag_url:
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(flag_url) as resp:
+                            if resp.status == 200:
+                                flag_data = await resp.read()
+                                flag_img = Image.open(io.BytesIO(flag_data)).convert('RGBA')
+                                flag_img = flag_img.resize((flag_size, flag_size), Image.Resampling.LANCZOS)
+                                mask = Image.new('L', (flag_size, flag_size), 0)
+                                mask_draw = ImageDraw.Draw(mask)
+                                mask_draw.ellipse((0, 0, flag_size, flag_size), fill=255)
+                                circular_flag = Image.new('RGBA', (flag_size, flag_size), (0, 0, 0, 0))
+                                circular_flag.paste(flag_img, (0, 0), mask)
+                                flag_x = width - flag_size - 50
+                                flag_y = (height // 2) - (flag_size // 2)
+                                img.paste(circular_flag, (flag_x, flag_y), circular_flag)
+                except Exception as e:
+                    print(f"❌ Error loading flag: {e}")
+
+        output = io.BytesIO()
+        img.save(output, format='PNG')
+        output.seek(0)
+
+        return output
+
+    except Exception as e:
+        print(f"❌ Error creating wicket image: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+def parse_wicket_from_embed(embed):
+    """Parse wicket information from embed fields - searches ALL fields"""
+    try:
+        print("\n🔍 SEARCHING EMBED FOR WICKET DATA...")
+
+        full_text = ""
+
+        if embed.description:
+            full_text += f"{embed.description}\n"
+
+        for field in embed.fields:
+            full_text += f"{field.name}: {field.value}\n"
+
+        print(f"\n📄 FULL EMBED CONTENT:\n{full_text}\n")
+
+        wicket_indicators = ["is out!", "is DUCK out!", "OUT!", "WICKET", "dismissed"]
+        is_wicket = any(indicator.lower() in full_text.lower() for indicator in wicket_indicators)
+
+        if not is_wicket:
+            print("   ❌ No wicket indicators found")
+            return None
+
+        print("   ✅ WICKET DETECTED IN EMBED!")
+
+        username_match = re.search(r'\*\*(.+?)\s+is(?:\s+DUCK)?\s+out', full_text)
+        if not username_match:
+            username_match = re.search(r'(.+?)\s+is(?:\s+DUCK)?\s+out', full_text)
+
+        if not username_match:
+            print("   ❌ Could not extract username")
+            return None
+
+        out_username = username_match.group(1).strip()
+        is_duck = "DUCK out" in full_text
+
+        stats_match = re.search(rf'{re.escape(out_username)}[^\d]*?(\d+)\s*\((\d+)\)', full_text)
+        if not stats_match:
+            stats_match = re.search(r'`(\d+)\s*\((\d+)\)`', full_text)
+
+        if not stats_match:
+            print("   ❌ Could not extract runs/balls")
+            return None
+
+        runs = stats_match.group(1)
+        balls = stats_match.group(2)
+
+        caught_by_user_id = None
+        caught_match = re.search(r'Caught by.*?<@(\d+)>', full_text)
+        if caught_match:
+            caught_by_user_id = int(caught_match.group(1))
+
+        bowler_username = None
+        for line in full_text.split('\n'):
+            if '╰' in line and '-' in line and '(' in line:
+                bowler_match = re.search(r'(.+?):\s*╰', line)
+                if bowler_match:
+                    potential_bowler = bowler_match.group(1).strip()
+                    if potential_bowler != out_username:
+                        bowler_username = potential_bowler
+                        break
+
+        return {
+            'out_username': out_username,
+            'runs': runs,
+            'balls': balls,
+            'bowler_username': bowler_username,
+            'caught_by_user_id': caught_by_user_id,
+            'is_duck': is_duck
+        }
+
+    except Exception as e:
+        print(f"❌ Error parsing wicket from embed: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+def parse_wicket_message(message_content):
+    """Parse wicket message to extract data"""
+    try:
+        lines = message_content.strip().split('\n')
+        first_line = lines[0]
+        is_duck = "DUCK out" in first_line
+
+        username_match = re.search(r'\*\*(.+?)\s+is', first_line)
+        if not username_match:
+            return None
+
+        out_username = username_match.group(1)
+
+        player_line = None
+        bowler_line = None
+        caught_by_user_id = None
+
+        for line in lines:
+            if out_username in line and '╰' in line:
+                player_line = line
+            elif 'Caught by' in line:
+                caught_match = re.search(r'<@(\d+)>', line)
+                if caught_match:
+                    caught_by_user_id = int(caught_match.group(1))
+            elif '╰' in line and '`' in line and '-' in line and out_username not in line:
+                bowler_line = line
+
+        if not player_line:
+            return None
+
+        stats_match = re.search(r'`(\d+)\s+\((\d+)\)', player_line)
+        if not stats_match:
+            return None
+
+        runs = stats_match.group(1)
+        balls = stats_match.group(2)
+
+        bowler_username = None
+        if bowler_line:
+            bowler_match = re.search(r'(.+?):', bowler_line)
+            if bowler_match:
+                bowler_username = bowler_match.group(1).strip()
+
+        return {
+            'out_username': out_username,
+            'runs': runs,
+            'balls': balls,
+            'bowler_username': bowler_username,
+            'caught_by_user_id': caught_by_user_id,
+            'is_duck': is_duck
+        }
+
+    except Exception as e:
+        print(f"❌ Error parsing wicket message: {e}")
+        return None
+
+
+async def send_image_with_retry(channel, image_data, filename, content=None):
+    """Send an image while recovering from transient Discord upload failures.
+
+    A discord.File owns its file-like object and the stream may be partially
+    consumed when a request is interrupted.  Reusing the same File on retry
+    can therefore send an empty/partial upload, so a new stream is created for
+    every attempt.
+    """
+    if image_data is None:
+        return False
+
+    if hasattr(image_data, "getvalue"):
+        image_bytes = image_data.getvalue()
+    else:
+        image_bytes = bytes(image_data)
+
+    max_attempts = 4
+    for attempt in range(max_attempts):
+        try:
+            file = discord.File(io.BytesIO(image_bytes), filename=filename)
+            kwargs = {"file": file}
+            if content is not None:
+                kwargs["content"] = content
+            await channel.send(**kwargs)
+            return True
+        except discord.HTTPException as exc:
+            # 429 and 5xx responses are transient.  Permission and payload
+            # errors are not, so do not delay/retry those.
+            if exc.status != 429 and exc.status < 500:
+                print(f"❌ Discord rejected {filename} upload (HTTP {exc.status})")
+                return False
+
+            retry_after = getattr(exc, "retry_after", None)
+            delay = retry_after if retry_after is not None else 2 ** attempt
+            print(
+                f"⚠️ Discord upload failed for {filename} "
+                f"(HTTP {exc.status}), retrying in {delay:.1f}s"
+            )
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as exc:
+            delay = 2 ** attempt
+            print(
+                f"⚠️ Transient upload failure for {filename}: {exc}; "
+                f"retrying in {delay}s"
+            )
+
+        if attempt < max_attempts - 1:
+            await asyncio.sleep(delay)
+
+    print(f"❌ Failed to send {filename} after {max_attempts} attempts")
+    return False
+
+
+class MatchUpdates(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+        # Discord can emit several edits for the same cricket update in quick
+        # succession.  Keep image generation and deduplication atomic so two
+        # edits cannot both pass the checks before either one sends.
+        self._message_processing_lock = asyncio.Lock()
+
+    @commands.Cog.listener()
+    async def on_message(self, message):
+        if message.author.id != CRICKET_BOT_ID:
+            return
+
+        async with self._message_processing_lock:
+            await self._process_message(message)
+
+    async def _process_message(self, message):
+        if message.author.id != CRICKET_BOT_ID:
+            return
+
+        print(f"\n{'='*60}")
+        print(f"✅ MESSAGE FROM CRICKET BOT!")
+        print(f"{'='*60}")
+
+        # ===== NOWSTAT CHECK =====
+        # Scan ALL message content: plain text + every embed field/description/title
+        full_message_text = get_full_message_text(message)
+        print(f"📋 Full message text for nowstat scan:\n{full_message_text[:500]}")
+
+        # The final result announcement is the authoritative end of the game.
+        # Reset before any nowstat, wicket, or match-image parser can consume
+        # the message and before commentary can see stale live state.
+        channel_id = message.channel.id
+        if is_match_finished_message(full_message_text):
+            print(f"🏁 MATCH FINISHED — resetting channel {channel_id}")
+            reset_match_channel_state(channel_id)
+            return
+
+        # The monitored bot also emits cooldown and command-error embeds.
+        # They are not cricket updates and must not be fed to the match
+        # parsers, which can otherwise interpret their mentions as players.
+        ignored_markers = (
+            "cooldown",
+            "on cooldown",
+            "command error",
+            "command not found",
+            "unknown command",
+            "error occurred",
+        )
+        if any(marker in full_message_text.lower() for marker in ignored_markers):
+            print("⏭️ Ignoring cooldown/command-error message from cricket bot")
+            return
+
+        players_to_show = parse_nowstat_message(full_message_text)
+        nowstat_sent = False
+        if players_to_show:
+            print(f"🆕 NOWSTAT: Found {len(players_to_show)} player(s)")
+            # Dedup by user_id within this single message to prevent double-sends
+            already_sent_ids = set()
+            current_time = time.time()
+
+            for user_id, role in players_to_show:
+                if user_id in already_sent_ids:
+                    print(f"   ⏭️ Already sent nowstat for user_id {user_id} this message, skipping")
+                    continue
+                already_sent_ids.add(user_id)
+
+                # Check if this exact message has already triggered a nowstat for this player+role
+                msg_nowstat_key = (message.id, user_id, role)
+                if msg_nowstat_key in sent_nowstat_message_ids:
+                    print(f"⏭️ SKIPPING DUPLICATE NOWSTAT (message {message.id} already processed for user {user_id})")
+                    continue
+
+                # Also check time-based dedup as secondary guard
+                channel_id = message.channel.id
+                nowstat_key = f"{channel_id}_{user_id}_{role}"
+                if nowstat_key in last_nowstats:
+                    time_diff = current_time - last_nowstats[nowstat_key]
+                    if time_diff < 10:
+                        print(f"⏭️ SKIPPING DUPLICATE NOWSTAT (processed {time_diff:.1f}s ago)")
+                        continue
+
+                # Clean up old time-based entries (older than 60 seconds)
+                old_keys = [k for k, v in last_nowstats.items() if current_time - v > 60]
+                for k in old_keys:
+                    del last_nowstats[k]
+
+                conn = sqlite3.connect('players.db')
+                c = conn.cursor()
+                c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (user_id,))
+                pname_result = c.fetchone()
+                conn.close()
+
+                if not pname_result:
+                    print(f"   ⚠️ No player found for user_id {user_id}, skipping")
+                    continue
+
+                player_name = pname_result[0]
+                print(f"   🎨 Creating nowstat for {player_name} (role={role})")
+
+                result = await create_nowstat_image(user_id, role, message.guild, self.bot)
+
+                if result and result[0]:
+                    image_bytes, plain_text = result
+                    if await send_image_with_retry(
+                        message.channel, image_bytes, "nowstat.png", content=plain_text
+                    ):
+                        # Mark only after Discord accepted the upload.  A
+                        # failed upload must remain eligible for a later edit.
+                        sent_nowstat_message_ids.add(msg_nowstat_key)
+                        if len(sent_nowstat_message_ids) > 1000:
+                            sent_nowstat_message_ids.clear()
+                        last_nowstats[nowstat_key] = time.time()
+                        print(f"   ✅ Sent nowstat for {player_name}")
+                        nowstat_sent = True
+                    else:
+                        print(f"   ❌ Could not send nowstat for {player_name}")
+                else:
+                    print(f"   ❌ Failed to create nowstat for {player_name}")
+
+        # After nowstat, still check for wicket in the same message
+        # (messages like "Next batsman: <@X>" appear AFTER wicket info in same message)
+        # ===== END NOWSTAT CHECK =====
+
+        # FIRST: Check if there's an embed with wicket info OR match data
+        wicket_info = None
+        if message.embeds:
+            wicket_info = parse_wicket_from_embed(message.embeds[0])
+
+        # SECOND: If no wicket in embed, check plain text for wicket
+        if not wicket_info and message.content:
+            if "is out!" in message.content or "is DUCK out!" in message.content:
+                print("🎯 WICKET MESSAGE DETECTED IN PLAIN TEXT!")
+                wicket_info = parse_wicket_message(message.content)
+
+        # Process wicket if found
+        if wicket_info:
+            print("🎯 PROCESSING WICKET!")
+
+            channel_id = message.channel.id
+            wicket_key = f"{channel_id}_{wicket_info['out_username']}_{wicket_info['runs']}_{wicket_info['balls']}"
+
+            current_time = time.time()
+
+            if wicket_key in last_wickets:
+                time_diff = current_time - last_wickets[wicket_key]
+                if time_diff < 10:
+                    print(f"⏭️ SKIPPING DUPLICATE WICKET (processed {time_diff:.1f}s ago)")
+                    return
+
+            old_keys = [k for k, v in last_wickets.items() if current_time - v > 60]
+            for k in old_keys:
+                del last_wickets[k]
+
+            conn = sqlite3.connect('players.db')
+            c = conn.cursor()
+
+            out_uid = resolve_user_id_by_username(message.guild, wicket_info['out_username'])
+            if out_uid:
+                c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (out_uid,))
+            else:
+                c.execute("SELECT player_name FROM player_representatives WHERE username = ?",
+                          (wicket_info['out_username'],))
+            out_result = c.fetchone()
+
+            if not out_result:
+                print(f"❌ Player not found for {wicket_info['out_username']}")
+                conn.close()
+                return
+
+            out_player_full_name = out_result[0]
+            out_player_display_name = out_player_full_name.upper()
+            out_player_team = find_player_team(out_player_full_name)
+
+            bowler_real_name = None
+            if wicket_info['bowler_username']:
+                bow_uid = resolve_user_id_by_username(message.guild, wicket_info['bowler_username'])
+                if bow_uid:
+                    c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (bow_uid,))
+                else:
+                    c.execute("SELECT player_name FROM player_representatives WHERE username = ?",
+                              (wicket_info['bowler_username'],))
+                bowler_result = c.fetchone()
+                if bowler_result:
+                    bowler_full_name = bowler_result[0]
+                    bowler_real_name = bowler_full_name.upper()
+
+            caught_by_real_name = None
+            if wicket_info['caught_by_user_id']:
+                c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?",
+                          (wicket_info['caught_by_user_id'],))
+                caught_result = c.fetchone()
+                if caught_result:
+                    caught_full_name = caught_result[0]
+                    caught_by_real_name = caught_full_name.split()[0].upper()
+
+            conn.close()
+
+            if caught_by_real_name and bowler_real_name:
+                dismissal_text = f"c {caught_by_real_name} b {bowler_real_name}"
+                caught_by_member = message.guild.get_member(wicket_info['caught_by_user_id'])
+                caught_by_username = caught_by_member.name if caught_by_member else 'unknown'
+                dismissal_usernames = f"@{caught_by_username} @{wicket_info['bowler_username']}"
+            elif bowler_real_name:
+                dismissal_text = f"b {bowler_real_name}"
+                dismissal_usernames = f"@{wicket_info['bowler_username']}"
+            else:
+                dismissal_text = "OUT"
+                dismissal_usernames = ""
+
+            wicket_data = {
+                'out_player_name': out_player_display_name,
+                'out_full_name': out_player_full_name,
+                'out_username': wicket_info['out_username'],
+                'out_user_id': out_uid,
+                'runs': wicket_info['runs'],
+                'balls': wicket_info['balls'],
+                'dismissal_text': dismissal_text,
+                'dismissal_usernames': dismissal_usernames,
+                'team': out_player_team
+            }
+
+            print(f"🎨 CREATING WICKET IMAGE...")
+
+            wicket_image = await create_wicket_image(wicket_data, message.guild)
+
+            if not wicket_image:
+                print("❌ Failed to create wicket image")
+                return
+
+            if not await send_image_with_retry(
+                message.channel, wicket_image, "wicket.png"
+            ):
+                return
+
+            # As with nowstats, a wicket is deduplicated only after the image
+            # has been successfully delivered.
+            last_wickets[wicket_key] = time.time()
+            print(f"✅ SENT WICKET IMAGE\n")
+
+            # Update live match state with wicket event for commentary
+            publish_live_match_state(
+                channel_id,
+                {
+                    'pending_wicket': wicket_data,
+                    'source_message_text': full_message_text,
+                    'source_message_key': f"{message.id}|{full_message_text}",
+                    'observed_event': detect_observed_event(full_message_text),
+                    'last_updated': time.time(),
+                },
+            )
+
+            # After wicket image, send nowstat for next batsman/bowler
+            # if this same message also contains "Next batsman/bowler" info
+            if players_to_show and not nowstat_sent:
+                already_sent_ids = set()
+                current_time_pw = time.time()
+                for uid, role in players_to_show:
+                    if uid in already_sent_ids:
+                        continue
+                    already_sent_ids.add(uid)
+
+                    # Check if this exact message has already triggered a nowstat for this player+role
+                    msg_nowstat_key = (message.id, uid, role)
+                    if msg_nowstat_key in sent_nowstat_message_ids:
+                        print(f"⏭️ SKIPPING DUPLICATE POST-WICKET NOWSTAT (message {message.id} already processed for user {uid})")
+                        continue
+
+                    # Also check time-based dedup as secondary guard
+                    channel_id = message.channel.id
+                    nowstat_key = f"{channel_id}_{uid}_{role}"
+                    if nowstat_key in last_nowstats:
+                        time_diff = current_time_pw - last_nowstats[nowstat_key]
+                        if time_diff < 10:
+                            print(f"⏭️ SKIPPING DUPLICATE POST-WICKET NOWSTAT (processed {time_diff:.1f}s ago)")
+                            continue
+
+                    conn2 = sqlite3.connect('players.db')
+                    c2 = conn2.cursor()
+                    c2.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (uid,))
+                    pr = c2.fetchone()
+                    conn2.close()
+                    if not pr:
+                        continue
+                    print(f"   🎨 Post-wicket nowstat for {pr[0]} (role={role})")
+                    ns_result = await create_nowstat_image(uid, role, message.guild, self.bot)
+                    if ns_result and ns_result[0]:
+                        ns_bytes, ns_text = ns_result
+                        if await send_image_with_retry(
+                            message.channel, ns_bytes, "nowstat.png", content=ns_text
+                        ):
+                            sent_nowstat_message_ids.add(msg_nowstat_key)
+                            if len(sent_nowstat_message_ids) > 1000:
+                                sent_nowstat_message_ids.clear()
+                            last_nowstats[nowstat_key] = time.time()
+                            print(f"   ✅ Sent post-wicket nowstat for {pr[0]}")
+                        else:
+                            print(f"   ❌ Could not send post-wicket nowstat for {pr[0]}")
+            return
+
+        # THIRD: Check for match status updates in embeds (not wickets)
+        if not message.embeds:
+            print("❌ No embeds found")
+            return
+
+        embed = message.embeds[0]
+
+        if not embed.fields:
+            print("❌ No embed fields")
+            return
+
+        print(f"✅ Embed has {len(embed.fields)} fields\n")
+
+        match_data = parse_embed_fields(embed, message.guild)
+
+        if not match_data:
+            print("❌ No match data found")
+            return
+
+        if 'timeline' not in match_data or not match_data['timeline']:
+            print("❌ No timeline found")
+            return
+
+        channel_id = message.channel.id
+
+        current_timeline = '|'.join(match_data['timeline'])
+        source_message_key = f"{message.id}|{full_message_text}"
+
+        if (
+            channel_id in last_timelines
+            and last_timelines[channel_id] == current_timeline
+            and last_source_messages.get(channel_id) == source_message_key
+        ):
+            print("ℹ️ Same timeline, skipping")
+            return
+
+        # Update live match state for commentary
+        tl = match_data.get('timeline', [])
+        # Keep the parsed timeline for rendering the status image, but do not
+        # make it the source of truth for commentary. Commentary receives the
+        # original cricket-bot message below.
+        match_data['last_ball']      = ''
+        match_data['over_completed'] = False
+        match_data['timeline_key']   = current_timeline
+        match_data['source_message_text'] = full_message_text
+        match_data['source_message_key'] = source_message_key
+        match_data['observed_event'] = detect_observed_event(full_message_text)
+        match_data['last_updated']   = time.time()
+
+        print(f"\n🎨 CREATING MATCH IMAGE...")
+
+        match_image = await create_match_image(match_data, message.guild)
+
+        if not match_image:
+            print("❌ Failed to create match image")
+            return
+
+        if not await send_image_with_retry(
+            message.channel, match_image, "match_status.png"
+        ):
+            return
+
+        # Do not suppress a later edit when this upload failed.
+        last_timelines[channel_id] = current_timeline
+        last_source_messages[channel_id] = source_message_key
+        publish_live_match_state(channel_id, match_data)
+        print(f"✅ SENT MATCH UPDATE IMAGE\n")
+
+    @commands.Cog.listener()
+    async def on_message_edit(self, before, after):
+        if after.author.id != CRICKET_BOT_ID:
+            return
+
+        print("📝 Cricket bot edited a message")
+        await self.on_message(after)
+
+    @commands.command(name='test')
+    async def test_match_image(self, ctx, batsman1: discord.Member = None, batsman2: discord.Member = None, bowler: discord.Member = None):
+        """Test command: -test @user1 @user2 @user3"""
+
+        if not batsman1 or not batsman2 or not bowler:
+            await ctx.send("❌ Usage: `-test @batsman1 @batsman2 @bowler`")
+            return
+
+        batsman1_runs = random.randint(0, 50)
+        batsman1_balls = random.randint(batsman1_runs, batsman1_runs + 20)
+        batsman2_runs = random.randint(0, 50)
+        batsman2_balls = random.randint(batsman2_runs, batsman2_runs + 20)
+        total_runs = batsman1_runs + batsman2_runs
+        wickets = 1
+        overs_bowled = round(random.uniform(0.1, 5.0), 1)
+        bowler_wickets = random.randint(0, 2)
+        bowler_runs = random.randint(0, 30)
+        bowler_overs = round(random.uniform(0.1, overs_bowled), 1)
+        on_strike = random.randint(1, 2)
+        possible_balls = ['0', '1', '2', '3', '4', '6', 'W']
+        timeline = [random.choice(possible_balls) for _ in range(6)]
+        target_score = random.randint(total_runs + 10, total_runs + 80)
+        target = f"Target {target_score}"
+
+        conn = sqlite3.connect('players.db')
+        c = conn.cursor()
+
+        c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (batsman1.id,))
+        result = c.fetchone()
+        batsman1_full_name = result[0] if result else batsman1.name
+        batsman1_last_name = batsman1_full_name.split()[-1] if result else batsman1.name
+        batsman1_team = find_player_team(batsman1_full_name) if result else ""
+
+        c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (batsman2.id,))
+        result = c.fetchone()
+        batsman2_full_name = result[0] if result else batsman2.name
+        batsman2_last_name = batsman2_full_name.split()[-1] if result else batsman2.name
+        batsman2_team = find_player_team(batsman2_full_name) if result else ""
+
+        c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (bowler.id,))
+        result = c.fetchone()
+        bowler_full_name = result[0] if result else bowler.name
+        bowler_last_name = bowler_full_name.split()[-1] if result else bowler.name
+        bowler_team = find_player_team(bowler_full_name) if result else ""
+
+        conn.close()
+
+        match_data = {
+            'team_a_name': TEAM_ABBREVIATIONS.get(batsman1_team, batsman1_team[:3].upper()) if batsman1_team else 'BAT',
+            'team_b_name': bowler_team if bowler_team else 'BOW',
+            'batting_team': batsman1_team,
+            'team_a_score': f'{total_runs}/{wickets}',
+            'overs': str(overs_bowled),
+            'batsman1_name': batsman1_last_name,
+            'batsman1_username': batsman1.name,
+            'batsman1_score': f'{batsman1_runs}({batsman1_balls})',
+            'batsman1_team': batsman1_team,
+            'batsman2_name': batsman2_last_name,
+            'batsman2_username': batsman2.name,
+            'batsman2_score': f'{batsman2_runs}({batsman2_balls})',
+            'batsman2_team': batsman2_team,
+            'bowler_name': bowler_last_name,
+            'bowler_username': bowler.name,
+            'bowler_stats': f'{bowler_wickets}-{bowler_runs} ({bowler_overs})',
+            'bowler_team': bowler_team,
+            'timeline': timeline,
+            'on_strike': on_strike,
+            'target': target
+        }
+
+        match_image = await create_match_image(match_data, ctx.guild)
+
+        if not match_image:
+            await ctx.send("❌ Failed to create test image")
+            return
+
+        file = discord.File(fp=match_image, filename="test_match.png")
+        await ctx.send(f"🧪 **Test Match Image Generated** - 🎯 Innings 2 (Chasing)", file=file)
+
+    @commands.command(name='testwicket', aliases=['tw'])
+    async def test_wicket_image(self, ctx, out_player: discord.Member = None, bowler: discord.Member = None, caught_by: discord.Member = None):
+        """Test wicket command: -testwicket @out_player @bowler [@caught_by]"""
+
+        if not out_player or not bowler:
+            await ctx.send("❌ Usage: `-testwicket @out_player @bowler [@caught_by]`")
+            return
+
+        conn = sqlite3.connect('players.db')
+        c = conn.cursor()
+
+        c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (out_player.id,))
+        result = c.fetchone()
+        out_player_full_name = result[0] if result else out_player.name
+        out_player_display_name = out_player_full_name.upper()
+        out_player_team = find_player_team(out_player_full_name) if result else ""
+
+        c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (bowler.id,))
+        result = c.fetchone()
+        bowler_full_name = result[0] if result else bowler.name
+        bowler_real_name = bowler_full_name.upper()
+
+        caught_by_real_name = None
+        if caught_by:
+            c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (caught_by.id,))
+            result = c.fetchone()
+            if result:
+                caught_by_full_name = result[0]
+                caught_by_real_name = caught_by_full_name.split()[0].upper()
+
+        conn.close()
+
+        runs = str(random.randint(0, 100))
+        balls = str(random.randint(int(runs), int(runs) + 50))
+
+        if caught_by_real_name and bowler_real_name:
+            dismissal_text = f"c {caught_by_real_name} b {bowler_real_name}"
+            dismissal_usernames = f"@{caught_by.name} @{bowler.name}"
+        elif bowler_real_name:
+            dismissal_text = f"b {bowler_real_name}"
+            dismissal_usernames = f"@{bowler.name}"
+        else:
+            dismissal_text = "OUT"
+            dismissal_usernames = ""
+
+        wicket_data = {
+            'out_player_name': out_player_display_name,
+            'out_username': out_player.name,
+            'runs': runs,
+            'balls': balls,
+            'dismissal_text': dismissal_text,
+            'dismissal_usernames': dismissal_usernames,
+            'team': out_player_team
+        }
+
+        wicket_image = await create_wicket_image(wicket_data, ctx.guild)
+
+        if not wicket_image:
+            await ctx.send("❌ Failed to create test wicket image")
+            return
+
+        file = discord.File(fp=wicket_image, filename="test_wicket.png")
+        await ctx.send(f"🧪 **Test Wicket Image Generated**", file=file)
+
+    @commands.command(name='testnowstat', aliases=['tns'])
+    async def test_nowstat_image(self, ctx, member: discord.Member = None, role: str = 'bat'):
+        """Test nowstat command: -testnowstat @user [bat/bowl]"""
+
+        if not member:
+            await ctx.send("❌ Usage: `-testnowstat @user [bat/bowl]`\nRole defaults to `bat` if not specified.")
+            return
+
+        role = role.lower()
+        if role not in ['bat', 'bowl']:
+            await ctx.send("❌ Role must be `bat` or `bowl`!")
+            return
+
+        result = await create_nowstat_image(member.id, role, ctx.guild, self.bot)
+
+        if not result or not result[0]:
+            await ctx.send("❌ Failed to create nowstat image! Make sure the user has a claimed player.")
+            return
+
+        image_bytes, plain_text = result
+        file = discord.File(fp=image_bytes, filename="nowstat.png")
+        await ctx.send(content=f"🧪 **Test Nowstat** | {plain_text}", file=file)
+
+
+async def setup(bot):
+    await bot.add_cog(MatchUpdates(bot))

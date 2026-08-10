@@ -1,0 +1,263 @@
+{
+  "tournaments": {
+    "ODI WC 2026": {
+      "groups": {
+        "A": {
+          "rounds": {
+            "1": {
+              "fixtures": [
+                {"team1": "Malaysia", "team2": "Pakistan"},
+                {"team1": "Oman", "team2": "Afghanistan"},
+                {"team1": "UAE", "team2": "Sri Lanka"},
+                {"team1": "Ireland", "team2": "West Indies"}
+              ],
+              "rest_team": "India"
+            },
+            "2": {
+              "fixtures": [
+                {"team1": "Ireland", "team2": "UAE"},
+                {"team1": "Afghanistan", "team2": "West Indies"},
+                {"team1": "Pakistan", "team2": "Oman"},
+                {"team1": "India", "team2": "Malaysia"}
+              ],
+              "rest_team": "Sri Lanka"
+            },
+            "3": {
+              "fixtures": [
+                {"team1": "Oman", "team2": "West Indies"},
+                {"team1": "UAE", "team2": "Pakistan"},
+                {"team1": "Ireland", "team2": "India"},
+                {"team1": "Sri Lanka", "team2": "Afghanistan"}
+              ],
+              "rest_team": "Malaysia"
+            },
+            "4": {
+              "fixtures": [
+                {"team1": "Malaysia", "team2": "Oman"},
+                {"team1": "UAE", "team2": "West Indies"},
+                {"team1": "Sri Lanka", "team2": "India"},
+                {"team1": "Afghanistan", "team2": "Pakistan"}
+              ],
+              "rest_team": "Ireland"
+            },
+            "5": {
+              "fixtures": [
+                {"team1": "Malaysia", "team2": "Afghanistan"},
+                {"team1": "Oman", "team2": "India"},
+                {"team1": "Ireland", "team2": "Pakistan"},
+                {"team1": "West Indies", "team2": "Sri Lanka"}
+              ],
+              "rest_team": "UAE"
+            },
+            "6": {
+              "fixtures": [
+                {"team1": "Malaysia", "team2": "West Indies"},
+                {"team1": "Oman", "team2": "UAE"},
+                {"team1": "Ireland", "team2": "Sri Lanka"},
+                {"team1": "Afghanistan", "team2": "India"}
+              ],
+              "rest_team": "Pakistan"
+            },
+            "7": {
+              "fixtures": [
+                {"team1": "Malaysia", "team2": "UAE"},
+                {"team1": "Oman", "team2": "Sri Lanka"},
+                {"team1": "Ireland", "team2": "Afghanistan"},
+                {"team1": "Pakistan", "team2": "India"}
+              ],
+              "rest_team": "West Indies"
+            },
+            "8": {
+              "fixtures": [
+                {"team1": "Malaysia", "team2": "Ireland"},
+                {"team1": "UAE", "team2": "Afghanistan"},
+                {"team1": "West Indies", "team2": "India"},
+                {"team1": "Sri Lanka", "team2": "Pakistan"}
+              ],
+              "rest_team": "Oman"
+            },
+            "9": {
+              "fixtures": [
+                {"team1": "Malaysia", "team2": "Sri Lanka"},
+                {"team1": "Oman", "team2": "Ireland"},
+                {"team1": "UAE", "team2": "India"},
+                {"team1": "West Indies", "team2": "Pakistan"}
+              ],
+              "rest_team": "Afghanistan"
+            }
+          }
+        },
+        "B": {
+          "rounds": {
+            "1": {
+              "fixtures": [
+                {"team1": "Uganda", "team2": "Germany"},
+                {"team1": "Canada", "team2": "Australia"},
+                {"team1": "Scotland", "team2": "New Zealand"},
+                {"team1": "South Africa", "team2": "England"}
+              ],
+              "rest_team": "Portugal"
+            },
+            "2": {
+              "fixtures": [
+                {"team1": "Germany", "team2": "Canada"},
+                {"team1": "South Africa", "team2": "Uganda"},
+                {"team1": "Scotland", "team2": "England"},
+                {"team1": "New Zealand", "team2": "Portugal"}
+              ],
+              "rest_team": "Australia"
+            },
+            "3": {
+              "fixtures": [
+                {"team1": "New Zealand", "team2": "Australia"},
+                {"team1": "Uganda", "team2": "Canada"},
+                {"team1": "England", "team2": "Portugal"},
+                {"team1": "South Africa", "team2": "Scotland"}
+              ],
+              "rest_team": "Germany"
+            },
+            "4": {
+              "fixtures": [
+                {"team1": "Australia", "team2": "England"},
+                {"team1": "Canada", "team2": "Scotland"},
+                {"team1": "Germany", "team2": "Portugal"},
+                {"team1": "New Zealand", "team2": "South Africa"}
+              ],
+              "rest_team": "Uganda"
+            },
+            "5": {
+              "fixtures": [
+                {"team1": "Australia", "team2": "Portugal"},
+                {"team1": "England", "team2": "New Zealand"},
+                {"team1": "Germany", "team2": "South Africa"},
+                {"team1": "Scotland", "team2": "Uganda"}
+              ],
+              "rest_team": "Canada"
+            },
+            "6": {
+              "fixtures": [
+                {"team1": "Australia", "team2": "Germany"},
+                {"team1": "Canada", "team2": "New Zealand"},
+                {"team1": "England", "team2": "Uganda"},
+                {"team1": "Portugal", "team2": "South Africa"}
+              ],
+              "rest_team": "Scotland"
+            },
+            "7": {
+              "fixtures": [
+                {"team1": "Australia", "team2": "Scotland"},
+                {"team1": "Canada", "team2": "Portugal"},
+                {"team1": "England", "team2": "Germany"},
+                {"team1": "New Zealand", "team2": "Uganda"}
+              ],
+              "rest_team": "South Africa"
+            },
+            "8": {
+              "fixtures": [
+                {"team1": "Australia", "team2": "Uganda"},
+                {"team1": "Canada", "team2": "South Africa"},
+                {"team1": "Germany", "team2": "New Zealand"},
+                {"team1": "Portugal", "team2": "Scotland"}
+              ],
+              "rest_team": "England"
+            },
+            "9": {
+              "fixtures": [
+                {"team1": "Australia", "team2": "South Africa"},
+                {"team1": "Canada", "team2": "England"},
+                {"team1": "Germany", "team2": "Scotland"},
+                {"team1": "Portugal", "team2": "Uganda"}
+              ],
+              "rest_team": "New Zealand"
+            }
+          }
+        },
+        "C": {
+          "rounds": {
+            "1": {
+              "fixtures": [
+                {"team1": "Hong Kong", "team2": "Japan"},
+                {"team1": "Namibia", "team2": "Bangladesh"},
+                {"team1": "Italy", "team2": "Netherlands"},
+                {"team1": "Zimbabwe", "team2": "USA"}
+              ],
+              "rest_team": "Denmark"
+            },
+            "2": {
+              "fixtures": [
+                {"team1": "Netherlands", "team2": "Hong Kong"},
+                {"team1": "Bangladesh", "team2": "Italy"},
+                {"team1": "Zimbabwe", "team2": "Namibia"},
+                {"team1": "Denmark", "team2": "USA"}
+              ],
+              "rest_team": "Japan"
+            },
+            "3": {
+              "fixtures": [
+                {"team1": "Namibia", "team2": "Netherlands"},
+                {"team1": "Italy", "team2": "USA"},
+                {"team1": "Zimbabwe", "team2": "Bangladesh"},
+                {"team1": "Japan", "team2": "Denmark"}
+              ],
+              "rest_team": "Hong Kong"
+            },
+            "4": {
+              "fixtures": [
+                {"team1": "Hong Kong", "team2": "Namibia"},
+                {"team1": "Zimbabwe", "team2": "Denmark"},
+                {"team1": "USA", "team2": "Bangladesh"},
+                {"team1": "Netherlands", "team2": "Japan"}
+              ],
+              "rest_team": "Italy"
+            },
+            "5": {
+              "fixtures": [
+                {"team1": "Hong Kong", "team2": "Denmark"},
+                {"team1": "Namibia", "team2": "Italy"},
+                {"team1": "Zimbabwe", "team2": "Japan"},
+                {"team1": "USA", "team2": "Netherlands"}
+              ],
+              "rest_team": "Bangladesh"
+            },
+            "6": {
+              "fixtures": [
+                {"team1": "Hong Kong", "team2": "Italy"},
+                {"team1": "Zimbabwe", "team2": "Netherlands"},
+                {"team1": "USA", "team2": "Japan"},
+                {"team1": "Bangladesh", "team2": "Denmark"}
+              ],
+              "rest_team": "Namibia"
+            },
+            "7": {
+              "fixtures": [
+                {"team1": "Hong Kong", "team2": "USA"},
+                {"team1": "Namibia", "team2": "Denmark"},
+                {"team1": "Italy", "team2": "Zimbabwe"},
+                {"team1": "Bangladesh", "team2": "Japan"}
+              ],
+              "rest_team": "Netherlands"
+            },
+            "8": {
+              "fixtures": [
+                {"team1": "Hong Kong", "team2": "Bangladesh"},
+                {"team1": "Namibia", "team2": "USA"},
+                {"team1": "Italy", "team2": "Japan"},
+                {"team1": "Netherlands", "team2": "Denmark"}
+              ],
+              "rest_team": "Zimbabwe"
+            },
+            "9": {
+              "fixtures": [
+                {"team1": "Hong Kong", "team2": "Zimbabwe"},
+                {"team1": "Namibia", "team2": "Japan"},
+                {"team1": "Italy", "team2": "Denmark"},
+                {"team1": "Netherlands", "team2": "Bangladesh"}
+              ],
+              "rest_team": "USA"
+            }
+          }
+        }
+      }
+    }
+  }
+}

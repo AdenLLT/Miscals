@@ -1,0 +1,99 @@
+    await self.invoke(ctx)  # type: ignore
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/ext/commands/bot.py", line 1350, in invoke
+    await ctx.command.invoke(ctx)
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/ext/commands/core.py", line 1029, in invoke
+    await injected(*ctx.args, **ctx.kwargs)  # type: ignore
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/ext/commands/core.py", line 235, in wrapped
+    ret = await coro(*args, **kwargs)
+  File "/workspace/main.py", line 4274, in setcaptain_command
+    set_team_captain(team_data['team'], player_name, user_id, username)
+  File "/workspace/main.py", line 1786, in set_team_captain
+    conn.commit()
+  File "/workspace/main.py", line 84, in commit
+    return _retry_sqlite_operation(
+  File "/workspace/main.py", line 45, in _retry_sqlite_operation
+    return operation()
+  File "/workspace/main.py", line 85, in <lambda>
+    lambda: super(_RetryConnection, self).commit(),
+
+[2026-08-09 11:42:44] [WARNING ] discord.gateway: Shard ID None heartbeat blocked for more than 20 seconds.
+Loop thread traceback (most recent call last):
+  File "/workspace/main.py", line 7773, in <module>
+    bot.run(token)
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/client.py", line 860, in run
+    asyncio.run(runner())
+  File "/workspace/.heroku/python/lib/python3.13/asyncio/runners.py", line 195, in run
+    return runner.run(main)
+  File "/workspace/.heroku/python/lib/python3.13/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+  File "/workspace/.heroku/python/lib/python3.13/asyncio/base_events.py", line 712, in run_until_complete
+    self.run_forever()
+  File "/workspace/.heroku/python/lib/python3.13/asyncio/base_events.py", line 683, in run_forever
+    self._run_once()
+  File "/workspace/.heroku/python/lib/python3.13/asyncio/base_events.py", line 2050, in _run_once
+    handle._run()
+  File "/workspace/.heroku/python/lib/python3.13/asyncio/events.py", line 89, in _run
+    self._context.run(self._callback, *self._args)
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/client.py", line 441, in _run_event
+    await coro(*args, **kwargs)
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/ext/commands/bot.py", line 1395, in on_message
+    await self.process_commands(message)
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/ext/commands/bot.py", line 1392, in process_commands
+    await self.invoke(ctx)  # type: ignore
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/ext/commands/bot.py", line 1350, in invoke
+    await ctx.command.invoke(ctx)
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/ext/commands/core.py", line 1029, in invoke
+    await injected(*ctx.args, **ctx.kwargs)  # type: ignore
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/ext/commands/core.py", line 235, in wrapped
+    ret = await coro(*args, **kwargs)
+  File "/workspace/main.py", line 4274, in setcaptain_command
+    set_team_captain(team_data['team'], player_name, user_id, username)
+  File "/workspace/main.py", line 1786, in set_team_captain
+    conn.commit()
+  File "/workspace/main.py", line 84, in commit
+    return _retry_sqlite_operation(
+  File "/workspace/main.py", line 45, in _retry_sqlite_operation
+    return operation()
+  File "/workspace/main.py", line 85, in <lambda>
+    lambda: super(_RetryConnection, self).commit(),
+
+[2026-08-09 11:42:54] [WARNING ] discord.gateway: Shard ID None heartbeat blocked for more than 30 seconds.
+Loop thread traceback (most recent call last):
+  File "/workspace/main.py", line 7773, in <module>
+    bot.run(token)
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/client.py", line 860, in run
+    asyncio.run(runner())
+  File "/workspace/.heroku/python/lib/python3.13/asyncio/runners.py", line 195, in run
+    return runner.run(main)
+  File "/workspace/.heroku/python/lib/python3.13/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+  File "/workspace/.heroku/python/lib/python3.13/asyncio/base_events.py", line 712, in run_until_complete
+    self.run_forever()
+  File "/workspace/.heroku/python/lib/python3.13/asyncio/base_events.py", line 683, in run_forever
+    self._run_once()
+  File "/workspace/.heroku/python/lib/python3.13/asyncio/base_events.py", line 2050, in _run_once
+    handle._run()
+  File "/workspace/.heroku/python/lib/python3.13/asyncio/events.py", line 89, in _run
+    self._context.run(self._callback, *self._args)
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/client.py", line 441, in _run_event
+    await coro(*args, **kwargs)
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/ext/commands/bot.py", line 1395, in on_message
+    await self.process_commands(message)
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/ext/commands/bot.py", line 1392, in process_commands
+    await self.invoke(ctx)  # type: ignore
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/ext/commands/bot.py", line 1350, in invoke
+    await ctx.command.invoke(ctx)
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/ext/commands/core.py", line 1029, in invoke
+    await injected(*ctx.args, **ctx.kwargs)  # type: ignore
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/ext/commands/core.py", line 235, in wrapped
+    ret = await coro(*args, **kwargs)
+  File "/workspace/main.py", line 4274, in setcaptain_command
+    set_team_captain(team_data['team'], player_name, user_id, username)
+  File "/workspace/main.py", line 1786, in set_team_captain
+    conn.commit()
+  File "/workspace/main.py", line 84, in commit
+    return _retry_sqlite_operation(
+  File "/workspace/main.py", line 45, in _retry_sqlite_operation
+    return operation()
+  File "/workspace/main.py", line 85, in <lambda>
+    lambda: super(_RetryConnection, self).commit(),

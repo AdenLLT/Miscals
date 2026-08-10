@@ -1,0 +1,138 @@
+Now for commentators. I wanna have some variation. Now which commentator comes depends on which team's match is happening. Each team will have 2 commentators each. Now in a match, you have to use only 3. So you exclude one from a team, and next time you use that excluded one and exclude the other one. So all commentators get their turn each match. 
+
+Here's all the commentators (except Simon doull and pommie mbangwa which u already have)
+
+Ravi Shastri (PFP: "https://i.ibb.co/5gVc07X6/shastri.jpg")
+Harsha Bhogle (PFP: "https://i.ibb.co/tMv25CXb/IMG-4919.jpg")
+Dinesh Karthik (PFP: "https://i.ibb.co/bMTQZM5y/IMG-4920.jpg")
+Aakash Chopra (PFP: "https://i.ibb.co/TM9RHH0z/IMG-4921.jpg")
+Nasser Hussain (PFP: "https://i.ibb.co/Gv7sccxK/IMG-4922.jpg")
+Michael Atherton (PFP: "https://i.ibb.co/hJqzvMbJ/IMG-4923.webp")
+Alison Mitchell (PFP: "https://i.ibb.co/Xx7KNCsQ/IMG-4927.jpg")
+Mark Nicholas (PFP: "https://i.ibb.co/Xkt4qvqv/nicholas.png")
+Mark Butcher (PFP: "https://i.ibb.co/JjCGYkZJ/butcher.png")
+Eoin Morgan (PFP: "https://i.ibb.co/kVqR3tqC/Morgan.png")
+Isa Guha (PFP: "https://i.ibb.co/ksygJhPt/IMG-4925.jpg")
+Mel Jones (PFP: "https://i.ibb.co/kVYcBWK7/IMG-4926.webp")
+Adam Gilchrist (PFP: "https://i.ibb.co/KcD5JJVP/Adam.png")
+Grace Hayden (PFP: "https://i.ibb.co/S4bFfTv6/grace.png")
+Ian Bishop (PFP: "https://i.ibb.co/CZGHJG2/406414-1.jpg")
+Michael Holding (PFP: "https://i.ibb.co/WWnBLT24/Holding.png")
+Ian Smith (PFP: "https://i.ibb.co/XZs9ngk8/smith.png")
+Kass Naidoo (PFP: "https://i.ibb.co/04VQQJ0/naido.png")
+Shaun Pollock (PFP: "https://i.ibb.co/6Rh5QGmq/pollack.png")
+Wasim Akram (PFP: "https://i.ibb.co/JW0TLRB6/368454df0a666c944c1057ce18c85ae00528ff45.jpg")
+Bazid Khan (PFP: "https://i.ibb.co/23gW8YHS/images-16.jpg")
+Ramiz Raja (PFP: "https://i.ibb.co/pSbvqdn/322224-1.webp")
+Waqar Younis (PFP: "https://i.ibb.co/0pznhRQG/Waqar.png")
+Zainab Abbas (PFP: "https://i.ibb.co/ccDNNPFr/Zainab.png")
+
+India:
+Ravi Shastri
+Harsha Bhogle
+
+Pakistan:
+Wasim Akram
+Ramiz Raja
+
+Malaysia:
+Aakash Chopra
+Harsha Bhogle
+
+Afghanistan:
+Bazid Khan
+Waqar Younis
+
+Ireland:
+Nasser Hussain
+Michael Atherton
+
+West Indies:
+Ian Bishop
+Michael Holding
+
+Oman:
+Waqar Younis
+Bazid Khan
+
+UAE:
+Waqar Younis
+Zainab Abbas
+
+Sri Lanka:
+Harsha Bhogle
+Dinesh Karthik
+
+Portugal:
+Mark Nicholas
+Eoin Morgan
+
+New Zealand:
+Ian Smith
+Isa Guha
+
+Canada:
+Mark Nicholas
+Nasser Hussain
+
+Germany:
+Michael Atherton
+Mark Butcher
+
+Australia:
+Adam Gilchrist
+Grace Hayden
+
+England:
+Nasser Hussain
+Alison Mitchell
+
+South Africa:
+Kass Naidoo
+Shaun Pollock
+
+Scotland:
+Mark Butcher
+Alison Mitchell
+
+Uganda:
+Kass Naidoo
+Shaun Pollock
+
+Zimbabwe:
+Pommie mbangwa
+Simon doull 
+
+Hong Kong:
+Isa Guha
+Mark Nicholas
+
+USA:
+Ian Bishop
+Mark Nicholas
+
+Italy:
+Eoin Morgan
+Mark Nicholas
+
+Namibia:
+Shaun Pollock
+Kass Naidoo
+
+Netherlands:
+Michael Atherton
+Isa Guha
+
+Japan:
+Adam Gilchrist
+Mel Jones
+
+Bangladesh:
+Harsha Bhogle
+Dinesh Karthik
+
+Denmark:
+Michael Atherton
+Eoin Morgan
+
+And yes commentators read directly from the bot's message right just like timeline match updates does right?

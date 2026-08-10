@@ -1,0 +1,200 @@
+Bowler: **viratkohlipaglu:** 11 - 0  (1.0 overs)
+Partnership: 0 (2)
+
+   📍 Innings: ONE
+   📊 Uganda: 0/0 (0.0 overs)
+   📊 : 26/2 (5.0 overs)
+   ✅ Innings 1:  is batting: 26/2 (5.0)
+ℹ️ Same timeline, skipping
+✅ SENT MATCH UPDATE IMAGE
+
+✅ SENT MATCH UPDATE IMAGE
+
+   ✅ Sent nowstat for Malan Kruger
+
+🔍 SEARCHING EMBED FOR WICKET DATA...
+
+📄 FULL EMBED CONTENT:
+barury797's score: ╰ **`15 (15)`**
+╰ **DOUBLE RUNS!** in last over! 2 + **2!**
+_dr_doom___'s score: ╰ **`6 (2)`**
+notzamboy.: ╰ **`4 - 15 (3.0)`**
+Partnership: ╰ **`6 (2)`**
+Next bowler to bowl is: <@1265682828037718027>
+
+
+   ❌ No wicket indicators found
+✅ Embed has 5 fields
+
+
+📄 FULL EMBED TEXT:
+barury797's score: ╰ **`15 (15)`**
+╰ **DOUBLE RUNS!** in last over! 2 + **2!**
+_dr_doom___'s score: ╰ **`6 (2)`**
+notzamboy.: ╰ **`4 - 15 (3.0)`**
+Partnership: ╰ **`6 (2)`**
+Next bowler to bowl is: <@1265682828037718027>
+
+   📍 Innings: ONE
+   ⚠️ Less than 2 teams found, will still try to extract timeline
+❌ No timeline found
+Error loading player image: Cannot connect to host img1.hscicdn.com:443 ssl:default [None]
+   ⚠️ Error loading flag: Cannot connect to host cdnjs.cloudflare.com:443 ssl:default [None]
+   ⚠️ Error loading batting flag: Cannot connect to host cdnjs.cloudflare.com:443 ssl:default [None]
+✅ SENT MATCH UPDATE IMAGE
+
+✅ SENT WICKET IMAGE
+
+⏭️ SKIPPING DUPLICATE POST-WICKET NOWSTAT (message 1535312034424426608 already processed for user 1506748544806162452)
+✅ SENT MATCH UPDATE IMAGE
+
+✅ SENT WICKET IMAGE
+
+⏭️ SKIPPING DUPLICATE POST-WICKET NOWSTAT (message 1535311913901228154 already processed for user 1144572913312333884)
+✅ SENT WICKET IMAGE
+
+⏭️ SKIPPING DUPLICATE POST-WICKET NOWSTAT (message 1535312346866524170 already processed for user 1496155204196896840)
+[2026-08-07 15:44:51] [ERROR   ] discord.client: Ignoring exception in on_message_edit
+Traceback (most recent call last):
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/aiohttp/client_reqrep.py", line 1377, in write_bytes
+    await self._body.write_with_length(writer, content_length)
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/aiohttp/payload.py", line 306, in write_with_length
+    await self.write(writer)
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/aiohttp/multipart.py", line 1057, in write
+    await part.write(writer)
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/aiohttp/payload.py", line 407, in write
+    await writer.write(self._value)
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/aiohttp/http_writer.py", line 204, in write
+    self._write(chunk)
+    ~~~~~~~~~~~^^^^^^^
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/aiohttp/http_writer.py", line 95, in _write
+    raise ClientConnectionResetError("Cannot write to closing transport")
+aiohttp.client_exceptions.ClientConnectionResetError: Cannot write to closing transport
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/client.py", line 441, in _run_event
+    await coro(*args, **kwargs)
+  File "/workspace/matchupdates.py", line 1579, in on_message_edit
+    await self.on_message(after)
+  File "/workspace/matchupdates.py", line 1570, in on_message
+    await message.channel.send(file=file)
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/abc.py", line 1561, in send
+    data = await state.http.send_message(channel.id, params=params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/http.py", line 625, in request
+    async with self.__session.request(method, url, **kwargs) as response:
+               ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/aiohttp/client.py", line 1510, in __aenter__
+    self._resp: _RetType = await self._coro
+                           ^^^^^^^^^^^^^^^^
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/aiohttp/client.py", line 779, in _request
+    resp = await handler(req)
+           ^^^^^^^^^^^^^^^^^^
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/aiohttp/client.py", line 757, in _connect_and_send_request
+    await resp.start(conn)
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/aiohttp/client_reqrep.py", line 539, in start
+    message, payload = await protocol.read()  # type: ignore[union-attr]
+                       ^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/aiohttp/streams.py", line 688, in read
+    raise self._exception
+aiohttp.client_exceptions.ClientOSError: [Errno None] Can not write request body for https://discord.com/api/v10/channels/1534820172580392991/messages
+[2026-08-07 15:44:54] [ERROR   ] discord.client: Ignoring exception in on_message_edit
+Traceback (most recent call last):
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/aiohttp/client_reqrep.py", line 1377, in write_bytes
+    await self._body.write_with_length(writer, content_length)
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/aiohttp/payload.py", line 306, in write_with_length
+    await self.write(writer)
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/aiohttp/multipart.py", line 1057, in write
+    await part.write(writer)
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/aiohttp/payload.py", line 407, in write
+    await writer.write(self._value)
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/aiohttp/http_writer.py", line 204, in write
+    self._write(chunk)
+    ~~~~~~~~~~~^^^^^^^
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/aiohttp/http_writer.py", line 95, in _write
+    raise ClientConnectionResetError("Cannot write to closing transport")
+aiohttp.client_exceptions.ClientConnectionResetError: Cannot write to closing transport
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/client.py", line 441, in _run_event
+    await coro(*args, **kwargs)
+  File "/workspace/matchupdates.py", line 1579, in on_message_edit
+    await self.on_message(after)
+  File "/workspace/matchupdates.py", line 1570, in on_message
+    await message.channel.send(file=file)
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/abc.py", line 1561, in send
+    data = await state.http.send_message(channel.id, params=params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/http.py", line 625, in request
+    async with self.__session.request(method, url, **kwargs) as response:
+               ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/aiohttp/client.py", line 1510, in __aenter__
+    self._resp: _RetType = await self._coro
+                           ^^^^^^^^^^^^^^^^
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/aiohttp/client.py", line 779, in _request
+    resp = await handler(req)
+           ^^^^^^^^^^^^^^^^^^
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/aiohttp/client.py", line 757, in _connect_and_send_request
+    await resp.start(conn)
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/aiohttp/client_reqrep.py", line 539, in start
+    message, payload = await protocol.read()  # type: ignore[union-attr]
+                       ^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/aiohttp/streams.py", line 688, in read
+    raise self._exception
+aiohttp.client_exceptions.ClientOSError: [Errno None] Can not write request body for https://discord.com/api/v10/channels/1534820441552719942/messages
+[2026-08-07 15:44:56] [ERROR   ] discord.client: Ignoring exception in on_message_edit
+Traceback (most recent call last):
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/aiohttp/client_reqrep.py", line 1377, in write_bytes
+    await self._body.write_with_length(writer, content_length)
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/aiohttp/payload.py", line 306, in write_with_length
+    await self.write(writer)
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/aiohttp/multipart.py", line 1057, in write
+    await part.write(writer)
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/aiohttp/payload.py", line 407, in write
+    await writer.write(self._value)
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/aiohttp/http_writer.py", line 204, in write
+    self._write(chunk)
+    ~~~~~~~~~~~^^^^^^^
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/aiohttp/http_writer.py", line 95, in _write
+    raise ClientConnectionResetError("Cannot write to closing transport")
+aiohttp.client_exceptions.ClientConnectionResetError: Cannot write to closing transport
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/client.py", line 441, in _run_event
+    await coro(*args, **kwargs)
+  File "/workspace/matchupdates.py", line 1579, in on_message_edit
+    await self.on_message(after)
+  File "/workspace/matchupdates.py", line 1464, in on_message
+    await message.channel.send(file=file)
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/abc.py", line 1561, in send
+    data = await state.http.send_message(channel.id, params=params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/http.py", line 625, in request
+    async with self.__session.request(method, url, **kwargs) as response:
+               ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/aiohttp/client.py", line 1510, in __aenter__
+    self._resp: _RetType = await self._coro
+                           ^^^^^^^^^^^^^^^^
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/aiohttp/client.py", line 779, in _request
+    resp = await handler(req)
+           ^^^^^^^^^^^^^^^^^^
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/aiohttp/client.py", line 757, in _connect_and_send_request
+    await resp.start(conn)
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/aiohttp/client_reqrep.py", line 539, in start
+    message, payload = await protocol.read()  # type: ignore[union-attr]
+                       ^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/aiohttp/streams.py", line 688, in read
+    raise self._exception
+aiohttp.client_exceptions.ClientOSError: [Errno None] Can not write request body for https://discord.com/api/v10/channels/1534820172580392991/messages
+[COMMENTARY] [Pommie Mbangwa - Commentator] (over_end) [OMA vs Afghanistan]: Ghazanfar steaming in, 119 kph—<:Fayyaz_Butt:1515994823201394789> **__F. Butt ○ 
+✅ SENT MATCH UPDATE IMAGE
+
+✅ SENT WICKET IMAGE
+
+⏭️ SKIPPING DUPLICATE POST-WICKET NOWSTAT (message 1535311913901228154 already processed for user 1144572913312333884)

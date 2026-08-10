@@ -1,0 +1,64 @@
+entrypoint = "main.py"
+modules = ["python-3.10", "postgresql-16"]
+
+hidden = [".pythonlibs"]
+
+[nix]
+channel = "stable-23_05"
+packages = ["freetype", "glibcLocales", "lcms2", "libimagequant", "libjpeg", "libtiff", "libwebp", "libxcrypt", "openjpeg", "tcl", "tk", "zlib"]
+
+[deployment]
+run = ["python", "main.py"]
+deploymentTarget = "gce"
+ignorePorts = true
+
+[[ports]]
+localPort = 8000
+externalPort = 8000
+
+[[ports]]
+localPort = 8080
+externalPort = 80
+
+[agent]
+expertMode = true
+
+[workflows]
+runButton = "Project"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Discord Bot"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Discord Bot (Updated)"
+
+[[workflows.workflow]]
+name = "Discord Bot"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python main.py"
+
+[workflows.workflow.metadata]
+outputType = "console"
+
+[[workflows.workflow]]
+name = "Discord Bot (Updated)"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "packager.installForLanguage"
+args = "python3"
+
+[workflows.workflow.metadata]
+outputType = "console"

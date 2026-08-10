@@ -1,0 +1,129 @@
+🇲🇾 GROUP A
+ROUND 3
+🇴🇲 Oman vs 🏝️ West Indies
+🇦🇪 UAE vs 🇵🇰 Pakistan
+🇮🇪 Ireland vs 🇮🇳 India
+🇱🇰 Sri Lanka vs 🇦🇫 Afghanistan
+REST: 🇲🇾 Malaysia
+ROUND 4
+🇲🇾 Malaysia vs 🇴🇲 Oman
+🇦🇪 UAE vs 🏝️ West Indies
+🇱🇰 Sri Lanka vs 🇮🇳 India
+🇦🇫 Afghanistan vs 🇵🇰 Pakistan
+REST: 🇮🇪 Ireland
+ROUND 5
+🇲🇾 Malaysia vs 🇦🇫 Afghanistan
+🇴🇲 Oman vs 🇮🇳 India
+🇮🇪 Ireland vs 🇵🇰 Pakistan
+🏝️ West Indies vs 🇱🇰 Sri Lanka
+REST: 🇦🇪 UAE
+ROUND 6
+🇲🇾 Malaysia vs 🏝️ West Indies
+🇴🇲 Oman vs 🇦🇪 UAE
+🇮🇪 Ireland vs 🇱🇰 Sri Lanka
+🇦🇫 Afghanistan vs 🇮🇳 India
+REST: 🇵🇰 Pakistan
+ROUND 7
+🇲🇾 Malaysia vs 🇦🇪 UAE
+🇴🇲 Oman vs 🇱🇰 Sri Lanka
+🇮🇪 Ireland vs 🇦🇫 Afghanistan
+🇵🇰 Pakistan vs 🇮🇳 India
+REST: 🏝️ West Indies
+ROUND 8
+🇲🇾 Malaysia vs 🇮🇪 Ireland
+🇦🇪 UAE vs 🇦🇫 Afghanistan
+🏝️ West Indies vs 🇮🇳 India
+🇱🇰 Sri Lanka vs 🇵🇰 Pakistan
+REST: 🇴🇲 Oman
+ROUND 9
+🇲🇾 Malaysia vs 🇱🇰 Sri Lanka
+🇴🇲 Oman vs 🇮🇪 Ireland
+🇦🇪 UAE vs 🇮🇳 India
+🏝️ West Indies vs 🇵🇰 Pakistan
+REST: 🇦🇫 Afghanistan
+🇺🇬 GROUP B
+ROUND 3
+🇳🇿 New Zealand vs 🇦🇺 Australia
+🇺🇬 Uganda vs 🇨🇦 Canada
+🏴 England vs 🇵🇹 Portugal
+🇿🇦 South Africa vs 🏴󠁧󠁢󠁳󠁣󠁴󠁿 Scotland
+REST: 🇩🇪 Germany
+ROUND 4
+🇦🇺 Australia vs 🏴 England
+🇨🇦 Canada vs 🏴󠁧󠁢󠁳󠁣󠁴󠁿 Scotland
+🇩🇪 Germany vs 🇵🇹 Portugal
+🇳🇿 New Zealand vs 🇿🇦 South Africa
+REST: 🇺🇬 Uganda
+ROUND 5
+🇦🇺 Australia vs 🇵🇹 Portugal
+🏴 England vs 🇳🇿 New Zealand
+🇩🇪 Germany vs 🇿🇦 South Africa
+🏴󠁧󠁢󠁳󠁣󠁴󠁿 Scotland vs 🇺🇬 Uganda
+REST: 🇨🇦 Canada
+ROUND 6
+🇦🇺 Australia vs 🇩🇪 Germany
+🇨🇦 Canada vs 🇳🇿 New Zealand
+🏴 England vs 🇺🇬 Uganda
+🇵🇹 Portugal vs 🇿🇦 South Africa
+REST: 🏴󠁧󠁢󠁳󠁣󠁴󠁿 Scotland
+ROUND 7
+🇦🇺 Australia vs 🏴󠁧󠁢󠁳󠁣󠁴󠁿 Scotland
+🇨🇦 Canada vs 🇵🇹 Portugal
+🏴 England vs 🇩🇪 Germany
+🇳🇿 New Zealand vs 🇺🇬 Uganda
+REST: 🇿🇦 South Africa
+ROUND 8
+🇦🇺 Australia vs 🇺🇬 Uganda
+🇨🇦 Canada vs 🇿🇦 South Africa
+🇩🇪 Germany vs 🇳🇿 New Zealand
+🇵🇹 Portugal vs 🏴󠁧󠁢󠁳󠁣󠁴󠁿 Scotland
+REST: 🏴 England
+ROUND 9
+🇦🇺 Australia vs 🇿🇦 South Africa
+🇨🇦 Canada vs 🏴 England
+🇩🇪 Germany vs 🏴󠁧󠁢󠁳󠁣󠁴󠁿 Scotland
+🇵🇹 Portugal vs 🇺🇬 Uganda
+REST: 🇳🇿 New Zealand
+🇭🇰 GROUP C
+ROUND 3
+🇳🇦 Namibia vs 🇳🇱 Netherlands
+🇮🇹 Italy vs 🇺🇸 USA
+🇿🇼 Zimbabwe vs 🇧🇩 Bangladesh
+🇯🇵 Japan vs 🇩🇰 Denmark
+REST: 🇭🇰 Hong Kong
+ROUND 4
+🇭🇰 Hong Kong vs 🇳🇦 Namibia
+🇿🇼 Zimbabwe vs 🇩🇰 Denmark
+🇺🇸 USA vs 🇧🇩 Bangladesh
+🇳🇱 Netherlands vs 🇯🇵 Japan
+REST: 🇮🇹 Italy
+ROUND 5
+🇭🇰 Hong Kong vs 🇩🇰 Denmark
+🇳🇦 Namibia vs 🇮🇹 Italy
+🇿🇼 Zimbabwe vs 🇯🇵 Japan
+🇺🇸 USA vs 🇳🇱 Netherlands
+REST: 🇧🇩 Bangladesh
+ROUND 6
+🇭🇰 Hong Kong vs 🇮🇹 Italy
+🇿🇼 Zimbabwe vs 🇳🇱 Netherlands
+🇺🇸 USA vs 🇯🇵 Japan
+🇧🇩 Bangladesh vs 🇩🇰 Denmark
+REST: 🇳🇦 Namibia
+ROUND 7
+🇭🇰 Hong Kong vs 🇺🇸 USA
+🇳🇦 Namibia vs 🇩🇰 Denmark
+🇮🇹 Italy vs 🇿🇼 Zimbabwe
+🇧🇩 Bangladesh vs 🇯🇵 Japan
+REST: 🇳🇱 Netherlands
+ROUND 8
+🇭🇰 Hong Kong vs 🇧🇩 Bangladesh
+🇳🇦 Namibia vs 🇺🇸 USA
+🇮🇹 Italy vs 🇯🇵 Japan
+🇳🇱 Netherlands vs 🇩🇰 Denmark
+REST: 🇿🇼 Zimbabwe
+ROUND 9
+🇭🇰 Hong Kong vs 🇿🇼 Zimbabwe
+🇳🇦 Namibia vs 🇯🇵 Japan
+🇮🇹 Italy vs 🇩🇰 Denmark
+🇳🇱 Netherlands vs 🇧🇩 Bangladesh
+REST: 🇺🇸 USA

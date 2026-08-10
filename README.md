@@ -1,12 +1,15 @@
-<h1>Cricket Bot</h1>
+# Python Discord Bot
 
-The game this bot offers is pretty much similar to the game of cricket in real life. This bot has been invited to 1000+ servers till date and over 2000 players have an account registered in this bot.
+This is a starting point for making your own Discord bot using Python and the [discordpy](https://discordpy.readthedocs.io/) library.
+Read [their getting-started guides](https://discordpy.readthedocs.io/en/stable/#getting-started) to get the most out of this template.
 
-<b>NOTE: </b>
-This is not the final version of the bot, updates keep coming once a month/week.
+## Getting Started
 
+To get set up, you'll need to follow [these bot account setup instructions](https://discordpy.readthedocs.io/en/stable/discord.html),
+and then copy the token for your bot and added it as a secret with the key of `TOKEN` in the "Secrets (Environment variables)" panel.
 
-This is a dynamic image which shows the number of servers the bot is in.<br>
-<a href="https://top.gg/bot/723470180490936411">
-  <img src="https://top.gg/api/widget/723470180490936411.svg" alt="Cricket Bot" />
-</a>
+## FAQ
+
+If you get the following error message while trying to start the server: `429 Too Many Requests` (accompanied by a lot of HTML code), 
+try the advice given in this Stackoverflow question:
+https://stackoverflow.com/questions/66724687/in-discord-py-how-to-solve-the-error-for-toomanyrequests

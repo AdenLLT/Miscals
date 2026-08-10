@@ -1,0 +1,340 @@
+Free, Unlimited AI API
+Nariman Jelveh, Reynaldi Chernando
+Updated: June 17, 2026
+This tutorial will show you how to incorporate AI capabilities in your website or app for free, without any API keys, backend setup, or usage restrictions. With a single line of code, you can access OpenAI models, Anthropic's Claude, Google's Gemini, and more than 400 other AI models directly from your frontend code.
+
+Puter.js uses the User-Pays model, where users authenticate with their Puter account and cover their own AI costs. As a developer, you pay nothing for your users' usage — no API keys to manage, no billing to set up, and no server infrastructure to maintain. You can scale to unlimited users without any AI or server costs on your side.
+
+Getting Started
+To use Puter.js, import our npm module in your project:
+
+// npm install @heyputer/puter.js
+import { puter } from '@heyputer/puter.js';
+Or alternatively, add our script via CDN if you are working directly with HTML, simply add it to the <head> or <body> section of your code:
+
+<script src="https://js.puter.com/v2/"></script>
+You're ready to use Puter.js for free access to all major AI models. No API keys, backend setup, or server-side code required. Below are examples for each provider, grouped by type.
+
+Flagship Models
+The latest proprietary frontier models from the major AI labs. Switch between any of them by changing the model parameter in puter.ai.chat().
+
+OpenAI
+Use GPT-5.5 for OpenAI's latest flagship model. This first example includes the full HTML setup; the rest show just the puter.ai.chat() call:
+
+<html>
+<body>
+    <script src="https://js.puter.com/v2/"></script>
+    <script>
+        puter.ai.chat("What are the benefits of exercise?", { model: "openai/gpt-5.5" })
+            .then(response => {
+                puter.print(response);
+            });
+    </script>
+</body>
+</html>
+Anthropic (Claude)
+Use Claude Opus 4.8 for writing, reasoning, and long-context tasks:
+
+puter.ai.chat(
+    "Write a creative short story about a time traveler",
+    { model: "anthropic/claude-opus-4-8" }
+).then(response => {
+    puter.print(response);
+});
+Google (Gemini)
+Use Google's Gemini 3.5 for multimodal tasks:
+
+puter.ai.chat(
+    "Create a meal plan for a healthy week",
+    { model: "google/gemini-3.5-flash" }
+).then(response => {
+    puter.print(response);
+});
+xAI (Grok)
+Use Grok 4.5 for general reasoning and questions about current events:
+
+puter.ai.chat(
+    "Summarize today's biggest tech headlines",
+    { model: "x-ai/grok-4.5" }
+).then(response => {
+    puter.print(response);
+});
+Open-Source Models
+Open-weight models from research labs and companies that have made their weights publicly available.
+
+Z.AI (GLM)
+Use GLM 5.2 for Chinese-English bilingual tasks and general-purpose text generation:
+
+puter.ai.chat(
+    "Write a SQL query to find the top 5 customers by total spend",
+    { model: "z-ai/glm-5.2" }
+).then(response => {
+    puter.print(response);
+});
+DeepSeek
+Use DeepSeek V4 Pro for coding, math, and technical reasoning tasks:
+
+puter.ai.chat(
+    "Explain how gradient descent works, step by step",
+    { model: "deepseek/deepseek-v4-pro" }
+).then(response => {
+    puter.print(response);
+});
+Qwen
+Use Qwen 3.7 Max for multilingual tasks — Alibaba's open models with strong Chinese-English support:
+
+puter.ai.chat(
+    "Translate 'good morning, have a great day' into Japanese",
+    { model: "qwen/qwen3.7-max" }
+).then(response => {
+    puter.print(response);
+});
+Mistral
+Use Mistral Small 4 for capable text generation from a European open-weight model:
+
+puter.ai.chat(
+    "Write a haiku about autumn",
+    { model: "mistralai/mistral-small-2603" }
+).then(response => {
+    puter.print(response);
+});
+Moonshot AI (Kimi)
+Use Kimi K2.6 for tasks that benefit from a very long context window:
+
+puter.ai.chat(
+    "Summarize the plot of Romeo and Juliet in three sentences",
+    { model: "moonshotai/kimi-k2.6" }
+).then(response => {
+    puter.print(response);
+});
+Google (Gemma)
+Use Gemma 4 for tasks where a lighter open model is preferred over a full frontier model:
+
+puter.ai.chat(
+    "What are some beginner-friendly houseplants?",
+    { model: "google/gemma-4-31b-it" }
+).then(response => {
+    puter.print(response);
+});
+Meta (Llama)
+Use Llama 4 Maverick for general tasks — Meta's open-weight models are also available for self-hosting:
+
+puter.ai.chat(
+    "Give me three ideas for a weekend side project",
+    { model: "meta-llama/llama-4-maverick" }
+).then(response => {
+    puter.print(response);
+});
+Microsoft (Phi)
+Use Phi-4 for reasoning and problem-solving tasks in a compact, efficient model:
+
+puter.ai.chat(
+    "Solve: if a train travels 60 km in 45 minutes, what is its speed in km/h?",
+    { model: "microsoft/phi-4" }
+).then(response => {
+    puter.print(response);
+});
+Purpose-Built Models
+Puter.js also includes dedicated functions for images, video, speech, and code, with the same keyless, serverless setup.
+
+Image Generation
+Generate images from a text prompt with puter.ai.txt2img(), powered by models like FLUX (Black Forest Labs), Stable Diffusion, Ideogram, and Leonardo.Ai:
+
+// testMode: true lets you test without using credits
+puter.ai.txt2img("A futuristic city skyline at sunset", true)
+    .then(image => {
+        document.body.appendChild(image);
+    });
+Video Generation
+Generate short-form video from text with puter.ai.txt2vid(), with providers including Kling, PixVerse, Vidu, and Wan AI:
+
+puter.ai.txt2vid("A serene ocean wave rolling onto the shore at sunset")
+    .then(video => {
+        document.body.appendChild(video);
+    });
+Voice & Speech
+Convert text to natural-sounding speech with puter.ai.txt2speech(), using providers like ElevenLabs and OpenAI:
+
+puter.ai.txt2speech("Hello from Puter! This speech was generated for free.", {
+    provider: "elevenlabs",
+    model: "eleven_multilingual_v2"
+}).then(audio => {
+    audio.play();
+});
+Coding
+Use OpenAI Codex for coding tasks — the same model that powers OpenAI's coding tools:
+
+puter.ai.chat(
+    "Write a Python function that returns the nth Fibonacci number",
+    { model: "openai/gpt-5.3-codex" }
+).then(response => {
+    puter.print(response);
+});
+Advanced Features
+Streaming Responses
+Use streaming to display responses in real-time as they are generated:
+
+<html>
+<body>
+    <div id="streamOutput"></div>
+    <script src="https://js.puter.com/v2/"></script>
+    <script>
+        async function streamExample() {
+            const outputDiv = document.getElementById('streamOutput');
+            outputDiv.innerHTML = '<h2>AI Streaming Response Demo</h2>';
+            
+            const response = await puter.ai.chat(
+                "Write a detailed essay about the future of renewable energy",
+                { model: "openai/gpt-5.5", stream: true }
+            );
+            
+            // Print the response in real-time
+            for await (const part of response) {
+                if (part?.text) {
+                    outputDiv.innerHTML += part.text;
+                }
+            }
+        }
+
+        streamExample();
+    </script>
+</body>
+</html>
+Image Analysis
+You are not limited to text generation. You can also analyze images using AI. In the example below, we're using GPT-5.4 Nano to analyze an image and then ask follow-up questions. All you have to do is pass the image URL to the puter.ai.chat() function:
+
+<html>
+<body>
+    <h1>AI Image Analysis</h1>
+    <input type="text" id="imageUrl" placeholder="Enter image URL..." style="width: 400px; padding: 5px;">
+    <button onclick="analyzeImage()">Analyze Image</button>
+    <div id="analysis"></div>
+
+    <script src="https://js.puter.com/v2/"></script>
+    <script>
+        async function analyzeImage() {
+            const imageUrl = document.getElementById('imageUrl').value;
+            if (!imageUrl) return;
+
+            const analysisDiv = document.getElementById('analysis');
+            analysisDiv.innerHTML = '<p>Analyzing image...</p>';
+
+            // Display the image
+            analysisDiv.innerHTML = `<img src="${imageUrl}" style="max-width: 400px; margin: 10px 0;"><br>`;
+            
+            // Get AI analysis
+            const response = await puter.ai.chat(
+                "Describe this image in detail. What objects, people, or scenes do you see?",
+                imageUrl
+            , { model: "openai/gpt-5.5" });
+            
+            analysisDiv.innerHTML += `<h3>Analysis:</h3><p>${response}</p>`;
+        }
+
+        // Example with default image
+        window.onload = () => {
+            document.getElementById('imageUrl').value = 'https://assets.puter.site/doge.jpeg';
+        };
+    </script>
+</body>
+</html>
+Collapse code
+Function Calling
+Function calling allows AI models to invoke functions in your application to perform actions, access real-time data, and interact with external systems.
+
+With Puter.js, you define functions that the AI can call, and the AI selects which function to use based on the user's request.
+
+Here's an example showing how to create a weather assistant that fetches weather data:
+
+<html>
+<body>
+    <input type="text" id="userInput" placeholder="Ask about the weather..." style="width: 400px; padding: 10px; margin: 10px 0;">
+    <button onclick="askWeather()">Ask</button>
+    <div id="response" style="margin-top: 20px; padding: 15px; background: #f8f9fa; border-radius: 5px;"></div>
+
+    <script src="https://js.puter.com/v2/"></script>
+    <script>
+        // Mock weather function - in a real app, this would call a weather API
+        function getWeather(location) {
+            const weatherData = {
+                'Paris': { temp: '22°C', condition: 'Partly Cloudy', humidity: '65%' },
+                'London': { temp: '18°C', condition: 'Rainy', humidity: '80%' },
+                'New York': { temp: '25°C', condition: 'Sunny', humidity: '45%' },
+                'Tokyo': { temp: '28°C', condition: 'Clear', humidity: '70%' }
+            };
+            
+            const weather = weatherData[location] || { temp: '20°C', condition: 'Unknown', humidity: '50%' };
+            return JSON.stringify(weather);
+        }
+
+        // Define the functions available to the AI
+        const tools = [{
+            type: "function",
+            function: {
+                name: "get_weather",
+                description: "Get current weather information for a specific location",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        location: {
+                            type: "string",
+                            description: "City name (e.g., Paris, London, New York)"
+                        }
+                    },
+                    required: ["location"],
+                    additionalProperties: false
+                },
+                strict: true
+            }
+        }];
+
+        async function askWeather() {
+            const userInput = document.getElementById('userInput').value;
+            const responseDiv = document.getElementById('response');
+            
+            if (!userInput) return;
+            
+            responseDiv.innerHTML = 'Processing...';
+            
+            try {
+                // First, get the AI's response with potential function calls
+                const completion = await puter.ai.chat(userInput, { tools, model: "openai/gpt-5.4-nano" });
+                
+                // Check if the AI wants to call a function
+                if (completion.message.tool_calls && completion.message.tool_calls.length > 0) {
+                    const toolCall = completion.message.tool_calls[0];
+                    
+                    if (toolCall.function.name === 'get_weather') {
+                        // Parse the arguments and call our weather function
+                        const args = JSON.parse(toolCall.function.arguments);
+                        const weatherResult = getWeather(args.location);
+                        
+                        // Send the function result back to the AI for a natural response
+                        const finalResponse = await puter.ai.chat([
+                            { role: "user", content: userInput },
+                            completion.message,
+                            { 
+                                role: "tool",
+                                tool_call_id: toolCall.id,
+                                content: weatherResult
+                            }
+                        ], { model: "openai/gpt-5.5" });
+                        
+                        responseDiv.innerHTML = `<strong>Weather Assistant:</strong><br>${finalResponse}`;
+                    }
+                } else {
+                    // No function call needed, just show the response
+                    responseDiv.innerHTML = `<strong>Assistant:</strong><br>${completion}`;
+                }
+            } catch (error) {
+                responseDiv.innerHTML = `<strong>Error:</strong> ${error.message}`;
+            }
+        }
+    </script>
+</body>
+</html>
+Collapse code
+Conclusion
+Puter.js provides access to every major AI model through a single, serverless interface: no API keys to manage, no rate limits, no backend to maintain. The examples above cover the most popular providers, but Puter supports 400+ models across 70+ providers — browse the full model directory to find more.
+
+Because Puter.js is keyless and serverless, it works well in AI coding assistants, agents, and vibe-coding platforms like Claude Code, Codex, OpenCode, Lovable, Replit, and Bolt.new. Code these tools generate runs immediately after creation: no third-party signup, no service to spin up, no API keys to paste, and no configuration overhead that would otherwise prevent the app from running on the first try.

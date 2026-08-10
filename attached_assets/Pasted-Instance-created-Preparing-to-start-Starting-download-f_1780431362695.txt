@@ -1,0 +1,141 @@
+Instance created. Preparing to start...
+Starting download for registry01.prod.koyeb.com/k-85d38e56-2e5b-4661-828e-c5060f3a8e41/6f357ad2-3581-4e3d-b7be-63c8bea30ea4:89844a5c-cbc9-4661-99c6-5b1f8ae0ac47
+Download progress: 100% |[32m++++++++[0m| (28.9 MiB/s)
+Download complete for registry01.prod.koyeb.com/k-85d38e56-2e5b-4661-828e-c5060f3a8e41/6f357ad2-3581-4e3d-b7be-63c8bea30ea4:89844a5c-cbc9-4661-99c6-5b1f8ae0ac47
+ERROR: no command to run your application: add a run command in your Service configuration or create a Procfile in your git repository. Check https://koyeb.com/e/run-command for more details.
+Application exited with code 1. This usually indicates an application failure. Check that the command used to launch your application is correct.
+Instance is starting... Waiting for health checks to pass.
+Application exited with code 1. This usually indicates an application failure. Check that the command used to launch your application is correct.
+Instance stopped.
+Instance created. Preparing to start...
+Starting download for registry01.prod.koyeb.com/k-85d38e56-2e5b-4661-828e-c5060f3a8e41/6f357ad2-3581-4e3d-b7be-63c8bea30ea4:89844a5c-cbc9-4661-99c6-5b1f8ae0ac47
+Download progress: 100% |[32m++++++++[0m| (28.9 MiB/s)
+Download complete for registry01.prod.koyeb.com/k-85d38e56-2e5b-4661-828e-c5060f3a8e41/6f357ad2-3581-4e3d-b7be-63c8bea30ea4:89844a5c-cbc9-4661-99c6-5b1f8ae0ac47
+Application exited with code 1. This usually indicates an application failure. Check that the command used to launch your application is correct.
+ERROR: no command to run your application: add a run command in your Service configuration or create a Procfile in your git repository. Check https://koyeb.com/e/run-command for more details.
+Application exited with code 1. This usually indicates an application failure. Check that the command used to launch your application is correct.
+ERROR: no command to run your application: add a run command in your Service configuration or create a Procfile in your git repository. Check https://koyeb.com/e/run-command for more details.
+Instance stopped.
+Instance created. Preparing to start...
+Starting download for registry01.prod.koyeb.com/k-85d38e56-2e5b-4661-828e-c5060f3a8e41/6f357ad2-3581-4e3d-b7be-63c8bea30ea4:4b74bb76-256d-45c4-84ef-bad8f6f5f79a
+Download progress: 100% |[32m++++++++[0m| (28.9 MiB/s)
+Download complete for registry01.prod.koyeb.com/k-85d38e56-2e5b-4661-828e-c5060f3a8e41/6f357ad2-3581-4e3d-b7be-63c8bea30ea4:4b74bb76-256d-45c4-84ef-bad8f6f5f79a
+Traceback (most recent call last):
+  File "/workspace/main.py", line 2, in <module>
+    import discord
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/__init__.py", line 23, in <module>
+    from .client import *
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/client.py", line 51, in <module>
+    from .user import User, ClientUser
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/user.py", line 29, in <module>
+    import discord.abc
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/abc.py", line 59, in <module>
+    from .voice_client import VoiceClient, VoiceProtocol
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/voice_client.py", line 53, in <module>
+    from .player import AudioPlayer, AudioSource
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/player.py", line 28, in <module>
+    import audioop
+ModuleNotFoundError: No module named 'audioop'
+Instance is starting... Waiting for health checks to pass.
+Application exited with code 1. This usually indicates an application failure. Check that the command used to launch your application is correct.
+Application exited with code 1. This usually indicates an application failure. Check that the command used to launch your application is correct.
+Instance stopped.
+Instance created. Preparing to start...
+Starting download for registry01.prod.koyeb.com/k-85d38e56-2e5b-4661-828e-c5060f3a8e41/6f357ad2-3581-4e3d-b7be-63c8bea30ea4:4b74bb76-256d-45c4-84ef-bad8f6f5f79a
+Download progress: 100% |[32m++++++++[0m| (28.9 MiB/s)
+Download complete for registry01.prod.koyeb.com/k-85d38e56-2e5b-4661-828e-c5060f3a8e41/6f357ad2-3581-4e3d-b7be-63c8bea30ea4:4b74bb76-256d-45c4-84ef-bad8f6f5f79a
+Instance is starting... Waiting for health checks to pass.
+Traceback (most recent call last):
+  File "/workspace/main.py", line 2, in <module>
+    import discord
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/__init__.py", line 23, in <module>
+    from .client import *
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/client.py", line 51, in <module>
+    from .user import User, ClientUser
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/user.py", line 29, in <module>
+    import discord.abc
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/abc.py", line 59, in <module>
+    from .voice_client import VoiceClient, VoiceProtocol
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/voice_client.py", line 53, in <module>
+    from .player import AudioPlayer, AudioSource
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/player.py", line 28, in <module>
+    import audioop
+ModuleNotFoundError: No module named 'audioop'
+Application exited with code 1. This usually indicates an application failure. Check that the command used to launch your application is correct.
+Traceback (most recent call last):
+  File "/workspace/main.py", line 2, in <module>
+    import discord
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/__init__.py", line 23, in <module>
+    from .client import *
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/client.py", line 51, in <module>
+    from .user import User, ClientUser
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/user.py", line 29, in <module>
+    import discord.abc
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/abc.py", line 59, in <module>
+    from .voice_client import VoiceClient, VoiceProtocol
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/voice_client.py", line 53, in <module>
+    from .player import AudioPlayer, AudioSource
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/player.py", line 28, in <module>
+    import audioop
+ModuleNotFoundError: No module named 'audioop'
+Application exited with code 1. This usually indicates an application failure. Check that the command used to launch your application is correct.
+Instance stopped.
+Instance created. Preparing to start...
+Traceback (most recent call last):
+  File "/workspace/main.py", line 2, in <module>
+    import discord
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/__init__.py", line 23, in <module>
+    from .client import *
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/client.py", line 51, in <module>
+    from .user import User, ClientUser
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/user.py", line 29, in <module>
+    import discord.abc
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/abc.py", line 59, in <module>
+    from .voice_client import VoiceClient, VoiceProtocol
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/voice_client.py", line 53, in <module>
+    from .player import AudioPlayer, AudioSource
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/player.py", line 28, in <module>
+    import audioop
+ModuleNotFoundError: No module named 'audioop'
+Instance is starting... Waiting for health checks to pass.
+Application exited with code 1. This usually indicates an application failure. Check that the command used to launch your application is correct.
+Traceback (most recent call last):
+  File "/workspace/main.py", line 2, in <module>
+    import discord
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/__init__.py", line 23, in <module>
+    from .client import *
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/client.py", line 51, in <module>
+    from .user import User, ClientUser
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/user.py", line 29, in <module>
+    import discord.abc
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/abc.py", line 59, in <module>
+    from .voice_client import VoiceClient, VoiceProtocol
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/voice_client.py", line 53, in <module>
+    from .player import AudioPlayer, AudioSource
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/player.py", line 28, in <module>
+    import audioop
+ModuleNotFoundError: No module named 'audioop'
+Application exited with code 1. This usually indicates an application failure. Check that the command used to launch your application is correct.
+Instance stopped.
+Instance created. Preparing to start...
+Starting download for registry01.prod.koyeb.com/k-85d38e56-2e5b-4661-828e-c5060f3a8e41/6f357ad2-3581-4e3d-b7be-63c8bea30ea4:4b74bb76-256d-45c4-84ef-bad8f6f5f79a
+Download progress: 100% |[32m++++++++[0m| (28.9 MiB/s)
+Traceback (most recent call last):
+  File "/workspace/main.py", line 2, in <module>
+    import discord
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/__init__.py", line 23, in <module>
+    from .client import *
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/client.py", line 51, in <module>
+    from .user import User, ClientUser
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/user.py", line 29, in <module>
+    import discord.abc
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/abc.py", line 59, in <module>
+    from .voice_client import VoiceClient, VoiceProtocol
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/voice_client.py", line 53, in <module>
+    from .player import AudioPlayer, AudioSource
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/player.py", line 28, in <module>
+    import audioop
+ModuleNotFoundError: No module named 'audioop'
+Download complete for registry01.prod.koyeb.com/k-85d38e56-2e5b-4661-828e-c5060f3a8e41/6f357ad2-3581-4e3d-b7be-63c8bea30ea4:4b74bb76-256d-45c4-84ef-bad8f6f5f79a
+Instance is starting... Waiting for health checks to pass.
+Application exited with code 1. This usually indicates an application failure. Check that the command used to launch your application is correct.

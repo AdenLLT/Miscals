@@ -1,0 +1,200 @@
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/webhook/async_.py", line 221, in request
+    raise HTTPException(response, data)
+discord.errors.HTTPException: 400 Bad Request (error code: 50035): Invalid Form Body
+In data.components.0.components.0.options.1.emoji.name: Invalid emoji
+In data.components.0.components.0.options.3.emoji.name: Invalid emoji
+In data.components.0.components.0.options.9.emoji.name: Invalid emoji
+In data.components.0.components.0.options.12.emoji.name: Invalid emoji
+In data.components.0.components.0.options.16.emoji.name: Invalid emoji
+[2026-06-14 20:00:09] [ERROR   ] discord.ui.view: Ignoring exception in view <TeamSelectView timeout=180 children=2> for item <Select placeholder='🏏 More Nations...' min_values=1 max_values=1 disabled=False options=[<SelectOption label='Spain' value='Spain' description='View Spain players - 18 available' emoji=<PartialEmoji animated=False name='🇪🇸' id=None> default=False>, <SelectOption label='Germany' value='Germany' description='View Germany players - 18 available' emoji=<PartialEmoji animated=False name='🇩🇪' id=None> default=False>, <SelectOption label='Japan' value='Japan' description='View Japan players - 18 available' emoji=<PartialEmoji animated=False name='🇯🇵' id=None> default=False>, <SelectOption label='Portugal' value='Portugal' description='View Portugal players - 18 available' emoji=<PartialEmoji animated=False name='🇵🇹' id=None> default=False>, <SelectOption label='Denmark' value='Denmark' description='View Denmark players - 18 available' emoji=<PartialEmoji animated=False name='🇩🇰' id=None> default=False>]>
+Traceback (most recent call last):
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/ui/view.py", line 427, in _scheduled_task
+    await item.callback(interaction)
+  File "/workspace/main.py", line 1743, in team_callback
+    await interaction.response.edit_message(embed=embed, view=view)
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/interactions.py", line 921, in edit_message
+    await adapter.create_interaction_response(
+    ...<6 lines>...
+    )
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/webhook/async_.py", line 221, in request
+    raise HTTPException(response, data)
+discord.errors.HTTPException: 400 Bad Request (error code: 50035): Invalid Form Body
+In data.components.0.components.0.options.0.emoji.name: Invalid emoji
+In data.components.0.components.0.options.2.emoji.name: Invalid emoji
+In data.components.0.components.0.options.6.emoji.name: Invalid emoji
+In data.components.0.components.0.options.8.emoji.name: Invalid emoji
+In data.components.0.components.0.options.10.emoji.name: Invalid emoji
+In data.components.0.components.0.options.14.emoji.name: Invalid emoji
+[2026-06-14 20:00:15] [ERROR   ] discord.ui.view: Ignoring exception in view <TeamSelectView timeout=180 children=2> for item <Select placeholder='🏏 More Nations...' min_values=1 max_values=1 disabled=False options=[<SelectOption label='Spain' value='Spain' description='View Spain players - 18 available' emoji=<PartialEmoji animated=False name='🇪🇸' id=None> default=False>, <SelectOption label='Germany' value='Germany' description='View Germany players - 18 available' emoji=<PartialEmoji animated=False name='🇩🇪' id=None> default=False>, <SelectOption label='Japan' value='Japan' description='View Japan players - 18 available' emoji=<PartialEmoji animated=False name='🇯🇵' id=None> default=False>, <SelectOption label='Portugal' value='Portugal' description='View Portugal players - 18 available' emoji=<PartialEmoji animated=False name='🇵🇹' id=None> default=False>, <SelectOption label='Denmark' value='Denmark' description='View Denmark players - 18 available' emoji=<PartialEmoji animated=False name='🇩🇰' id=None> default=False>]>
+Traceback (most recent call last):
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/ui/view.py", line 427, in _scheduled_task
+    await item.callback(interaction)
+  File "/workspace/main.py", line 1743, in team_callback
+    await interaction.response.edit_message(embed=embed, view=view)
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/interactions.py", line 921, in edit_message
+    await adapter.create_interaction_response(
+    ...<6 lines>...
+    )
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/webhook/async_.py", line 221, in request
+    raise HTTPException(response, data)
+discord.errors.HTTPException: 400 Bad Request (error code: 50035): Invalid Form Body
+In data.components.0.components.0.options.2.emoji.name: Invalid emoji
+In data.components.0.components.0.options.3.emoji.name: Invalid emoji
+In data.components.0.components.0.options.8.emoji.name: Invalid emoji
+In data.components.0.components.0.options.9.emoji.name: Invalid emoji
+In data.components.0.components.0.options.14.emoji.name: Invalid emoji
+[2026-06-14 20:00:22] [ERROR   ] discord.ui.view: Ignoring exception in view <TeamSelectView timeout=180 children=2> for item <Select placeholder='🏏 Select Your Nation' min_values=1 max_values=1 disabled=False options=[<SelectOption label='India' value='India' description='View India players - 1 available' emoji=<PartialEmoji animated=False name='🇮🇳' id=None> default=False>, <SelectOption label='Pakistan' value='Pakistan' description='(TEAM FULL) - All 19 players claimed' emoji=<PartialEmoji animated=False name='🇵🇰' id=None> default=False>, <SelectOption label='Australia' value='Australia' description='View Australia players - 1 available' emoji=<PartialEmoji animated=False name='🇦🇺' id=None> default=False>, <SelectOption label='England' value='England' description='View England players - 2 available' emoji=<PartialEmoji animated=False name='🏴\U000e0067\U000e0062\U000e0065\U000e006e\U000e0067\U000e007f' id=None> default=False>, <SelectOption label='New Zealand' value='New Zealand' description='(TEAM FULL) - All 18 players claimed' emoji=<PartialEmoji animated=False name='🇳🇿' id=None> default=False>, <SelectOption label='South Africa' value='South Africa' description='(TEAM FULL) - All 18 players claimed' emoji=<PartialEmoji animated=False name='🇿🇦' id=None> default=False>, <SelectOption label='Bangladesh' value='Bangladesh' description='View Bangladesh players - 7 available' emoji=<PartialEmoji animated=False name='🇧🇩' id=None> default=False>, <SelectOption label='Afghanistan' value='Afghanistan' description='View Afghanistan players - 13 available' emoji=<PartialEmoji animated=False name='🇦🇫' id=None> default=False>, <SelectOption label='Sri Lanka' value='Sri Lanka' description='View Sri Lanka players - 3 available' emoji=<PartialEmoji animated=False name='🇱🇰' id=None> default=False>, <SelectOption label='West Indies' value='West Indies' description='View West Indies players - 9 available' emoji=<PartialEmoji animated=False name='🏝️' id=None> default=False>, <SelectOption label='Ireland' value='Ireland' description='View Ireland players - 1 available' emoji=<PartialEmoji animated=False name='🇮🇪' id=None> default=False>, <SelectOption label='Scotland' value='Scotland' description='View Scotland players - 9 available' emoji=<PartialEmoji animated=False name='🏴\U000e0067\U000e0062\U000e0073\U000e0063\U000e0074\U000e007f' id=None> default=False>, <SelectOption label='Netherlands' value='Netherlands' description='View Netherlands players - 14 available' emoji=<PartialEmoji animated=False name='🇳🇱' id=None> default=False>, <SelectOption label='Canada' value='Canada' description='(TEAM FULL) - All 18 players claimed' emoji=<PartialEmoji animated=False name='🇨🇦' id=None> default=False>, <SelectOption label='USA' value='USA' description='View USA players - 5 available' emoji=<PartialEmoji animated=False name='🇺🇸' id=None> default=False>, <SelectOption label='Zimbabwe' value='Zimbabwe' description='View Zimbabwe players - 10 available' emoji=<PartialEmoji animated=False name='🇿🇼' id=None> default=False>, <SelectOption label='UAE' value='UAE' description='View UAE players - 13 available' emoji=<PartialEmoji animated=False name='🇦🇪' id=None> default=False>, <SelectOption label='Italy' value='Italy' description='View Italy players - 18 available' emoji=<PartialEmoji animated=False name='🇮🇹' id=None> default=False>, <SelectOption label='Nepal' value='Nepal' description='View Nepal players - 18 available' emoji=<PartialEmoji animated=False name='🇳🇵' id=None> default=False>, <SelectOption label='Namibia' value='Namibia' description='View Namibia players - 18 available' emoji=<PartialEmoji animated=False name='🇳🇦' id=None> default=False>, <SelectOption label='Hong Kong' value='Hong Kong' description='View Hong Kong players - 18 available' emoji=<PartialEmoji animated=False name='🇭🇰' id=None> default=False>, <SelectOption label='Oman' value='Oman' description='View Oman players - 18 available' emoji=<PartialEmoji animated=False name='🇴🇲' id=None> default=False>, <SelectOption label='Papua New Guinea' value='Papua New Guinea' description='View Papua New Guinea players - 18 available' emoji=<PartialEmoji animated=False name='🇵🇬' id=None> default=False>, <SelectOption label='Uganda' value='Uganda' description='View Uganda players - 18 available' emoji=<PartialEmoji animated=False name='🇺🇬' id=None> default=False>, <SelectOption label='Malaysia' value='Malaysia' description='View Malaysia players - 18 available' emoji=<PartialEmoji animated=False name='🇲🇾' id=None> default=False>]>
+Traceback (most recent call last):
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/ui/view.py", line 427, in _scheduled_task
+    await item.callback(interaction)
+  File "/workspace/main.py", line 1743, in team_callback
+    await interaction.response.edit_message(embed=embed, view=view)
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/interactions.py", line 921, in edit_message
+    await adapter.create_interaction_response(
+    ...<6 lines>...
+    )
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/webhook/async_.py", line 221, in request
+    raise HTTPException(response, data)
+discord.errors.HTTPException: 400 Bad Request (error code: 50035): Invalid Form Body
+In data.components.0.components.0.options.0.emoji.name: Invalid emoji
+In data.components.0.components.0.options.1.emoji.name: Invalid emoji
+In data.components.0.components.0.options.8.emoji.name: Invalid emoji
+In data.components.0.components.0.options.9.emoji.name: Invalid emoji
+In data.components.0.components.0.options.17.emoji.name: Invalid emoji
+10.250.0.21 - - [14/Jun/2026 20:00:26] "GET / HTTP/1.1" 200 -
+[2026-06-14 20:01:58] [ERROR   ] discord.ui.view: Ignoring exception in view <TeamSelectView timeout=180 children=2> for item <Select placeholder='🏏 Select Your Nation' min_values=1 max_values=1 disabled=False options=[<SelectOption label='India' value='India' description='View India players - 1 available' emoji=<PartialEmoji animated=False name='🇮🇳' id=None> default=False>, <SelectOption label='Pakistan' value='Pakistan' description='(TEAM FULL) - All 19 players claimed' emoji=<PartialEmoji animated=False name='🇵🇰' id=None> default=False>, <SelectOption label='Australia' value='Australia' description='View Australia players - 1 available' emoji=<PartialEmoji animated=False name='🇦🇺' id=None> default=False>, <SelectOption label='England' value='England' description='View England players - 2 available' emoji=<PartialEmoji animated=False name='🏴\U000e0067\U000e0062\U000e0065\U000e006e\U000e0067\U000e007f' id=None> default=False>, <SelectOption label='New Zealand' value='New Zealand' description='(TEAM FULL) - All 18 players claimed' emoji=<PartialEmoji animated=False name='🇳🇿' id=None> default=False>, <SelectOption label='South Africa' value='South Africa' description='(TEAM FULL) - All 18 players claimed' emoji=<PartialEmoji animated=False name='🇿🇦' id=None> default=False>, <SelectOption label='Bangladesh' value='Bangladesh' description='View Bangladesh players - 7 available' emoji=<PartialEmoji animated=False name='🇧🇩' id=None> default=False>, <SelectOption label='Afghanistan' value='Afghanistan' description='View Afghanistan players - 13 available' emoji=<PartialEmoji animated=False name='🇦🇫' id=None> default=False>, <SelectOption label='Sri Lanka' value='Sri Lanka' description='View Sri Lanka players - 3 available' emoji=<PartialEmoji animated=False name='🇱🇰' id=None> default=False>, <SelectOption label='West Indies' value='West Indies' description='View West Indies players - 9 available' emoji=<PartialEmoji animated=False name='🏝️' id=None> default=False>, <SelectOption label='Ireland' value='Ireland' description='View Ireland players - 1 available' emoji=<PartialEmoji animated=False name='🇮🇪' id=None> default=False>, <SelectOption label='Scotland' value='Scotland' description='View Scotland players - 9 available' emoji=<PartialEmoji animated=False name='🏴\U000e0067\U000e0062\U000e0073\U000e0063\U000e0074\U000e007f' id=None> default=False>, <SelectOption label='Netherlands' value='Netherlands' description='View Netherlands players - 14 available' emoji=<PartialEmoji animated=False name='🇳🇱' id=None> default=False>, <SelectOption label='Canada' value='Canada' description='(TEAM FULL) - All 18 players claimed' emoji=<PartialEmoji animated=False name='🇨🇦' id=None> default=False>, <SelectOption label='USA' value='USA' description='View USA players - 5 available' emoji=<PartialEmoji animated=False name='🇺🇸' id=None> default=False>, <SelectOption label='Zimbabwe' value='Zimbabwe' description='View Zimbabwe players - 10 available' emoji=<PartialEmoji animated=False name='🇿🇼' id=None> default=False>, <SelectOption label='UAE' value='UAE' description='View UAE players - 13 available' emoji=<PartialEmoji animated=False name='🇦🇪' id=None> default=False>, <SelectOption label='Italy' value='Italy' description='View Italy players - 18 available' emoji=<PartialEmoji animated=False name='🇮🇹' id=None> default=False>, <SelectOption label='Nepal' value='Nepal' description='View Nepal players - 18 available' emoji=<PartialEmoji animated=False name='🇳🇵' id=None> default=False>, <SelectOption label='Namibia' value='Namibia' description='View Namibia players - 18 available' emoji=<PartialEmoji animated=False name='🇳🇦' id=None> default=False>, <SelectOption label='Hong Kong' value='Hong Kong' description='View Hong Kong players - 18 available' emoji=<PartialEmoji animated=False name='🇭🇰' id=None> default=False>, <SelectOption label='Oman' value='Oman' description='View Oman players - 18 available' emoji=<PartialEmoji animated=False name='🇴🇲' id=None> default=False>, <SelectOption label='Papua New Guinea' value='Papua New Guinea' description='View Papua New Guinea players - 18 available' emoji=<PartialEmoji animated=False name='🇵🇬' id=None> default=False>, <SelectOption label='Uganda' value='Uganda' description='View Uganda players - 18 available' emoji=<PartialEmoji animated=False name='🇺🇬' id=None> default=False>, <SelectOption label='Malaysia' value='Malaysia' description='View Malaysia players - 18 available' emoji=<PartialEmoji animated=False name='🇲🇾' id=None> default=False>]>
+Traceback (most recent call last):
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/ui/view.py", line 427, in _scheduled_task
+    await item.callback(interaction)
+  File "/workspace/main.py", line 1743, in team_callback
+    await interaction.response.edit_message(embed=embed, view=view)
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/interactions.py", line 921, in edit_message
+    await adapter.create_interaction_response(
+    ...<6 lines>...
+    )
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/webhook/async_.py", line 221, in request
+    raise HTTPException(response, data)
+discord.errors.HTTPException: 400 Bad Request (error code: 50035): Invalid Form Body
+In data.components.0.components.0.options.4.emoji.name: Invalid emoji
+In data.components.0.components.0.options.5.emoji.name: Invalid emoji
+In data.components.0.components.0.options.12.emoji.name: Invalid emoji
+In data.components.0.components.0.options.13.emoji.name: Invalid emoji
+10.250.0.21 - - [14/Jun/2026 20:02:06] "GET / HTTP/1.1" 200 -
+10.250.0.22 - - [14/Jun/2026 20:04:05] "GET / HTTP/1.1" 200 -
+10.250.0.21 - - [14/Jun/2026 20:06:06] "GET / HTTP/1.1" 200 -
+🗑️ Removing emojis from: TEST (840094596914741248)
+✅ Completed server TEST
+🗑️ Removing emojis from: dl (829450700764217366)
+✅ Completed server dl
+🗑️ Removing emojis from: FNF Rematchin+ (902537846634733665)
+✅ Completed server FNF Rematchin+
+🗑️ Removing emojis from: Vs Loofie mod making! (886642304335609937)
+✅ Completed server Vs Loofie mod making!
+🗑️ Removing emojis from: test cuz uhh idk (823884737437368340)
+✅ Deleted emoji: Emilio_Gay
+✅ Completed server test cuz uhh idk
+🗑️ Removing emojis from: man. (877275137009917992)
+✅ Completed server man.
+🗑️ Removing emojis from: Aden's server (848977887209979985)
+✅ Completed server Aden's server
+🗑️ Removing emojis from: HC Guru Testing (1159160118018056192)
+✅ Completed server HC Guru Testing
+10.250.0.21 - - [14/Jun/2026 20:08:06] "GET / HTTP/1.1" 200 -
+10.250.0.22 - - [14/Jun/2026 20:10:14] "GET / HTTP/1.1" 200 -
+10.250.0.21 - - [14/Jun/2026 20:12:06] "GET / HTTP/1.1" 200 -
+10.250.0.22 - - [14/Jun/2026 20:14:06] "GET / HTTP/1.1" 200 -
+10.250.0.20 - - [14/Jun/2026 20:16:06] "GET / HTTP/1.1" 200 -
+10.250.0.20 - - [14/Jun/2026 20:18:05] "GET / HTTP/1.1" 200 -
+10.250.0.21 - - [14/Jun/2026 20:20:13] "GET / HTTP/1.1" 200 -
+10.250.0.20 - - [14/Jun/2026 20:22:06] "GET / HTTP/1.1" 200 -
+10.250.0.21 - - [14/Jun/2026 20:24:06] "GET / HTTP/1.1" 200 -
+10.250.0.20 - - [14/Jun/2026 20:26:05] "GET / HTTP/1.1" 200 -
+10.250.0.20 - - [14/Jun/2026 20:28:07] "GET / HTTP/1.1" 200 -
+10.250.0.22 - - [14/Jun/2026 20:30:19] "GET / HTTP/1.1" 200 -
+10.250.0.20 - - [14/Jun/2026 20:32:06] "GET / HTTP/1.1" 200 -
+10.250.0.21 - - [14/Jun/2026 20:34:06] "GET / HTTP/1.1" 200 -
+10.250.0.21 - - [14/Jun/2026 20:36:05] "GET / HTTP/1.1" 200 -
+10.250.0.22 - - [14/Jun/2026 20:38:05] "GET / HTTP/1.1" 200 -
+10.250.0.20 - - [14/Jun/2026 20:40:19] "GET / HTTP/1.1" 200 -
+10.250.0.22 - - [14/Jun/2026 20:42:05] "GET / HTTP/1.1" 200 -
+10.250.0.20 - - [14/Jun/2026 20:44:05] "GET / HTTP/1.1" 200 -
+10.250.0.21 - - [14/Jun/2026 20:46:05] "GET / HTTP/1.1" 200 -
+10.250.0.22 - - [14/Jun/2026 20:48:06] "GET / HTTP/1.1" 200 -
+10.250.0.20 - - [14/Jun/2026 20:50:13] "GET / HTTP/1.1" 200 -
+10.250.0.21 - - [14/Jun/2026 20:52:06] "GET / HTTP/1.1" 200 -
+10.250.0.22 - - [14/Jun/2026 20:54:05] "GET / HTTP/1.1" 200 -
+10.250.0.20 - - [14/Jun/2026 20:56:05] "GET / HTTP/1.1" 200 -
+10.250.0.22 - - [14/Jun/2026 20:58:06] "GET / HTTP/1.1" 200 -
+10.250.0.21 - - [14/Jun/2026 21:00:23] "GET / HTTP/1.1" 200 -
+10.250.0.21 - - [14/Jun/2026 21:02:06] "GET / HTTP/1.1" 200 -
+10.250.0.22 - - [14/Jun/2026 21:04:05] "GET / HTTP/1.1" 200 -
+10.250.0.21 - - [14/Jun/2026 21:06:06] "GET / HTTP/1.1" 200 -
+10.250.0.22 - - [14/Jun/2026 21:08:05] "GET / HTTP/1.1" 200 -
+10.250.0.20 - - [14/Jun/2026 21:10:14] "GET / HTTP/1.1" 200 -
+10.250.0.20 - - [14/Jun/2026 21:12:06] "GET / HTTP/1.1" 200 -
+10.250.0.21 - - [14/Jun/2026 21:14:05] "GET / HTTP/1.1" 200 -
+10.250.0.20 - - [14/Jun/2026 21:16:05] "GET / HTTP/1.1" 200 -
+10.250.0.20 - - [14/Jun/2026 21:18:06] "GET / HTTP/1.1" 200 -
+10.250.0.20 - - [14/Jun/2026 21:20:13] "GET / HTTP/1.1" 200 -
+10.250.0.20 - - [14/Jun/2026 21:22:06] "GET / HTTP/1.1" 200 -
+[2026-06-14 21:22:40] [ERROR   ] discord.ui.view: Ignoring exception in view <TeamSelectView timeout=180 children=2> for item <Select placeholder='🏏 More Nations...' min_values=1 max_values=1 disabled=False options=[<SelectOption label='Spain' value='Spain' description='View Spain players - 18 available' emoji=<PartialEmoji animated=False name='🇪🇸' id=None> default=False>, <SelectOption label='Germany' value='Germany' description='View Germany players - 18 available' emoji=<PartialEmoji animated=False name='🇩🇪' id=None> default=False>, <SelectOption label='Japan' value='Japan' description='View Japan players - 18 available' emoji=<PartialEmoji animated=False name='🇯🇵' id=None> default=False>, <SelectOption label='Portugal' value='Portugal' description='View Portugal players - 18 available' emoji=<PartialEmoji animated=False name='🇵🇹' id=None> default=False>, <SelectOption label='Denmark' value='Denmark' description='View Denmark players - 18 available' emoji=<PartialEmoji animated=False name='🇩🇰' id=None> default=False>]>
+Traceback (most recent call last):
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/ui/view.py", line 427, in _scheduled_task
+    await item.callback(interaction)
+  File "/workspace/main.py", line 1743, in team_callback
+    await interaction.response.edit_message(embed=embed, view=view)
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/interactions.py", line 921, in edit_message
+    await adapter.create_interaction_response(
+    ...<6 lines>...
+    )
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/webhook/async_.py", line 221, in request
+    raise HTTPException(response, data)
+discord.errors.HTTPException: 400 Bad Request (error code: 50035): Invalid Form Body
+In data.components.0.components.0.options.2.emoji.name: Invalid emoji
+In data.components.0.components.0.options.3.emoji.name: Invalid emoji
+In data.components.0.components.0.options.8.emoji.name: Invalid emoji
+In data.components.0.components.0.options.9.emoji.name: Invalid emoji
+In data.components.0.components.0.options.14.emoji.name: Invalid emoji
+10.250.0.22 - - [14/Jun/2026 21:24:06] "GET / HTTP/1.1" 200 -
+10.250.0.20 - - [14/Jun/2026 21:26:05] "GET / HTTP/1.1" 200 -
+10.250.0.20 - - [14/Jun/2026 21:28:05] "GET / HTTP/1.1" 200 -
+10.250.0.20 - - [14/Jun/2026 21:30:18] "GET / HTTP/1.1" 200 -
+[2026-06-14 21:31:38] [ERROR   ] discord.ui.view: Ignoring exception in view <TeamSelectView timeout=180 children=2> for item <Select placeholder='🏏 More Nations...' min_values=1 max_values=1 disabled=False options=[<SelectOption label='Spain' value='Spain' description='View Spain players - 18 available' emoji=<PartialEmoji animated=False name='🇪🇸' id=None> default=False>, <SelectOption label='Germany' value='Germany' description='View Germany players - 18 available' emoji=<PartialEmoji animated=False name='🇩🇪' id=None> default=False>, <SelectOption label='Japan' value='Japan' description='View Japan players - 18 available' emoji=<PartialEmoji animated=False name='🇯🇵' id=None> default=False>, <SelectOption label='Portugal' value='Portugal' description='View Portugal players - 18 available' emoji=<PartialEmoji animated=False name='🇵🇹' id=None> default=False>, <SelectOption label='Denmark' value='Denmark' description='View Denmark players - 18 available' emoji=<PartialEmoji animated=False name='🇩🇰' id=None> default=False>]>
+Traceback (most recent call last):
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/ui/view.py", line 427, in _scheduled_task
+    await item.callback(interaction)
+  File "/workspace/main.py", line 1743, in team_callback
+    await interaction.response.edit_message(embed=embed, view=view)
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/interactions.py", line 921, in edit_message
+    await adapter.create_interaction_response(
+    ...<6 lines>...
+    )
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/webhook/async_.py", line 221, in request
+    raise HTTPException(response, data)
+discord.errors.HTTPException: 400 Bad Request (error code: 50035): Invalid Form Body
+In data.components.0.components.0.options.0.emoji.name: Invalid emoji
+In data.components.0.components.0.options.2.emoji.name: Invalid emoji
+In data.components.0.components.0.options.6.emoji.name: Invalid emoji
+In data.components.0.components.0.options.8.emoji.name: Invalid emoji
+In data.components.0.components.0.options.10.emoji.name: Invalid emoji
+In data.components.0.components.0.options.14.emoji.name: Invalid emoji
+[2026-06-14 21:31:44] [ERROR   ] discord.ui.view: Ignoring exception in view <TeamSelectView timeout=180 children=2> for item <Select placeholder='🏏 More Nations...' min_values=1 max_values=1 disabled=False options=[<SelectOption label='Spain' value='Spain' description='View Spain players - 18 available' emoji=<PartialEmoji animated=False name='🇪🇸' id=None> default=False>, <SelectOption label='Germany' value='Germany' description='View Germany players - 18 available' emoji=<PartialEmoji animated=False name='🇩🇪' id=None> default=False>, <SelectOption label='Japan' value='Japan' description='View Japan players - 18 available' emoji=<PartialEmoji animated=False name='🇯🇵' id=None> default=False>, <SelectOption label='Portugal' value='Portugal' description='View Portugal players - 18 available' emoji=<PartialEmoji animated=False name='🇵🇹' id=None> default=False>, <SelectOption label='Denmark' value='Denmark' description='View Denmark players - 18 available' emoji=<PartialEmoji animated=False name='🇩🇰' id=None> default=False>]>
+Traceback (most recent call last):
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/ui/view.py", line 427, in _scheduled_task
+    await item.callback(interaction)
+  File "/workspace/main.py", line 1743, in team_callback
+    await interaction.response.edit_message(embed=embed, view=view)
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/interactions.py", line 921, in edit_message
+    await adapter.create_interaction_response(
+    ...<6 lines>...
+    )
+  File "/workspace/.heroku/python/lib/python3.13/site-packages/discord/webhook/async_.py", line 221, in request
+    raise HTTPException(response, data)
+discord.errors.HTTPException: 400 Bad Request (error code: 50035): Invalid Form Body
+In data.components.0.components.0.options.1.emoji.name: Invalid emoji
+In data.components.0.components.0.options.3.emoji.name: Invalid emoji
+In data.components.0.components.0.options.9.emoji.name: Invalid emoji
+In data.components.0.components.0.options.12.emoji.name: Invalid emoji
+In data.components.0.components.0.options.16.emoji.name: Invalid emoji
+10.250.0.20 - - [14/Jun/2026 21:32:06] "GET / HTTP/1.1" 200 -
+10.250.0.21 - - [14/Jun/2026 21:34:06] "GET / HTTP/1.1" 200 -

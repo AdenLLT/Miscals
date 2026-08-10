@@ -1,0 +1,23 @@
+I’ll inspect the uploaded error log and trace the SQLite access patterns around the failing command. Then I’ll make the smallest concurrency-safe fix, validate it, and restart the Discord workflow.
+
+The log shows two related problems: synchronous SQLite/file work is blocking Discord’s event loop (heartbeat warnings), and concurrent database writers are colliding. I’m locating the exact traceback and shared connection patterns across the bot modules so the fix handles both the immediate lock and the underlying event-loop stall.
+
+The root cause is now clear. The feed generator performs synchronous SQLite queries inside Discord’s event loop; when SQLite waits on another writer, Discord heartbeats stall and the command can surface database is locked. Separately, the match-update listener is treating the external bot’s cooldown error embed as cricket data. I’m fixing all three points: connection busy handling/WAL, moving feed DB reads off the event loop, and ignoring cooldown/error embeds.
+
+The SQLite guard and background-thread change are in place. I’m adding the message filter for cooldown/error embeds now, then I’ll test the patched connection behavior and restart the bot to verify it no longer blocks the event loop during feed generation.
+
+I’ve isolated the remaining fix: the external cooldown message is being passed into the cricket parser because it comes from the monitored bot, while local command errors are being rendered generically. I’m adding an early ignore for cooldown/error messages and a specific CommandOnCooldown response, while keeping database lock errors from leaking as raw Discord errors.
+
+The parser filter and friendly error handling are added. One Discord.py detail remains: command exceptions are usually wrapped in CommandInvokeError, so I’m unwrapping the original exception for the lock-specific response before running the final validation.
+
+The core fix is complete. I’m adding one backup safeguard for WAL mode so periodic players.db uploads include committed WAL contents, then I’ll run syntax/concurrency checks and restart the Discord workflow.
+
+The final safeguard is in place so WAL-backed changes are checkpointed before database backups. I’m running the full compile/diff checks now, then restarting the configured Discord workflow and reviewing the latest logs.
+
+Validation passes, including a live SQLite WAL/busy-timeout probe. I’m restarting the configured Discord Bot workflow now and checking startup logs for import or connection failures.
+
+The first pass exposed one remaining synchronous feed path: interactive feed commands still call SQLite helpers directly, while only the background batch had been moved to a worker thread. I’m fixing that path too, and I’m checking every feed cache read/write so the same lock cannot recur during user commands.
+
+There are still direct SQLite calls in the interactive feed flow (-feed, refresh, and bulk feed generation). I’m moving those cache reads/writes and initial stats reads to worker threads too, so every feed path stays off Discord’s event loop.
+
+You've reached your monthly free quota limit. It will reset on September 7, 2026.
