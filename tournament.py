@@ -193,6 +193,7 @@ MATCH_CHANNELS = {
 
 # Channel for posting fixtures
 FIXTURES_CHANNEL = 1463219150645231849
+PRESEEDED_FIXTURES_FILE = "tournament_fixtures.json"
 
 
 class TeamStatsView(View):
@@ -1989,6 +1990,132 @@ def get_group_standings(tournament_id, group_name):
     return rows
 
 
+def get_preseeded_group_round(tournament_name, group, group_round_number,
+                              group_teams):
+    """Load and validate a preseeded intra-group round from the JSON schedule."""
+    try:
+        with open(PRESEEDED_FIXTURES_FILE, "r", encoding="utf-8") as file:
+            schedule = json.load(file)
+    except FileNotFoundError:
+        return None, (
+            f"❌ Preseeded fixture file `{PRESEEDED_FIXTURES_FILE}` was not found."
+        )
+    except json.JSONDecodeError as error:
+        return None, (
+            f"❌ Could not read `{PRESEEDED_FIXTURES_FILE}`: invalid JSON "
+            f"({error.msg})."
+        )
+    except OSError as error:
+        return None, f"❌ Could not read `{PRESEEDED_FIXTURES_FILE}`: {error}."
+
+    tournament_schedule = schedule.get("tournaments", {}).get(tournament_name)
+    if not isinstance(tournament_schedule, dict):
+        return None, (
+            f"❌ No preseeded fixture schedule was found for "
+            f"**{tournament_name}**."
+        )
+
+    group_schedule = tournament_schedule.get("groups", {}).get(group)
+    if not isinstance(group_schedule, dict):
+        return None, (
+            f"❌ No preseeded fixture schedule was found for Group {group} "
+            f"in **{tournament_name}**."
+        )
+
+    round_schedule = group_schedule.get("rounds", {}).get(
+        str(group_round_number)
+    )
+    if not isinstance(round_schedule, dict):
+        return None, (
+            f"❌ No preseeded fixtures were found for Group {group} "
+            f"Round {group_round_number}."
+        )
+
+    raw_fixtures = round_schedule.get("fixtures")
+    rest_team = round_schedule.get("rest_team")
+    if not isinstance(raw_fixtures, list):
+        return None, (
+            f"❌ Group {group} Round {group_round_number} in "
+            f"`{PRESEEDED_FIXTURES_FILE}` must contain a `fixtures` list."
+        )
+
+    official_teams = set(group_teams)
+    if rest_team is not None and rest_team not in official_teams:
+        return None, (
+            f"❌ Preseeded Group {group} Round {group_round_number} has an "
+            f"unknown rest team: **{rest_team}**."
+        )
+
+    matches = []
+    seen_teams = set()
+    seen_matchups = set()
+    for index, fixture in enumerate(raw_fixtures, 1):
+        if not isinstance(fixture, dict):
+            return None, (
+                f"❌ Preseeded Group {group} Round {group_round_number} "
+                f"fixture {index} must be an object."
+            )
+
+        team1 = fixture.get("team1")
+        team2 = fixture.get("team2")
+        if not isinstance(team1, str) or not isinstance(team2, str):
+            return None, (
+                f"❌ Preseeded Group {group} Round {group_round_number} "
+                f"fixture {index} must have string `team1` and `team2`."
+            )
+        if team1 == team2:
+            return None, (
+                f"❌ Preseeded Group {group} Round {group_round_number} "
+                f"fixture {index} has the same team on both sides."
+            )
+        unknown_teams = {team1, team2} - official_teams
+        if unknown_teams:
+            return None, (
+                f"❌ Preseeded Group {group} Round {group_round_number} "
+                f"contains team(s) not in the group: "
+                f"{', '.join(sorted(unknown_teams))}."
+            )
+
+        matchup = frozenset((team1, team2))
+        if matchup in seen_matchups:
+            return None, (
+                f"❌ Preseeded Group {group} Round {group_round_number} "
+                f"repeats **{team1} vs {team2}**."
+            )
+        if seen_teams.intersection((team1, team2)):
+            return None, (
+                f"❌ Preseeded Group {group} Round {group_round_number} "
+                "assigns a team to more than one fixture."
+            )
+
+        seen_matchups.add(matchup)
+        seen_teams.update((team1, team2))
+        matches.append((team1, team2))
+
+    expected_rest = official_teams - seen_teams
+    if len(expected_rest) > 1 or (
+        expected_rest and rest_team != next(iter(expected_rest))
+    ):
+        return None, (
+            f"❌ Preseeded Group {group} Round {group_round_number} must "
+            "include every group team exactly once, with the correct rest team."
+        )
+    if not expected_rest and rest_team is not None:
+        return None, (
+            f"❌ Preseeded Group {group} Round {group_round_number} has a "
+            "rest team even though every team is playing."
+        )
+
+    expected_matches = (len(official_teams) - len(expected_rest)) // 2
+    if len(matches) != expected_matches:
+        return None, (
+            f"❌ Preseeded Group {group} Round {group_round_number} has "
+            f"{len(matches)} fixture(s); expected {expected_matches}."
+        )
+
+    return (matches, rest_team), None
+
+
 def get_next_tournament_round(tournament_id):
     """Return the next available round number for the tournament"""
     conn = sqlite3.connect('players.db')
@@ -2679,7 +2806,7 @@ class TeamSelectionView(View):
 class FixtureEditView(View):
 
     def __init__(self, ctx, bot, tournament_id, fixtures, round_number,
-                 available_teams, round_info=None):
+                 available_teams, round_info=None, preseeded=False):
         super().__init__(timeout=600)
         self.ctx = ctx
         self.bot = bot
@@ -2688,6 +2815,7 @@ class FixtureEditView(View):
         self.round_number = round_number
         self.available_teams = available_teams
         self.round_info = round_info  # Optional dict with round_type, round_display_name, rest_team
+        self.preseeded = preseeded
         self.message = None
 
         self.add_controls()
@@ -2725,6 +2853,54 @@ class FixtureEditView(View):
 
         # Create edit options view
         edit_view = View(timeout=60)
+
+        if self.preseeded:
+            stadium_options = [
+                discord.SelectOption(
+                    label=stadium_name,
+                    value=str(channel_id),
+                    emoji="🏟️",
+                )
+                for channel_id, stadium_name in MATCH_CHANNELS.items()
+            ]
+            stadium_select = Select(
+                placeholder="Select Stadium",
+                options=stadium_options,
+                custom_id="stadium_select",
+            )
+
+            async def stadium_callback(inter: discord.Interaction):
+                if inter.user.id != self.ctx.author.id:
+                    await inter.response.send_message(
+                        "❌ This is not your menu!", ephemeral=True
+                    )
+                    return
+
+                new_channel_id = int(inter.data["values"][0])
+                new_stadium = MATCH_CHANNELS[new_channel_id]
+                self.fixtures[fixture_idx][2] = new_channel_id
+                self.fixtures[fixture_idx][3] = new_stadium
+                await inter.response.defer(ephemeral=True)
+                self.add_controls()
+                embed = await self.create_fixture_embed()
+                await self.message.edit(embed=embed, view=self)
+                await inter.followup.send(
+                    f"✅ Stadium changed to {new_stadium}", ephemeral=True
+                )
+                try:
+                    await interaction.delete_original_response()
+                except:
+                    pass
+
+            stadium_select.callback = stadium_callback
+            edit_view.add_item(stadium_select)
+            await interaction.response.send_message(
+                f"Editing preseeded fixture {fixture_idx + 1}: "
+                "only the stadium can be changed.",
+                view=edit_view,
+                ephemeral=True,
+            )
+            return
 
         # Team 1 selection
         team1_options = []
@@ -2876,7 +3052,11 @@ class FixtureEditView(View):
         embed.description += f"\n{fixture_text}"
         embed.set_footer(
             text=
-            "Select fixture to edit teams/stadium • Click Confirm when ready")
+            (
+                "Select fixture to change its stadium • Click Confirm when ready"
+                if self.preseeded
+                else "Select fixture to edit teams/stadium • Click Confirm when ready"
+            ))
 
         return embed
 
@@ -3312,10 +3492,10 @@ class Tournament(commands.Cog):
         view.message = await ctx.send(embed=view._embed(), view=view)
 
     @commands.command(name="setgroupfixtures", aliases=["sgf"],
-                      help="[ADMIN] Generate next intra-group round-robin fixtures. Usage: -sgf <A/B/C>")
+                      help="[ADMIN] Post next preseeded intra-group fixtures. Usage: -sgf <A/B/C>")
     @commands.has_permissions(administrator=True)
     async def setgroupfixtures(self, ctx, group: str):
-        """Generate the next round of fixtures within a group (round-robin, with rest for odd teams)."""
+        """Load and post the next preseeded round of intra-group fixtures."""
         tournament = get_active_tournament()
         if not tournament:
             await ctx.send("❌ No active tournament found!")
@@ -3341,7 +3521,6 @@ class Tournament(commands.Cog):
             return
 
         group_teams = [row[0] for row in group_teams_rows]
-        n = len(group_teams)
 
         # Count how many intra-group rounds have already been generated
         conn = sqlite3.connect('players.db')
@@ -3352,22 +3531,17 @@ class Tournament(commands.Cog):
         rounds_done = c.fetchone()[0]
         conn.close()
 
-        # Max rounds for n teams: n rounds if odd, n-1 if even
-        max_rounds = n if n % 2 == 1 else n - 1
-        if rounds_done >= max_rounds:
-            await ctx.send(
-                f"❌ All **{max_rounds}** intra-group rounds for Group {group} "
-                f"have already been generated!")
+        group_internal_round = rounds_done + 1
+        preseeded_round, error = get_preseeded_group_round(
+            tournament_name,
+            group,
+            group_internal_round,
+            group_teams,
+        )
+        if error:
+            await ctx.send(error)
             return
-
-        round_index = rounds_done  # 0-based
-        matches, rest_team = generate_group_round_robin(group_teams, round_index)
-
-        if not matches:
-            await ctx.send(
-                f"❌ Could not generate fixtures for Group {group} "
-                f"Round {rounds_done + 1}.")
-            return
+        matches, rest_team = preseeded_round
 
         target_round = get_next_tournament_round(tournament_id)
 
@@ -3389,7 +3563,6 @@ class Tournament(commands.Cog):
             )
         ]
 
-        group_internal_round = rounds_done + 1
         round_display = f"Group {group} — Round {group_internal_round}"
         round_info = {
             'round_type': f'group_{group}',
@@ -3399,7 +3572,7 @@ class Tournament(commands.Cog):
 
         rest_note = f"\n⏸️ **Rest this round:** {rest_team}" if rest_team else ""
         await ctx.send(
-            f"📋 Generating **{round_display}** "
+            f"📋 Loading preseeded **{round_display}** "
             f"(Tournament Round {target_round}){rest_note}\n"
             f"Teams: {len(group_teams)} | Matches: {len(matches)}")
 
@@ -3411,7 +3584,8 @@ class Tournament(commands.Cog):
         conn2.close()
 
         view = FixtureEditView(ctx, self.bot, tournament_id, fixtures,
-                               target_round, all_teams, round_info=round_info)
+                               target_round, all_teams, round_info=round_info,
+                               preseeded=True)
         embed = await view.create_fixture_embed()
         view.message = await ctx.send(embed=embed, view=view)
 
