@@ -731,6 +731,13 @@ TEAM_ROLE_IDS = {
     "denmark": 1513238490723385466
 }
 
+
+def member_has_team_role(member):
+    """Return whether Discord shows this member as having a claimed team."""
+    team_role_ids = set(TEAM_ROLE_IDS.values())
+    return any(role.id in team_role_ids for role in member.roles)
+
+
 @bot.command(name="dmteam", help="[OWNER] DM everyone on a team")
 async def dmteam(ctx, team_name: str, *, message: str):
     if ctx.author.id != 765965975761715241:
@@ -5103,15 +5110,6 @@ async def roleallunclaimed_command(ctx):
         await ctx.send("❌ Unclaimed role (1461764869282857010) not found!")
         return
 
-    conn = sqlite3.connect('players.db')
-    c = conn.cursor()
-
-    # Get all user IDs who have claimed
-    c.execute("SELECT user_id FROM player_representatives")
-    claimed_user_ids = set(row[0] for row in c.fetchall())
-
-    conn.close()
-
     added_count = 0
     already_had = 0
     removed_count = 0
@@ -5120,9 +5118,10 @@ async def roleallunclaimed_command(ctx):
     # Collect all guild members with the unclaimed role for removal check
     all_unclaimed_members = list(unclaimed_role.members)
 
-    # Remove unclaimed role from members who have it BUT have already claimed a player
+    # Discord team roles are the source of truth for whether a member has
+    # claimed a player. Remove stale unclaimed roles from claimed members.
     for member in all_unclaimed_members:
-        if member.id in claimed_user_ids:
+        if member_has_team_role(member):
             try:
                 await member.remove_roles(unclaimed_role, reason=f"Player claimed; unclaimed role removed by {ctx.author}")
                 removed_count += 1
@@ -5133,8 +5132,8 @@ async def roleallunclaimed_command(ctx):
 
     # Iterate through all members with the player role
     for member in player_role.members:
-        # Skip if they have claimed a player
-        if member.id in claimed_user_ids:
+        # No team role means this member is unclaimed.
+        if member_has_team_role(member):
             continue
 
         # Check if member already has the unclaimed role
