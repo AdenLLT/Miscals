@@ -243,6 +243,12 @@ async def on_ready():
     await bot.load_extension('series')
     await bot.load_extension('playerlife')
     await bot.load_extension('miniplayergame')
+    from miniplayergame import backfill_squad_fantasy_points
+    try:
+        fantasy_sync = await asyncio.to_thread(backfill_squad_fantasy_points)
+        print(f"✅ Squad fantasy sync: {fantasy_sync}")
+    except Exception as exc:
+        print(f"❌ Squad fantasy sync failed: {exc}")
     # Keep this bot's commands guild-scoped. Remove the old global
     # /matchtime registration so Discord cannot show both a global and a
     # guild copy of that command.

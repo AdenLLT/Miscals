@@ -887,11 +887,11 @@ def get_user_team(user_id):
         pass
     return None
 
-def calculate_fantasy_points_for_match(matches, bot):
+def calculate_fantasy_points_for_match(matches, bot, stat_ids=None):
     """Award the established match formula to minigame squads."""
     from miniplayergame import calculate_squad_fantasy_points_for_match
 
-    return calculate_squad_fantasy_points_for_match(matches, bot)
+    return calculate_squad_fantasy_points_for_match(matches, bot, stat_ids=stat_ids)
 
 def get_team_color(team_name):
     colors = {
@@ -2973,6 +2973,7 @@ class CricketStats(commands.Cog):
 
         conn = sqlite3.connect('players.db')
         c = conn.cursor()
+        fantasy_stat_ids = []
 
         for match in matches:
             user_id, runs, balls_faced, runs_conceded, balls_bowled, wickets, not_out = map(int, match)
@@ -2997,6 +2998,7 @@ class CricketStats(commands.Cog):
                     not_out,
                 ),
             )
+            fantasy_stat_ids.append(c.lastrowid)
             team = get_user_team(user_id)
             if team:
                 if team not in team_stats:
@@ -3071,7 +3073,11 @@ class CricketStats(commands.Cog):
 
         # Calculate and award fantasy points
         try:
-            fantasy_points = calculate_fantasy_points_for_match(matches, self.bot)
+            fantasy_points = calculate_fantasy_points_for_match(
+                matches,
+                self.bot,
+                stat_ids=fantasy_stat_ids,
+            )
 
             if fantasy_points:
                 fantasy_channel = self.bot.get_channel(1471951626058207292)
@@ -3133,6 +3139,7 @@ class CricketStats(commands.Cog):
         tournament_id = tournament[0]
         conn = sqlite3.connect("players.db")
         c = conn.cursor()
+        stat_ids = []
         try:
             for match in matches:
                 (
@@ -3164,6 +3171,7 @@ class CricketStats(commands.Cog):
                         not_out,
                     ),
                 )
+                stat_ids.append(c.lastrowid)
             conn.commit()
         except Exception:
             conn.rollback()
@@ -3171,10 +3179,29 @@ class CricketStats(commands.Cog):
         finally:
             conn.close()
 
+        try:
+            fantasy_points = calculate_fantasy_points_for_match(
+                matches,
+                self.bot,
+                stat_ids=stat_ids,
+            )
+            fantasy_summary = (
+                "\n".join(
+                    f"<@{uid}>: +{pts:g} fantasy pts"
+                    for uid, pts in fantasy_points.items()
+                )
+                if fantasy_points
+                else "No collected squad players matched these statistics."
+            )
+        except Exception as exc:
+            print(f"Error calculating synchronized fantasy points: {exc}")
+            fantasy_summary = "Fantasy points could not be calculated automatically."
+
         await ctx.send(
             f"✅ **Synchronized {len(matches)} player stat record(s)**\n"
             f"🏏 Added to the current tournament: **{tournament[1]}**\n"
             f"📊 Included in `-lb` and current tournament personal stats\n"
+            f"✨ Fantasy points awarded from these statistics:\n{fantasy_summary}\n"
             f"🚫 Excluded from `-lbi`; no match result or standings were recorded"
         )
 

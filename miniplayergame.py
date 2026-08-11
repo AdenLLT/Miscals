@@ -12,6 +12,19 @@ from discord.ui import View, Select
 EXCLUDED_EMOJI_SERVER = 1451591563078533292
 MAX_SQUAD_SIZE        = 15
 DROP_COOLDOWN_HOURS   = 0  # No cooldown
+FANTASY_SCORING_VERSION = 2
+
+RUN_MILESTONE_BONUSES = (
+    (150, 30),
+    (100, 20),
+    (50, 10),
+    (30, 5),
+)
+WICKET_HAUL_BONUSES = (
+    (7, 30),
+    (5, 20),
+    (3, 10),
+)
 
 
 # ──────────────────────────────────────────────────────────────
@@ -55,6 +68,11 @@ def init_minigame_db():
         match_id      INTEGER,
         points_earned REAL,
         timestamp     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS minigame_fantasy_sync (
+        tournament_id   INTEGER PRIMARY KEY,
+        scoring_version INTEGER NOT NULL,
+        synced_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )''')
     conn.commit()
     conn.close()
@@ -220,18 +238,29 @@ def reset_squad_fantasy_points():
         conn.close()
 
 
-def calculate_squad_fantasy_points_for_match(matches, bot=None):
-    """Award the existing fantasy formula to current minigame squads.
+def _milestone_bonus(runs: int, wickets: int) -> int:
+    """Return the highest run and wicket milestone bonus for one performance."""
+    run_bonus = next(
+        (bonus for threshold, bonus in RUN_MILESTONE_BONUSES if runs >= threshold),
+        0,
+    )
+    wicket_bonus = next(
+        (bonus for threshold, bonus in WICKET_HAUL_BONUSES if wickets >= threshold),
+        0,
+    )
+    return run_bonus + wicket_bonus
 
-    The base impact formula intentionally remains the old match-fantasy rule:
-    runs + (wickets * 20).  Captain and VC multipliers are applied only to the
-    owner whose minigame squad contains that player.
+
+def calculate_squad_fantasy_points_for_match(matches, bot=None, stat_ids=None):
+    """Award match points to every squad that contains a participating player.
+
+    The base formula remains ``runs + (wickets * 20)``. Milestone bonuses are
+    added once for the highest run milestone and highest wicket haul reached.
+    Captain/VC multipliers apply only to that player's squad owner.
     """
     conn = _db()
     try:
         c = conn.cursor()
-        player_impact_points = {}
-
         user_ids = [int(match[0]) for match in matches]
         if user_ids:
             placeholders = ",".join("?" for _ in user_ids)
@@ -244,16 +273,23 @@ def calculate_squad_fantasy_points_for_match(matches, bot=None):
         else:
             names_by_user_id = {}
 
-        for match in matches:
-            user_id, runs, balls_faced, runs_conceded, balls_bowled, wickets, not_out = map(int, match)
+        player_records = []
+        for index, match in enumerate(matches):
+            values = list(match)
+            stat_id = stat_ids[index] if stat_ids and index < len(stat_ids) else None
+            user_id, runs, balls_faced, runs_conceded, balls_bowled, wickets, not_out = map(
+                int, values[:7]
+            )
             player_name = names_by_user_id.get(user_id)
             if not player_name:
                 continue
-            player_impact_points[player_name] = runs + (wickets * 20)
+            impact = runs + (wickets * 20) + _milestone_bonus(runs, wickets)
+            player_records.append((stat_id, player_name, impact))
 
-        if not player_impact_points:
+        if not player_records:
             return {}
 
+        player_names = {record[1] for record in player_records}
         c.execute(
             """
             SELECT s.user_id, s.player_name,
@@ -261,42 +297,142 @@ def calculate_squad_fantasy_points_for_match(matches, bot=None):
             FROM minigame_squads AS s
             LEFT JOIN minigame_captains AS l ON l.user_id = s.user_id
             WHERE s.player_name IN ({})
-            """.format(",".join("?" for _ in player_impact_points)),
-            list(player_impact_points),
+            """.format(",".join("?" for _ in player_names)),
+            list(player_names),
         )
         squad_players = c.fetchall()
 
+        logged_stat_ids = {
+            (row[0], row[1], row[2])
+            for row in c.execute(
+                """
+                SELECT user_id, player_name, match_id
+                FROM minigame_fantasy_points_log
+                WHERE match_id IS NOT NULL
+                """
+            )
+        }
+
         points_awarded = {}
-        for squad_user_id, player_name, captain, vc in squad_players:
-            impact = player_impact_points[player_name]
+        for stat_id, player_name, impact in player_records:
             if impact <= 0:
                 continue
-            multiplier = 2 if player_name == captain else 1.5 if player_name == vc else 1
-            points = impact * multiplier
-
-            c.execute(
-                """
-                INSERT INTO minigame_fantasy_points (user_id, player_name, total_points)
-                VALUES (?, ?, ?)
-                ON CONFLICT(user_id, player_name) DO UPDATE SET
-                    total_points = total_points + excluded.total_points
-                """,
-                (squad_user_id, player_name, points),
-            )
-            c.execute(
-                """
-                INSERT INTO minigame_fantasy_points_log
-                    (user_id, player_name, match_id, points_earned)
-                VALUES (?, ?, NULL, ?)
-                """,
-                (squad_user_id, player_name, points),
-            )
-            points_awarded[squad_user_id] = points_awarded.get(squad_user_id, 0) + points
+            for squad_user_id, squad_player_name, captain, vc in squad_players:
+                if squad_player_name != player_name:
+                    continue
+                if stat_id is not None and (
+                    squad_user_id, player_name, stat_id
+                ) in logged_stat_ids:
+                    continue
+                multiplier = (
+                    2 if player_name == captain
+                    else 1.5 if player_name == vc
+                    else 1
+                )
+                points = impact * multiplier
+                c.execute(
+                    """
+                    INSERT INTO minigame_fantasy_points (user_id, player_name, total_points)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(user_id, player_name) DO UPDATE SET
+                        total_points = total_points + excluded.total_points
+                    """,
+                    (squad_user_id, player_name, points),
+                )
+                c.execute(
+                    """
+                    INSERT INTO minigame_fantasy_points_log
+                        (user_id, player_name, match_id, points_earned)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (squad_user_id, player_name, stat_id, points),
+                )
+                if stat_id is not None:
+                    logged_stat_ids.add((squad_user_id, player_name, stat_id))
+                points_awarded[squad_user_id] = (
+                    points_awarded.get(squad_user_id, 0) + points
+                )
 
         conn.commit()
         return points_awarded
     finally:
         conn.close()
+
+
+def backfill_squad_fantasy_points(tournament_id=None):
+    """Populate squad fantasy totals from current-tournament match statistics."""
+    # Keep this helper safe to call during startup migrations or from a
+    # one-off maintenance script before the cog constructor has run.
+    init_minigame_db()
+    conn = _db()
+    try:
+        c = conn.cursor()
+        if tournament_id is None:
+            c.execute(
+                """
+                SELECT id FROM tournaments
+                WHERE is_active=1 AND is_archived=0
+                ORDER BY id DESC LIMIT 1
+                """
+            )
+            row = c.fetchone()
+            if not row:
+                return {"status": "no_active_tournament", "awarded": 0}
+            tournament_id = row[0]
+
+        c.execute(
+            "SELECT scoring_version FROM minigame_fantasy_sync WHERE tournament_id=?",
+            (tournament_id,),
+        )
+        marker = c.fetchone()
+        if marker and marker[0] >= FANTASY_SCORING_VERSION:
+            return {"status": "already_synced", "awarded": 0}
+
+        c.execute("DELETE FROM minigame_fantasy_points")
+        c.execute("DELETE FROM minigame_fantasy_points_log")
+        c.execute(
+            """
+            SELECT id, user_id, runs, balls_faced, runs_conceded,
+                   balls_bowled, wickets, not_out
+            FROM match_stats
+            WHERE tournament_id=?
+            ORDER BY id
+            """,
+            (tournament_id,),
+        )
+        stat_rows = c.fetchall()
+        conn.commit()
+    finally:
+        conn.close()
+
+    matches = [row[1:] for row in stat_rows]
+    stat_ids = [row[0] for row in stat_rows]
+    awarded = calculate_squad_fantasy_points_for_match(matches, stat_ids=stat_ids)
+
+    conn = _db()
+    try:
+        c = conn.cursor()
+        c.execute(
+            """
+            INSERT INTO minigame_fantasy_sync (tournament_id, scoring_version)
+            VALUES (?, ?)
+            ON CONFLICT(tournament_id) DO UPDATE SET
+                scoring_version=excluded.scoring_version,
+                synced_at=CURRENT_TIMESTAMP
+            """,
+            (tournament_id, FANTASY_SCORING_VERSION),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return {
+        "status": "synced",
+        "tournament_id": tournament_id,
+        "stat_rows": len(stat_rows),
+        "owners": len(awarded),
+        "awarded": sum(awarded.values()),
+    }
 
 
 class SquadFantasyLeaderboardView(View):
@@ -804,7 +940,34 @@ class MiniPlayerGame(commands.Cog):
             )
 
         if lines:
-            embed.add_field(name="Player Contributions", value="\n".join(lines), inline=False)
+            # Discord caps each embed field value at 1024 characters. A full
+            # 15-player squad can exceed that once custom emojis and markers
+            # are included, so split contributions across safe-sized fields.
+            chunks = []
+            current = []
+            current_length = 0
+            for line in lines:
+                extra_length = len(line) + (1 if current else 0)
+                if current and current_length + extra_length > 1000:
+                    chunks.append(current)
+                    current = []
+                    current_length = 0
+                current.append(line)
+                current_length += len(line) + (1 if len(current) > 1 else 0)
+            if current:
+                chunks.append(current)
+
+            for index, chunk in enumerate(chunks, start=1):
+                field_name = (
+                    "Player Contributions"
+                    if len(chunks) == 1
+                    else f"Player Contributions ({index}/{len(chunks)})"
+                )
+                embed.add_field(
+                    name=field_name,
+                    value="\n".join(chunk),
+                    inline=False,
+                )
         if captain or vc:
             embed.set_footer(
                 text=(
