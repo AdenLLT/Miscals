@@ -361,6 +361,24 @@ _current_match_key: tuple = ()
 _current_active_keys: list = []   # the 3 active keys for the current match
 _active_commentary_channel_id = None
 
+# Commentary is independent per match channel.  The legacy globals above are
+# kept for compatibility with older commands, but the background workers use
+# these channel-local contexts so matches cannot share timeline/history state.
+_commentary_channel_states: dict = {}
+_commentary_channel_tasks: dict = {}
+
+
+def _new_commentary_channel_state():
+    return {
+        "history": [],
+        "last_timeline_key": "",
+        "last_wicket_id": "",
+        "last_commentator_idx": 0,
+        "match_exclusion": {},
+        "current_match_key": (),
+        "current_active_keys": [],
+    }
+
 # ── Fixed exclamation openers for big moments ─────────────────────────────────
 _SIX_OPENERS = [
     "6️⃣ **SIX!**", "6️⃣ **SIX! Maximum!**", "6️⃣ **MASSIVE SIX!**", "6️⃣ **SIX! Into the stands!**",
@@ -379,6 +397,11 @@ def reset_commentary_state(channel_id):
     """Stop and clear commentary state for a completed channel match."""
     global _last_timeline_key, _last_wicket_id, _last_commentator_idx
     global _current_match_key, _current_active_keys, _active_commentary_channel_id
+
+    _commentary_channel_states.pop(channel_id, None)
+    task = _commentary_channel_tasks.pop(channel_id, None)
+    if task is not None and not task.done():
+        task.cancel()
 
     if (
         _active_commentary_channel_id is not None
@@ -443,13 +466,21 @@ def _format_player(user_id, discord_username: str, full_name: str, guild, bot) -
     return f"{emoji} {tag}" if emoji else tag
 
 
-def _get_active_commentators(team_a: str, team_b: str) -> list:
+def _get_active_commentators(team_a: str, team_b: str, channel_state=None) -> list:
     """
     Given two teams, build the pool of 4 commentators (2 per team, deduplicated),
     then return the 3 active ones for this match based on the exclusion rotation.
-    Updates global _current_active_keys and _current_match_key.
+    Updates the supplied channel-local state, or the legacy globals when no
+    channel state is supplied.
     """
     global _match_exclusion, _current_match_key, _current_active_keys, _last_commentator_idx
+
+    if channel_state is None:
+        match_exclusion = _match_exclusion
+        current_match_key = _current_match_key
+    else:
+        match_exclusion = channel_state.setdefault("match_exclusion", {})
+        current_match_key = channel_state.get("current_match_key", ())
 
     match_key = tuple(sorted([team_a, team_b]))
 
@@ -477,23 +508,31 @@ def _get_active_commentators(team_a: str, team_b: str) -> list:
         active = pool[:3]
     else:
         # pool has exactly 4; cycle exclusion through indices 0-3
-        if match_key not in _match_exclusion:
-            _match_exclusion[match_key] = 0
-        excl_idx = _match_exclusion[match_key] % len(pool)
+        if match_key not in match_exclusion:
+            match_exclusion[match_key] = 0
+        excl_idx = match_exclusion[match_key] % len(pool)
         active = [pool[i] for i in range(len(pool)) if i != excl_idx][:3]
 
     # If match changed, advance exclusion index for NEXT time this match pair plays
-    if match_key != _current_match_key:
-        if match_key in _match_exclusion:
-            _match_exclusion[match_key] = (_match_exclusion[match_key] + 1) % max(len(pool), 1)
+    if match_key != current_match_key:
+        if match_key in match_exclusion:
+            match_exclusion[match_key] = (match_exclusion[match_key] + 1) % max(len(pool), 1)
         else:
-            _match_exclusion[match_key] = 1  # first match used idx 0, next uses idx 1
-        _current_match_key = match_key
-        _current_active_keys = active
-        _last_commentator_idx = 0
+            match_exclusion[match_key] = 1  # first match used idx 0, next uses idx 1
+        if channel_state is None:
+            _current_match_key = match_key
+            _current_active_keys = active
+            _last_commentator_idx = 0
+        else:
+            channel_state["current_match_key"] = match_key
+            channel_state["current_active_keys"] = active
+            channel_state["last_commentator_idx"] = 0
         return active
 
-    _current_active_keys = active
+    if channel_state is None:
+        _current_active_keys = active
+    else:
+        channel_state["current_active_keys"] = active
     return active
 
 
@@ -603,20 +642,33 @@ def _build_match_block(state: dict, bot) -> str:
     return "\n".join(lines)
 
 
-async def _generate_commentary(state: dict, event: str, active_keys: list, bot) -> dict:
+async def _generate_commentary(
+    state: dict,
+    event: str,
+    active_keys: list,
+    bot,
+    channel_state=None,
+) -> dict:
     """Generate one commentary line from one of the 3 active commentators."""
     from playerlife import call_openrouter
 
     global _last_commentator_idx
 
+    history = channel_state["history"] if channel_state is not None else _history
+    commentator_idx = (
+        channel_state["last_commentator_idx"]
+        if channel_state is not None
+        else _last_commentator_idx
+    )
+
     # Rotate through the 3 active commentators in order
-    idx = _last_commentator_idx % len(active_keys)
+    idx = commentator_idx % len(active_keys)
     this_key = active_keys[idx]
     this_c   = COMMENTATORS[this_key]
 
     # The "other" commentator for reply context (previous speaker)
-    if _history:
-        other_key = _history[-1]['key']
+    if history:
+        other_key = history[-1]['key']
         other_c   = COMMENTATORS.get(other_key, this_c)
     else:
         other_c = this_c
@@ -632,14 +684,14 @@ async def _generate_commentary(state: dict, event: str, active_keys: list, bot) 
 
     is_reply = (
         opener is None
-        and bool(_history)
-        and _history[-1]['key'] != this_key
+        and bool(history)
+        and history[-1]['key'] != this_key
         and random.random() < 0.35
     )
 
     hist_block = ""
-    if _history:
-        hist_lines = [f"  {h['name']}: {h['text']}" for h in _history[-6:]]
+    if history:
+        hist_lines = [f"  {h['name']}: {h['text']}" for h in history[-6:]]
         hist_block = "Recent commentary exchange:\n" + "\n".join(hist_lines)
 
     match_block = _build_match_block(state, bot)
@@ -667,7 +719,7 @@ async def _generate_commentary(state: dict, event: str, active_keys: list, bot) 
         )
 
     reply_instr = (
-        f"You are REPLYING to {other_c['name']} who just said: \"{_history[-1]['text']}\". "
+        f"You are REPLYING to {other_c['name']} who just said: \"{history[-1]['text']}\". "
         "Acknowledge briefly then add your own angle."
         if is_reply
         else "Give your own live commentary for this moment."
