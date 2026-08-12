@@ -1528,24 +1528,88 @@ class MatchUpdates(commands.Cog):
         # many channels without waiting for the previous upload to finish.
         queue.put_nowait(message)
 
+    @staticmethod
+    def _is_coalescible_status_message(message):
+        """Return whether a queued message can safely be superseded.
+
+        The cricket bot commonly edits one status message several times while
+        Discord uploads are still in flight.  Older status cards are useless
+        once a newer edit exists, but wickets, nowstats, and final-result
+        announcements are distinct events and must never be discarded.
+        """
+        full_text = get_full_message_text(message)
+        normalized = full_text.lower()
+
+        if is_match_finished_message(full_text):
+            return False
+
+        if parse_nowstat_message(full_text):
+            return False
+
+        if (
+            re.search(r"\bis\s+(?:duck\s+)?out!?\b", normalized)
+            or "wicket" in normalized
+            or "dismissed" in normalized
+        ):
+            return False
+
+        return bool(message.embeds and any(embed.fields for embed in message.embeds))
+
+    def _drain_pending_messages(self, queue, first_message):
+        """Drain a queue burst, keeping only the newest status card.
+
+        Every dropped queue item is marked done immediately so queue.join()
+        and shutdown bookkeeping remain correct.
+        """
+        batch = [first_message]
+        while True:
+            try:
+                batch.append(queue.get_nowait())
+            except asyncio.QueueEmpty:
+                break
+
+        to_process = []
+        pending_status = None
+        dropped = 0
+        for message in batch:
+            if self._is_coalescible_status_message(message):
+                if pending_status is not None:
+                    queue.task_done()
+                    dropped += 1
+                pending_status = message
+                continue
+
+            if pending_status is not None:
+                to_process.append(pending_status)
+                pending_status = None
+            to_process.append(message)
+
+        if pending_status is not None:
+            to_process.append(pending_status)
+
+        if dropped:
+            print(f"⚡ Coalesced {dropped} stale live-status update(s)")
+        return to_process
+
     async def _channel_worker(self, channel_id, queue):
         """Process one channel in order while other channels run in parallel."""
         try:
             while True:
-                message = await queue.get()
-                try:
-                    await self._process_message(message)
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    print(
-                        f"❌ Match update worker failed for channel "
-                        f"{channel_id}: {exc}"
-                    )
-                    import traceback
-                    traceback.print_exc()
-                finally:
-                    queue.task_done()
+                first_message = await queue.get()
+                for message in self._drain_pending_messages(queue, first_message):
+                    try:
+                        await self._process_message(message)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        print(
+                            f"❌ Match update worker failed for channel "
+                            f"{channel_id}: {exc}"
+                        )
+                        import traceback
+                        traceback.print_exc()
+                    finally:
+                        queue.task_done()
         except asyncio.CancelledError:
             # The bot is unloading or restarting; do not leave a noisy task
             # exception behind.
