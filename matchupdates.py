@@ -13,6 +13,101 @@ import aiohttp
 # The bot user ID to monitor
 CRICKET_BOT_ID = 753191385296928808
 
+# Reuse one HTTP connector for all live-match image assets.  Creating a new
+# ClientSession for every flag/avatar forces a fresh connection and becomes
+# surprisingly expensive when several matches update together.
+_shared_http_session = None
+
+
+async def get_shared_http_session():
+    """Return the shared image-download session used by live updates."""
+    global _shared_http_session
+    if _shared_http_session is None or _shared_http_session.closed:
+        timeout = aiohttp.ClientTimeout(total=10, connect=3, sock_read=8)
+        connector = aiohttp.TCPConnector(
+            limit=100,
+            limit_per_host=25,
+            ttl_dns_cache=300,
+            enable_cleanup_closed=True,
+        )
+        _shared_http_session = aiohttp.ClientSession(
+            connector=connector,
+            timeout=timeout,
+        )
+    return _shared_http_session
+
+
+def _get_player_representative_row(user_id):
+    """Blocking DB helper; callers should run it with asyncio.to_thread."""
+    conn = sqlite3.connect('players.db', timeout=5)
+    try:
+        c = conn.cursor()
+        c.execute(
+            "SELECT player_name, username FROM player_representatives "
+            "WHERE user_id = ?",
+            (user_id,),
+        )
+        return c.fetchone()
+    finally:
+        conn.close()
+
+
+def _get_player_name_row(user_id):
+    """Blocking DB helper; callers should run it with asyncio.to_thread."""
+    conn = sqlite3.connect('players.db', timeout=5)
+    try:
+        c = conn.cursor()
+        c.execute(
+            "SELECT player_name FROM player_representatives WHERE user_id = ?",
+            (user_id,),
+        )
+        return c.fetchone()
+    finally:
+        conn.close()
+
+
+def _get_wicket_player_rows(
+    out_uid,
+    out_username,
+    bowler_uid,
+    bowler_username,
+    caught_by_user_id,
+):
+    """Resolve all wicket names in one blocking DB operation."""
+    conn = sqlite3.connect('players.db', timeout=5)
+    try:
+        c = conn.cursor()
+
+        def lookup(user_id, username):
+            if user_id:
+                c.execute(
+                    "SELECT player_name FROM player_representatives "
+                    "WHERE user_id = ?",
+                    (user_id,),
+                )
+            else:
+                c.execute(
+                    "SELECT player_name FROM player_representatives "
+                    "WHERE username = ?",
+                    (username,),
+                )
+            return c.fetchone()
+
+        out_result = lookup(out_uid, out_username)
+        bowler_result = (
+            lookup(bowler_uid, bowler_username)
+            if bowler_username
+            else None
+        )
+        caught_result = (
+            lookup(caught_by_user_id, None)
+            if caught_by_user_id
+            else None
+        )
+        return out_result, bowler_result, caught_result
+    finally:
+        conn.close()
+
 # MANUAL TEAM ABBREVIATIONS
 TEAM_ABBREVIATIONS = {
     "India": "IND",
@@ -399,16 +494,16 @@ async def fetch_discord_avatar(user_id, bot, size=40):
         if not user or not user.avatar:
             return None
         avatar_url = str(user.avatar.with_size(128).url)
-        async with aiohttp.ClientSession() as session:
-            async with session.get(avatar_url) as resp:
-                if resp.status == 200:
-                    data = await resp.read()
-                    avatar_img = Image.open(io.BytesIO(data)).convert('RGBA')
-                    avatar_img = avatar_img.resize((size, size), Image.Resampling.LANCZOS)
-                    mask = Image.new('L', (size, size), 0)
-                    ImageDraw.Draw(mask).ellipse((0, 0, size, size), fill=255)
-                    avatar_img.putalpha(mask)
-                    return avatar_img
+        session = await get_shared_http_session()
+        async with session.get(avatar_url) as resp:
+            if resp.status == 200:
+                data = await resp.read()
+                avatar_img = Image.open(io.BytesIO(data)).convert('RGBA')
+                avatar_img = avatar_img.resize((size, size), Image.Resampling.LANCZOS)
+                mask = Image.new('L', (size, size), 0)
+                ImageDraw.Draw(mask).ellipse((0, 0, size, size), fill=255)
+                avatar_img.putalpha(mask)
+                return avatar_img
     except Exception as e:
         print(f"Error fetching avatar: {e}")
     return None
@@ -421,11 +516,10 @@ async def create_nowstat_image(user_id, role, guild, bot):
         width, height = img.size
 
         # --- Get player info ---
-        conn = sqlite3.connect('players.db')
-        c = conn.cursor()
-        c.execute("SELECT player_name, username FROM player_representatives WHERE user_id = ?", (user_id,))
-        result = c.fetchone()
-        conn.close()
+        result = await asyncio.to_thread(
+            _get_player_representative_row,
+            user_id,
+        )
 
         if not result:
             print(f"❌ No player found for user_id {user_id}")
@@ -451,8 +545,14 @@ async def create_nowstat_image(user_id, role, guild, bot):
         except Exception as e:
             print(f"Error loading players.json: {e}")
 
-        stats = get_player_international_stats(user_id)
-        icc_rank = get_icc_ranking(user_id, "runs" if role == 'bat' else "wickets")
+        stats, icc_rank = await asyncio.gather(
+            asyncio.to_thread(get_player_international_stats, user_id),
+            asyncio.to_thread(
+                get_icc_ranking,
+                user_id,
+                "runs" if role == 'bat' else "wickets",
+            ),
+        )
 
         member = guild.get_member(user_id)
         discord_username = member.name if member else db_username
@@ -480,13 +580,13 @@ async def create_nowstat_image(user_id, role, guild, bot):
 
         if player_image_url:
             try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(player_image_url) as resp:
-                        if resp.status == 200:
-                            pdata = await resp.read()
-                            p_img = Image.open(io.BytesIO(pdata)).convert('RGBA')
-                            p_img = p_img.resize((player_img_size, player_img_size), Image.Resampling.LANCZOS)
-                            img.paste(p_img, (player_img_x, player_img_y), p_img)
+                session = await get_shared_http_session()
+                async with session.get(player_image_url) as resp:
+                    if resp.status == 200:
+                        pdata = await resp.read()
+                        p_img = Image.open(io.BytesIO(pdata)).convert('RGBA')
+                        p_img = p_img.resize((player_img_size, player_img_size), Image.Resampling.LANCZOS)
+                        img.paste(p_img, (player_img_x, player_img_y), p_img)
             except Exception as e:
                 print(f"Error loading player image: {e}")
 
@@ -507,13 +607,13 @@ async def create_nowstat_image(user_id, role, guild, bot):
                 flag_url = get_team_flag_url(team)
                 if flag_url:
                     try:
-                        async with aiohttp.ClientSession() as session:
-                            async with session.get(flag_url) as resp:
-                                if resp.status == 200:
-                                    fdata = await resp.read()
-                                    flag_img = Image.open(io.BytesIO(fdata)).convert('RGBA')
-                                    flag_img = flag_img.resize((flag_size, flag_size), Image.Resampling.LANCZOS)
-                                    img.paste(flag_img, (flag_x, flag_y), flag_img)
+                        session = await get_shared_http_session()
+                        async with session.get(flag_url) as resp:
+                            if resp.status == 200:
+                                fdata = await resp.read()
+                                flag_img = Image.open(io.BytesIO(fdata)).convert('RGBA')
+                                flag_img = flag_img.resize((flag_size, flag_size), Image.Resampling.LANCZOS)
+                                img.paste(flag_img, (flag_x, flag_y), flag_img)
                     except Exception as e:
                         print(f"Error loading flag: {e}")
 
@@ -974,14 +1074,14 @@ async def create_match_image(match_data, guild):
             flag_url = get_team_flag_url(batting_team)
             if flag_url:
                 try:
-                    async with aiohttp.ClientSession() as session:
-                        async with session.get(flag_url) as resp:
-                            if resp.status == 200:
-                                flag_data = await resp.read()
-                                flag_img = Image.open(io.BytesIO(flag_data)).convert('RGBA')
-                                flag_img = flag_img.resize((flag_size, flag_size), Image.Resampling.LANCZOS)
-                                flag_y = (batsman1_y + batsman2_y) // 2 - 20
-                                img.paste(flag_img, (left_x - 130, flag_y - 100), flag_img)
+                    session = await get_shared_http_session()
+                    async with session.get(flag_url) as resp:
+                        if resp.status == 200:
+                            flag_data = await resp.read()
+                            flag_img = Image.open(io.BytesIO(flag_data)).convert('RGBA')
+                            flag_img = flag_img.resize((flag_size, flag_size), Image.Resampling.LANCZOS)
+                            flag_y = (batsman1_y + batsman2_y) // 2 - 20
+                            img.paste(flag_img, (left_x - 130, flag_y - 100), flag_img)
                 except Exception as e:
                     print(f"   ⚠️ Error loading batting flag: {e}")
 
@@ -1024,13 +1124,13 @@ async def create_match_image(match_data, guild):
                 flag_url = get_team_flag_url(bowler_team)
                 if flag_url:
                     try:
-                        async with aiohttp.ClientSession() as session:
-                            async with session.get(flag_url) as resp:
-                                if resp.status == 200:
-                                    flag_data = await resp.read()
-                                    flag_img = Image.open(io.BytesIO(flag_data)).convert('RGBA')
-                                    flag_img = flag_img.resize((bowler_flag_size, bowler_flag_size), Image.Resampling.LANCZOS)
-                                    img.paste(flag_img, (right_x - 50, bowler_y - 100), flag_img)
+                        session = await get_shared_http_session()
+                        async with session.get(flag_url) as resp:
+                            if resp.status == 200:
+                                flag_data = await resp.read()
+                                flag_img = Image.open(io.BytesIO(flag_data)).convert('RGBA')
+                                flag_img = flag_img.resize((bowler_flag_size, bowler_flag_size), Image.Resampling.LANCZOS)
+                                img.paste(flag_img, (right_x - 50, bowler_y - 100), flag_img)
                     except Exception as e:
                         print(f"   ⚠️ Error loading flag: {e}")
 
@@ -1186,20 +1286,20 @@ async def create_wicket_image(wicket_data, guild):
                     print(f"❌ Error loading West Indies flag: {e}")
             elif flag_url:
                 try:
-                    async with aiohttp.ClientSession() as session:
-                        async with session.get(flag_url) as resp:
-                            if resp.status == 200:
-                                flag_data = await resp.read()
-                                flag_img = Image.open(io.BytesIO(flag_data)).convert('RGBA')
-                                flag_img = flag_img.resize((flag_size, flag_size), Image.Resampling.LANCZOS)
-                                mask = Image.new('L', (flag_size, flag_size), 0)
-                                mask_draw = ImageDraw.Draw(mask)
-                                mask_draw.ellipse((0, 0, flag_size, flag_size), fill=255)
-                                circular_flag = Image.new('RGBA', (flag_size, flag_size), (0, 0, 0, 0))
-                                circular_flag.paste(flag_img, (0, 0), mask)
-                                flag_x = width - flag_size - 50
-                                flag_y = (height // 2) - (flag_size // 2)
-                                img.paste(circular_flag, (flag_x, flag_y), circular_flag)
+                    session = await get_shared_http_session()
+                    async with session.get(flag_url) as resp:
+                        if resp.status == 200:
+                            flag_data = await resp.read()
+                            flag_img = Image.open(io.BytesIO(flag_data)).convert('RGBA')
+                            flag_img = flag_img.resize((flag_size, flag_size), Image.Resampling.LANCZOS)
+                            mask = Image.new('L', (flag_size, flag_size), 0)
+                            mask_draw = ImageDraw.Draw(mask)
+                            mask_draw.ellipse((0, 0, flag_size, flag_size), fill=255)
+                            circular_flag = Image.new('RGBA', (flag_size, flag_size), (0, 0, 0, 0))
+                            circular_flag.paste(flag_img, (0, 0), mask)
+                            flag_x = width - flag_size - 50
+                            flag_y = (height // 2) - (flag_size // 2)
+                            img.paste(circular_flag, (flag_x, flag_y), circular_flag)
                 except Exception as e:
                     print(f"❌ Error loading flag: {e}")
 
@@ -1403,18 +1503,65 @@ async def send_image_with_retry(channel, image_data, filename, content=None):
 class MatchUpdates(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        # Discord can emit several edits for the same cricket update in quick
-        # succession.  Keep image generation and deduplication atomic so two
-        # edits cannot both pass the checks before either one sends.
-        self._message_processing_lock = asyncio.Lock()
+        # Keep ordering within one match channel, but do not let a slow image
+        # render or Discord upload block every other live match.  Each channel
+        # gets its own worker and therefore its own independent pipeline.
+        self._channel_queues = {}
+        self._channel_workers = {}
 
     @commands.Cog.listener()
     async def on_message(self, message):
         if message.author.id != CRICKET_BOT_ID:
             return
 
-        async with self._message_processing_lock:
-            await self._process_message(message)
+        channel_id = message.channel.id
+        queue = self._channel_queues.get(channel_id)
+        if queue is None:
+            queue = asyncio.Queue()
+            self._channel_queues[channel_id] = queue
+            self._channel_workers[channel_id] = asyncio.create_task(
+                self._channel_worker(channel_id, queue),
+                name=f"match-updates-{channel_id}",
+            )
+
+        # Queue immediately and return.  Discord can dispatch updates for
+        # many channels without waiting for the previous upload to finish.
+        queue.put_nowait(message)
+
+    async def _channel_worker(self, channel_id, queue):
+        """Process one channel in order while other channels run in parallel."""
+        try:
+            while True:
+                message = await queue.get()
+                try:
+                    await self._process_message(message)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    print(
+                        f"❌ Match update worker failed for channel "
+                        f"{channel_id}: {exc}"
+                    )
+                    import traceback
+                    traceback.print_exc()
+                finally:
+                    queue.task_done()
+        except asyncio.CancelledError:
+            # The bot is unloading or restarting; do not leave a noisy task
+            # exception behind.
+            return
+
+    def cog_unload(self):
+        for worker in self._channel_workers.values():
+            worker.cancel()
+        self._channel_workers.clear()
+        self._channel_queues.clear()
+
+        global _shared_http_session
+        session = _shared_http_session
+        _shared_http_session = None
+        if session is not None and not session.closed:
+            self.bot.loop.create_task(session.close())
 
     async def _process_message(self, message):
         if message.author.id != CRICKET_BOT_ID:
@@ -1487,11 +1634,10 @@ class MatchUpdates(commands.Cog):
                 for k in old_keys:
                     del last_nowstats[k]
 
-                conn = sqlite3.connect('players.db')
-                c = conn.cursor()
-                c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (user_id,))
-                pname_result = c.fetchone()
-                conn.close()
+                pname_result = await asyncio.to_thread(
+                    _get_player_name_row,
+                    user_id,
+                )
 
                 if not pname_result:
                     print(f"   ⚠️ No player found for user_id {user_id}, skipping")
@@ -1554,20 +1700,26 @@ class MatchUpdates(commands.Cog):
             for k in old_keys:
                 del last_wickets[k]
 
-            conn = sqlite3.connect('players.db')
-            c = conn.cursor()
-
             out_uid = resolve_user_id_by_username(message.guild, wicket_info['out_username'])
-            if out_uid:
-                c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (out_uid,))
-            else:
-                c.execute("SELECT player_name FROM player_representatives WHERE username = ?",
-                          (wicket_info['out_username'],))
-            out_result = c.fetchone()
+            bowler_uid = (
+                resolve_user_id_by_username(
+                    message.guild,
+                    wicket_info['bowler_username'],
+                )
+                if wicket_info['bowler_username']
+                else None
+            )
+            out_result, bowler_result, caught_result = await asyncio.to_thread(
+                _get_wicket_player_rows,
+                out_uid,
+                wicket_info['out_username'],
+                bowler_uid,
+                wicket_info['bowler_username'],
+                wicket_info['caught_by_user_id'],
+            )
 
             if not out_result:
                 print(f"❌ Player not found for {wicket_info['out_username']}")
-                conn.close()
                 return
 
             out_player_full_name = out_result[0]
@@ -1575,28 +1727,14 @@ class MatchUpdates(commands.Cog):
             out_player_team = find_player_team(out_player_full_name)
 
             bowler_real_name = None
-            if wicket_info['bowler_username']:
-                bow_uid = resolve_user_id_by_username(message.guild, wicket_info['bowler_username'])
-                if bow_uid:
-                    c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (bow_uid,))
-                else:
-                    c.execute("SELECT player_name FROM player_representatives WHERE username = ?",
-                              (wicket_info['bowler_username'],))
-                bowler_result = c.fetchone()
-                if bowler_result:
-                    bowler_full_name = bowler_result[0]
-                    bowler_real_name = bowler_full_name.upper()
+            if bowler_result:
+                bowler_full_name = bowler_result[0]
+                bowler_real_name = bowler_full_name.upper()
 
             caught_by_real_name = None
-            if wicket_info['caught_by_user_id']:
-                c.execute("SELECT player_name FROM player_representatives WHERE user_id = ?",
-                          (wicket_info['caught_by_user_id'],))
-                caught_result = c.fetchone()
-                if caught_result:
-                    caught_full_name = caught_result[0]
-                    caught_by_real_name = caught_full_name.split()[0].upper()
-
-            conn.close()
+            if caught_result:
+                caught_full_name = caught_result[0]
+                caught_by_real_name = caught_full_name.split()[0].upper()
 
             if caught_by_real_name and bowler_real_name:
                 dismissal_text = f"c {caught_by_real_name} b {bowler_real_name}"
@@ -1677,11 +1815,10 @@ class MatchUpdates(commands.Cog):
                             print(f"⏭️ SKIPPING DUPLICATE POST-WICKET NOWSTAT (processed {time_diff:.1f}s ago)")
                             continue
 
-                    conn2 = sqlite3.connect('players.db')
-                    c2 = conn2.cursor()
-                    c2.execute("SELECT player_name FROM player_representatives WHERE user_id = ?", (uid,))
-                    pr = c2.fetchone()
-                    conn2.close()
+                    pr = await asyncio.to_thread(
+                        _get_player_name_row,
+                        uid,
+                    )
                     if not pr:
                         continue
                     print(f"   🎨 Post-wicket nowstat for {pr[0]} (role={role})")
@@ -1713,7 +1850,13 @@ class MatchUpdates(commands.Cog):
 
         print(f"✅ Embed has {len(embed.fields)} fields\n")
 
-        match_data = parse_embed_fields(embed, message.guild)
+        # Parsing performs player lookups in SQLite.  Keep that blocking work
+        # out of the event loop so uploads in other channels stay responsive.
+        match_data = await asyncio.to_thread(
+            parse_embed_fields,
+            embed,
+            message.guild,
+        )
 
         if not match_data:
             print("❌ No match data found")
