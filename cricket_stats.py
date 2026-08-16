@@ -20,6 +20,13 @@ LBI_SYNC_SOURCE_DB = "attached_assets/players_1786197675052.db"
 #   content: "CARD_CACHE uid:<user_id> ovr:<main_ovr>"
 #   attachment: the player card PNG
 
+# The cache channel is effectively immutable between card refreshes.  Keep its
+# index in memory so commands such as -drop do not replay the entire Discord
+# channel history for every invocation.
+_CARD_CACHE_MEMORY = None
+_CARD_CACHE_SCAN_LOCK = None
+
+
 # ========== HELPER FUNCTIONS ==========
 
 # ========== HELPER FUNCTIONS ==========
@@ -150,7 +157,7 @@ async def generate_stats_card(role, avatar_url, flag_url, main_ovr, bat_ovr, bow
 
 # ========== CARD CACHE HELPERS ==========
 
-async def scan_card_cache(bot):
+async def scan_card_cache(bot, force=False):
     """
     Scan the card-cache channel and return a dict:
         { user_id (int): {"message_id": int, "ovr": int, "url": str, "version": int} }
@@ -159,30 +166,43 @@ async def scan_card_cache(bot):
         CARD_CACHE uid:<id> ovr:<ovr>          ← legacy, treated as version 1
         CARD_CACHE uid:<id> ovr:<ovr> (N)      ← versioned; highest N wins per uid
     """
-    guild = bot.get_guild(CARD_CACHE_GUILD_ID)
-    if not guild:
-        return {}
-    channel = guild.get_channel(CARD_CACHE_CHANNEL_ID)
-    if not channel:
-        return {}
+    global _CARD_CACHE_MEMORY, _CARD_CACHE_SCAN_LOCK
 
-    cache = {}
-    pattern = re.compile(r"CARD_CACHE uid:(\d+) ovr:(\d+)(?: \((\d+)\))?")
-    async for msg in channel.history(limit=None):
-        m = pattern.search(msg.content)
-        if m and msg.attachments:
-            uid     = int(m.group(1))
-            ovr     = int(m.group(2))
-            version = int(m.group(3)) if m.group(3) else 1
-            existing = cache.get(uid)
-            if existing is None or version > existing["version"]:
-                cache[uid] = {
-                    "message_id": msg.id,
-                    "ovr":        ovr,
-                    "url":        msg.attachments[0].url,
-                    "version":    version,
-                }
-    return cache
+    if _CARD_CACHE_MEMORY is not None and not force:
+        return dict(_CARD_CACHE_MEMORY)
+
+    if _CARD_CACHE_SCAN_LOCK is None:
+        _CARD_CACHE_SCAN_LOCK = asyncio.Lock()
+
+    async with _CARD_CACHE_SCAN_LOCK:
+        if _CARD_CACHE_MEMORY is not None and not force:
+            return dict(_CARD_CACHE_MEMORY)
+
+        guild = bot.get_guild(CARD_CACHE_GUILD_ID)
+        if not guild:
+            return {}
+        channel = guild.get_channel(CARD_CACHE_CHANNEL_ID)
+        if not channel:
+            return {}
+
+        cache = {}
+        pattern = re.compile(r"CARD_CACHE uid:(\d+) ovr:(\d+)(?: \((\d+)\))?")
+        async for msg in channel.history(limit=None):
+            m = pattern.search(msg.content)
+            if m and msg.attachments:
+                uid     = int(m.group(1))
+                ovr     = int(m.group(2))
+                version = int(m.group(3)) if m.group(3) else 1
+                existing = cache.get(uid)
+                if existing is None or version > existing["version"]:
+                    cache[uid] = {
+                        "message_id": msg.id,
+                        "ovr":        ovr,
+                        "url":        msg.attachments[0].url,
+                        "version":    version,
+                    }
+        _CARD_CACHE_MEMORY = cache
+        return dict(cache)
 
 
 async def post_card_to_cache(bot, user_id, main_ovr, card_bytes, existing_msg_id=None, version=1):
@@ -211,6 +231,14 @@ async def post_card_to_cache(bot, user_id, main_ovr, card_bytes, existing_msg_id
         content=content,
         file=discord.File(card_bytes, filename=f"card_{user_id}.png"),
     )
+    global _CARD_CACHE_MEMORY
+    if _CARD_CACHE_MEMORY is not None and new_msg.attachments:
+        _CARD_CACHE_MEMORY[user_id] = {
+            "message_id": new_msg.id,
+            "ovr": main_ovr,
+            "url": new_msg.attachments[0].url,
+            "version": version,
+        }
     return new_msg
 
 
