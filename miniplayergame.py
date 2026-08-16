@@ -361,7 +361,7 @@ def calculate_squad_fantasy_points_for_match(matches, bot=None, stat_ids=None):
 
 
 def backfill_squad_fantasy_points_for_player(player_name: str):
-    """Award all already-recorded match points for one newly collected player.
+    """Award current-tournament points for one newly collected player.
 
     ``calculate_squad_fantasy_points_for_match`` is idempotent by match-stat ID,
     so this is safe both when a player is added after a match and when startup
@@ -370,6 +370,20 @@ def backfill_squad_fantasy_points_for_player(player_name: str):
     conn = _db()
     try:
         c = conn.cursor()
+        c.execute(
+            """
+            SELECT id
+            FROM tournaments
+            WHERE is_active=1 AND is_archived=0
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        )
+        tournament = c.fetchone()
+        if not tournament:
+            return {}
+        tournament_id = tournament[0]
+
         c.execute(
             """
             SELECT r.user_id
@@ -388,10 +402,10 @@ def backfill_squad_fantasy_points_for_player(player_name: str):
             SELECT id, user_id, runs, balls_faced, runs_conceded,
                    balls_bowled, wickets, not_out
             FROM match_stats
-            WHERE user_id = ?
+            WHERE user_id = ? AND tournament_id = ?
             ORDER BY id
             """,
-            (representative[0],),
+            (representative[0], tournament_id),
         )
         stat_rows = c.fetchall()
     finally:
@@ -406,13 +420,7 @@ def backfill_squad_fantasy_points_for_player(player_name: str):
 
 
 def backfill_squad_fantasy_points(tournament_id=None):
-    """Populate and repair squad fantasy totals from recorded match statistics.
-
-    The original startup sync stopped once its version marker existed. That
-    meant a player collected after a match could never receive that match's
-    points. Keep the versioned rebuild for scoring changes, then always run an
-    idempotent all-history repair; existing log rows prevent double-awarding.
-    """
+    """Rebuild squad fantasy totals from the current tournament only."""
     # Keep this helper safe to call during startup migrations or from a
     # one-off maintenance script before the cog constructor has run.
     init_minigame_db()
@@ -430,18 +438,13 @@ def backfill_squad_fantasy_points(tournament_id=None):
             row = c.fetchone()
             tournament_id = row[0] if row else None
 
-        marker = None
-        needs_rebuild = False
+        # The aggregate tables intentionally contain only the active
+        # tournament. Clear them before rebuilding so points from a completed
+        # tournament can never leak into the current leaderboard.
+        c.execute("DELETE FROM minigame_fantasy_points")
+        c.execute("DELETE FROM minigame_fantasy_points_log")
+        stat_rows = []
         if tournament_id is not None:
-            c.execute(
-                "SELECT scoring_version FROM minigame_fantasy_sync WHERE tournament_id=?",
-                (tournament_id,),
-            )
-            marker = c.fetchone()
-            needs_rebuild = not marker or marker[0] < FANTASY_SCORING_VERSION
-        if needs_rebuild:
-            c.execute("DELETE FROM minigame_fantasy_points")
-            c.execute("DELETE FROM minigame_fantasy_points_log")
             c.execute(
                 """
                 SELECT id, user_id, runs, balls_faced, runs_conceded,
@@ -453,8 +456,6 @@ def backfill_squad_fantasy_points(tournament_id=None):
                 (tournament_id,),
             )
             stat_rows = c.fetchall()
-        else:
-            stat_rows = []
         conn.commit()
     finally:
         conn.close()
@@ -466,32 +467,6 @@ def backfill_squad_fantasy_points(tournament_id=None):
         awarded = calculate_squad_fantasy_points_for_match(
             matches, stat_ids=stat_ids
         )
-
-    # Repair late-collected squads from every recorded match. This is
-    # intentionally broader than the active tournament because the command
-    # should grant old points regardless of when the player was collected.
-    all_conn = _db()
-    try:
-        all_c = all_conn.cursor()
-        all_c.execute(
-            """
-            SELECT id, user_id, runs, balls_faced, runs_conceded,
-                   balls_bowled, wickets, not_out
-            FROM match_stats
-            ORDER BY id
-            """
-        )
-        all_rows = all_c.fetchall()
-    finally:
-        all_conn.close()
-
-    if all_rows:
-        repaired = calculate_squad_fantasy_points_for_match(
-            [row[1:] for row in all_rows],
-            stat_ids=[row[0] for row in all_rows],
-        )
-        for user_id, points in repaired.items():
-            awarded[user_id] = awarded.get(user_id, 0) + points
 
     conn = _db()
     try:
@@ -512,9 +487,9 @@ def backfill_squad_fantasy_points(tournament_id=None):
         conn.close()
 
     return {
-        "status": "synced" if needs_rebuild else "repaired",
+        "status": "synced" if tournament_id is not None else "no_active_tournament",
         "tournament_id": tournament_id,
-        "stat_rows": len(all_rows),
+        "stat_rows": len(stat_rows),
         "owners": len(awarded),
         "awarded": sum(awarded.values()),
     }
