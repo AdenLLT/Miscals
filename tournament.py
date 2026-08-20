@@ -6073,6 +6073,119 @@ class Tournament(commands.Cog):
         embed.set_footer(text=f"Edited by {ctx.author.name}")
         await ctx.send(embed=embed)
 
+    @commands.command(name="edittourney", help="[ADMIN] Edit a team's stat in the current tournament leaderboard")
+    @commands.has_permissions(administrator=True)
+    async def edittourney_command(self, ctx, *, args: str = None):
+        """
+        Edit any field shown in the current tournament's -pts leaderboard.
+        Usage: -edittourney <team_name> | <field> | <value>
+        Fields: points/pts, matches_played/m/mp, wins/w, losses/l, nrr, fpp, qualified/q
+        Example: -edittourney India | points | 6
+        """
+        if not args:
+            await ctx.send(
+                "**Usage:** `-edittourney <team_name> | <field> | <value>`\n"
+                "**Fields:** `points`/`pts`, `matches_played`/`m`, `wins`/`w`, "
+                "`losses`/`l`, `nrr`, `fpp`, `qualified`/`q`\n"
+                "**Example:** `-edittourney India | points | 6`"
+            )
+            return
+
+        parts = [part.strip() for part in args.split("|")]
+        if len(parts) != 3:
+            await ctx.send(
+                "❌ Please separate the 3 values with `|`.\n"
+                "**Usage:** `-edittourney <team_name> | <field> | <value>`"
+            )
+            return
+
+        team_name, field, raw_value = parts
+        field = field.lower()
+        field_aliases = {
+            "pts": "points",
+            "m": "matches_played",
+            "mp": "matches_played",
+            "w": "wins",
+            "l": "losses",
+            "q": "qualified",
+        }
+        field = field_aliases.get(field, field)
+        allowed_fields = {
+            "points", "matches_played", "wins", "losses",
+            "nrr", "fpp", "qualified"
+        }
+        if field not in allowed_fields:
+            allowed = ", ".join(sorted(allowed_fields))
+            await ctx.send(f"❌ Invalid field `{field}`. Allowed: `{allowed}`")
+            return
+
+        try:
+            value = float(raw_value) if field == "nrr" else int(raw_value)
+        except ValueError:
+            await ctx.send(f"❌ Invalid value `{raw_value}` for field `{field}`.")
+            return
+
+        if field == "qualified" and value not in (0, 1):
+            await ctx.send("❌ `qualified` must be `0` (unqualified) or `1` (qualified).")
+            return
+
+        tournament = get_active_tournament()
+        if not tournament:
+            await ctx.send("❌ No active tournament found!")
+            return
+
+        tournament_id, tournament_name, _ = tournament
+        conn = sqlite3.connect('players.db')
+        c = conn.cursor()
+
+        try:
+            c.execute(
+                """SELECT id, team_name
+                   FROM tournament_teams
+                   WHERE tournament_id = ? AND LOWER(team_name) LIKE ?""",
+                (tournament_id, f"%{team_name.lower()}%")
+            )
+            team_rows = c.fetchall()
+            if not team_rows:
+                await ctx.send(
+                    f"❌ No team matching **{team_name}** found in the active "
+                    f"tournament (**{tournament_name}**)."
+                )
+                return
+            if len(team_rows) > 1:
+                names = "\n".join(f"• {row[1]}" for row in team_rows)
+                await ctx.send(
+                    f"❌ Multiple teams matched. Be more specific:\n{names}"
+                )
+                return
+
+            row_id, team_display = team_rows[0]
+            c.execute(f"SELECT {field} FROM tournament_teams WHERE id = ?", (row_id,))
+            old_value = c.fetchone()[0]
+
+            c.execute(
+                f"UPDATE tournament_teams SET {field} = ? WHERE id = ?",
+                (value, row_id)
+            )
+            conn.commit()
+        except Exception as exc:
+            await ctx.send(f"❌ Error updating tournament team: {exc}")
+            return
+        finally:
+            conn.close()
+
+        embed = discord.Embed(
+            title="✅ Tournament Team Updated",
+            color=0x00CC66
+        )
+        embed.add_field(name="Tournament", value=tournament_name, inline=True)
+        embed.add_field(name="Team", value=team_display, inline=True)
+        embed.add_field(name="Field", value=field, inline=True)
+        embed.add_field(name="Old Value", value=str(old_value), inline=True)
+        embed.add_field(name="New Value", value=str(value), inline=True)
+        embed.set_footer(text=f"Edited by {ctx.author.name}")
+        await ctx.send(embed=embed)
+
 
 async def setup(bot):
     await bot.add_cog(Tournament(bot))
