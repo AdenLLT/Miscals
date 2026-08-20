@@ -200,6 +200,55 @@ def get_squad_fantasy_breakdown(user_id: int):
         conn.close()
 
 
+def remove_zero_point_squad_players(user_id: int):
+    """Remove this user's squad players whose cumulative fantasy total is zero."""
+    conn = _db()
+    try:
+        c = conn.cursor()
+        c.execute(
+            """
+            SELECT s.player_name
+            FROM minigame_squads AS s
+            LEFT JOIN minigame_fantasy_points AS p
+              ON p.user_id = s.user_id AND p.player_name = s.player_name
+            WHERE s.user_id = ?
+              AND COALESCE(p.total_points, 0) = 0
+            ORDER BY s.player_name
+            """,
+            (user_id,),
+        )
+        player_names = [row[0] for row in c.fetchall()]
+        if not player_names:
+            return []
+
+        placeholders = ",".join("?" for _ in player_names)
+        c.execute(
+            f"""
+            DELETE FROM minigame_squads
+            WHERE user_id = ? AND player_name IN ({placeholders})
+            """,
+            (user_id, *player_names),
+        )
+        # Only remove the now-unused zero-value cache rows. Keep scoring logs
+        # intact so re-adding a player cannot award the same match twice.
+        c.execute(
+            f"""
+            DELETE FROM minigame_fantasy_points
+            WHERE user_id = ?
+              AND player_name IN ({placeholders})
+              AND total_points = 0
+            """,
+            (user_id, *player_names),
+        )
+        conn.commit()
+        return player_names
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def get_squad_fantasy_leaderboard():
     """Return all minigame squads ordered by their cumulative fantasy points."""
     conn = _db()
@@ -1075,6 +1124,29 @@ class MiniPlayerGame(commands.Cog):
             f"📋 {ctx.author.display_name}'s Squad",
         )
         await ctx.send(embed=embed)
+
+    @commands.command(
+        name="kickfantasy",
+        help="Remove your fantasy squad players who have 0 points.",
+    )
+    async def kickfantasy_command(self, ctx):
+        """Remove only this user's zero-point fantasy squad players."""
+        user_id = ctx.author.id
+        removed_players = remove_zero_point_squad_players(user_id)
+        if not removed_players:
+            return await ctx.send(
+                "✅ You have no fantasy squad players sitting at **0 points**."
+            )
+
+        # Do not leave captain/VC pointing at a player removed above.
+        clear_invalid_captains(user_id)
+        player_list = "\n".join(f"• **{name}**" for name in removed_players)
+        await ctx.send(
+            f"🧹 Removed **{len(removed_players)}** zero-point player(s) "
+            "from your fantasy squad:\n"
+            f"{player_list}\n\n"
+            "Your fantasy scoring history and all cricket leaderboards were not changed."
+        )
 
     # ── -fantasy ──────────────────────────────────────────────
     @commands.command(name="fantasy", help="View your squad's fantasy points.")
