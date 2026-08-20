@@ -3235,19 +3235,23 @@ class CricketStats(commands.Cog):
 
 
     @commands.command(
-        name="unsyncaddstats",
-        help="[ADMIN] Reverse stats added by syncaddstats",
+        name="unaddstatsnopts",
+        aliases=["unsyncaddstats"],
+        help="[ADMIN] Remove current-tournament player stats without changing the points leaderboard",
     )
     @commands.has_any_role(1452028308735922339)
     async def unsyncaddstats_command(self, ctx):
-        """Remove tournament-only rows previously added by ``-syncaddstats``."""
+        """Remove tournament-only player stats without changing tournament standings."""
         tournament = get_active_tournament()
         if not tournament:
             await ctx.send("❌ No active tournament is running.")
             return
 
         if not ctx.message.reference:
-            await ctx.send("❌ Please reply to the message used with `-syncaddstats`!")
+            await ctx.send(
+                "❌ Please reply to the message containing the player stats "
+                "you want to remove!"
+            )
             return
 
         replied_msg = await ctx.channel.fetch_message(
@@ -3321,9 +3325,9 @@ class CricketStats(commands.Cog):
 
         not_found = len(matches) - removed
         response = (
-            f"✅ **Reversed {removed} synchronized player stat record(s)**\n"
+            f"✅ **Removed {removed} tournament player stat record(s)**\n"
             f"🏏 Tournament: **{tournament[1]}**\n"
-            f"🚫 No standings, match result, or international records were changed"
+            f"🚫 Points leaderboard, match results, and international records were not changed"
         )
         if not_found:
             response += (
