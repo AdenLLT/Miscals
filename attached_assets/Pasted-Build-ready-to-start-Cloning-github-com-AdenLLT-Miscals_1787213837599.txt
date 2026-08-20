@@ -1,0 +1,50 @@
+Build ready to start ▶️
+>> Cloning github.com/AdenLLT/Miscals.git commit sha 66cc0acac33ad842b01e86316c0990de7b1a3728 into /builder/workspace
+Initialized empty Git repository in /builder/workspace/.git/
+From https://github.com/AdenLLT/Miscals
+ * branch            66cc0acac33ad842b01e86316c0990de7b1a3728 -> FETCH_HEAD
+HEAD is now at 66cc0ac Implement core logic in tournament script
+Starting Docker daemon...
+Waiting for the Docker daemon to start...
+done
+Timer: Analyzer started at 2026-08-20T08:05:06Z
+Timer: Analyzer ran for 2.765151654s and ended at 2026-08-20T08:05:08Z
+Timer: Detector started at 2026-08-20T08:05:09Z
+heroku/python   0.0.0
+heroku/procfile 4.2.1
+Timer: Detector ran for 29.077806ms and ended at 2026-08-20T08:05:09Z
+Timer: Restorer started at 2026-08-20T08:05:10Z
+Skipping buildpack layer analysis
+Timer: Restorer ran for 756.899565ms and ended at 2026-08-20T08:05:10Z
+Timer: Builder started at 2026-08-20T08:05:11Z
+-----> CNB Shim: Running bin/compile
+
+[1;31m !     Error: Multiple Python package manager files were found.[0m
+[1;31m !     [0m
+[1;31m !     Exactly one package manager file should be present in your app's[0m
+[1;31m !     source code, however, several were found:[0m
+[1;31m !     [0m
+[1;31m !     requirements.txt (pip)[0m
+[1;31m !     poetry.lock (Poetry)[0m
+[1;31m !     [0m
+[1;31m !     Previously, the buildpack guessed which package manager to use[0m
+[1;31m !     and installed your dependencies with the first package manager[0m
+[1;31m !     listed above. However, this implicit behaviour was deprecated[0m
+[1;31m !     in November 2024 and is now no longer supported.[0m
+[1;31m !     [0m
+[1;31m !     You must decide which package manager you want to use with your[0m
+[1;31m !     app, and then delete the file(s) and any config from the others.[0m
+[1;31m !     [0m
+[1;31m !     If you aren't sure which package manager to use, we recommend[0m
+[1;31m !     trying uv, since it supports lockfiles, is extremely fast, and[0m
+[1;31m !     is actively maintained by a full-time team:[0m
+[1;31m !     https://docs.astral.sh/uv/[0m
+[1;31m !     [0m
+[1;31m !     Note: If you use a third-party uv or Poetry buildpack, you must[0m
+[1;31m !     remove it from your app, since it's no longer required and the[0m
+[1;31m !     requirements.txt file it generates will trigger this error. See:[0m
+[1;31m !     https://devcenter.heroku.com/articles/managing-buildpacks#remove-classic-buildpacks[0m
+
+Timer: Builder ran for 86.569903ms and ended at 2026-08-20T08:05:11Z
+[31;1mERROR: [0mfailed to build: exit status 1
+Build failed ❌
