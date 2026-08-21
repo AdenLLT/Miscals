@@ -329,45 +329,6 @@ class TeamStatsView(View):
                                     value=played_text,
                                     inline=False)
 
-                # ── Active series fixtures for this team ──────────────────
-                try:
-                    sc = sqlite3.connect('players.db')
-                    sc2 = sc.cursor()
-                    sc2.execute("SELECT id, name, teams FROM series WHERE is_active = 1 ORDER BY id DESC")
-                    for sid, sname, steams_json in sc2.fetchall():
-                        try:
-                            steams = json.loads(steams_json) if steams_json else []
-                        except Exception:
-                            steams = []
-                        if self.team_name not in steams:
-                            continue
-                        sc2.execute(
-                            """SELECT match_number, team1, team2, channel_id, is_played, winner
-                               FROM series_fixtures
-                               WHERE series_id = ? AND (team1 = ? OR team2 = ?)
-                               ORDER BY match_number ASC""",
-                            (sid, self.team_name, self.team_name))
-                        sfixtures = sc2.fetchall()
-                        if not sfixtures:
-                            continue
-                        series_text = ""
-                        for match_num, t1, t2, ch_id, is_played, winner in sfixtures:
-                            opp = t2 if t1 == self.team_name else t1
-                            opp_flag = get_team_flag(opp)
-                            if is_played:
-                                if winner == self.team_name:
-                                    series_text += f"🟢 Match {match_num} vs {opp_flag} **{opp}** • ✅ Won\n"
-                                elif winner:
-                                    series_text += f"🔴 Match {match_num} vs {opp_flag} **{opp}** • ❌ Lost\n"
-                                else:
-                                    series_text += f"⚪ Match {match_num} vs {opp_flag} **{opp}** • Played\n"
-                            else:
-                                series_text += f"🏏 Match {match_num} vs {opp_flag} **{opp}** • <#{ch_id}>\n"
-                        embed.add_field(name=f"📋 Series: {sname}", value=series_text, inline=False)
-                    sc.close()
-                except Exception:
-                    pass
-
                 total_pages = 1 + (
                     (total_played - 1) // matches_per_page + 1) + (
                         (total_upcoming - 1) // matches_per_page +
@@ -5015,132 +4976,68 @@ class Tournament(commands.Cog):
     @commands.command(name="overview",
                       help="View all matches and stats for a team")
     async def status(self, ctx, *, team_name: str = None):
-        """View all matches (played and scheduled) and statistics for a specific team"""
+        """View active-tournament matches and statistics for a specific team."""
 
+        tournament = get_active_tournament()
+        if not tournament:
+            await ctx.send("❌ No active tournament found!")
+            return
+
+        tournament_id, tournament_name, _ = tournament
         if not team_name:
             # Try to get user's team
             team_name = get_user_team(ctx.author.id)
             if not team_name:
                 await ctx.send(
-                    "❌ Please specify a team name or claim a player first!\nUsage: `-status <team name>`"
+                    "❌ Please specify a team name or claim a player first!\n"
+                    "Usage: `-overview <team name>`"
                 )
                 return
 
-        # Normalize team name - find best match
-        all_teams = [
-            "India", "Pakistan", "Australia", "England", "New Zealand",
-            "South Africa", "West Indies", "Sri Lanka", "Bangladesh",
-            "Afghanistan", "Netherlands", "Scotland", "Ireland", "Zimbabwe",
-            "UAE", "Canada", "USA"
-        ]
+        # Resolve against teams in the active tournament, rather than a
+        # hardcoded international-team list. This includes teams such as
+        # Malaysia when they are participating in the tournament.
+        conn = sqlite3.connect('players.db')
+        c = conn.cursor()
+        c.execute(
+            """SELECT team_name
+               FROM tournament_teams
+               WHERE tournament_id = ?
+               ORDER BY team_name""",
+            (tournament_id,)
+        )
+        tournament_teams = [row[0] for row in c.fetchall()]
+        conn.close()
 
-        # Case-insensitive matching
         team_name_lower = team_name.lower()
         matched_team = None
 
-        # Try exact match first
-        for team in all_teams:
+        # Try exact match first, then a unique partial match.
+        for team in tournament_teams:
             if team.lower() == team_name_lower:
                 matched_team = team
                 break
 
-        # Try partial match
         if not matched_team:
-            for team in all_teams:
-                if team_name_lower in team.lower():
-                    matched_team = team
-                    break
+            partial_matches = [
+                team for team in tournament_teams
+                if team_name_lower in team.lower()
+            ]
+            if len(partial_matches) == 1:
+                matched_team = partial_matches[0]
 
         if not matched_team:
+            available = ", ".join(tournament_teams) if tournament_teams else "none"
             await ctx.send(
-                f"❌ Team '{team_name}' not found! Please check the spelling.")
+                f"❌ Team **{team_name}** is not in **{tournament_name}**.\n"
+                f"Available tournament teams: {available}"
+            )
             return
 
-        tournament = get_active_tournament()
-        in_tournament = False
-        if tournament:
-            tournament_id = tournament[0]
-            conn = sqlite3.connect('players.db')
-            c = conn.cursor()
-            c.execute(
-                "SELECT team_name FROM tournament_teams WHERE tournament_id = ? AND team_name = ?",
-                (tournament_id, matched_team))
-            in_tournament = bool(c.fetchone())
-            conn.close()
-
-        if in_tournament:
-            # Full tournament overview (also shows series on page 0 via create_team_stats_embed)
-            view = TeamStatsView(ctx, matched_team, self.bot)
-            embed, _ = await view.create_team_stats_embed(0, "overview")
-            view.update_buttons()
-            view.message = await ctx.send(embed=embed, view=view)
-        else:
-            # No tournament — try series-only overview
-            conn = sqlite3.connect('players.db')
-            c = conn.cursor()
-            c.execute("SELECT id, name, teams FROM series WHERE is_active = 1 ORDER BY id DESC")
-            all_active_series = c.fetchall()
-
-            team_series = []
-            for sid, sname, steams_json in all_active_series:
-                try:
-                    steams = json.loads(steams_json) if steams_json else []
-                except Exception:
-                    steams = []
-                if matched_team in steams:
-                    c.execute(
-                        """SELECT match_number, team1, team2, channel_id, is_played, winner
-                           FROM series_fixtures
-                           WHERE series_id = ? AND (team1 = ? OR team2 = ?)
-                           ORDER BY match_number ASC""",
-                        (sid, matched_team, matched_team))
-                    sfixtures = c.fetchall()
-                    team_series.append((sid, sname, sfixtures))
-            conn.close()
-
-            if not team_series:
-                await ctx.send(
-                    f"❌ **{matched_team}** is not in any active tournament or series!"
-                )
-                return
-
-            flag = get_team_flag(matched_team)
-            embed = discord.Embed(
-                title=f"{flag} {matched_team} — Overview",
-                color=get_team_color(matched_team)
-            )
-
-            for sid, sname, sfixtures in team_series:
-                if not sfixtures:
-                    embed.add_field(name=f"📋 Series: {sname}", value="No fixtures scheduled yet.", inline=False)
-                    continue
-                series_text = ""
-                wins = losses = 0
-                for match_num, t1, t2, ch_id, is_played, winner in sfixtures:
-                    opp = t2 if t1 == matched_team else t1
-                    opp_flag = get_team_flag(opp)
-                    if is_played:
-                        if winner == matched_team:
-                            series_text += f"🟢 Match {match_num} vs {opp_flag} **{opp}** • ✅ Won\n"
-                            wins += 1
-                        elif winner:
-                            series_text += f"🔴 Match {match_num} vs {opp_flag} **{opp}** • ❌ Lost\n"
-                            losses += 1
-                        else:
-                            series_text += f"⚪ Match {match_num} vs {opp_flag} **{opp}** • Played\n"
-                    else:
-                        series_text += f"🏏 Match {match_num} vs {opp_flag} **{opp}** • <#{ch_id}>\n"
-
-                played_count = wins + losses
-                total = len(sfixtures)
-                header = f"W {wins} – L {losses} | {played_count}/{total} played"
-                embed.add_field(
-                    name=f"📋 {sname} — {header}",
-                    value=series_text or "No fixtures yet.",
-                    inline=False
-                )
-
-            await ctx.send(embed=embed)
+        view = TeamStatsView(ctx, matched_team, self.bot)
+        embed, _ = await view.create_team_stats_embed(0, "overview")
+        view.update_buttons()
+        view.message = await ctx.send(embed=embed, view=view)
 
     @commands.command(name="resetround",
                       aliases=["rr"],
