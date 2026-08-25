@@ -3777,6 +3777,70 @@ class Tournament(commands.Cog):
 
         await ctx.send(embed=embed)
 
+    @commands.command(
+        name="resetstadiumsstate",
+        help="[ADMIN] Reset stadium assignments for unplayed fixtures in the active tournament",
+    )
+    @commands.has_permissions(administrator=True)
+    async def resetstadiumsstate_command(self, ctx):
+        """Clear stadium assignments without deleting unplayed fixtures or results."""
+        tournament = get_active_tournament()
+        if not tournament:
+            await ctx.send("❌ No active tournament found!")
+            return
+
+        tournament_id, tournament_name, _ = tournament
+        conn = sqlite3.connect("players.db")
+        c = conn.cursor()
+        try:
+            c.execute(
+                """
+                SELECT round_number, COUNT(*)
+                FROM fixtures
+                WHERE tournament_id = ?
+                  AND is_played = 0
+                  AND channel_id IS NOT NULL
+                GROUP BY round_number
+                ORDER BY round_number
+                """,
+                (tournament_id,),
+            )
+            assignments = c.fetchall()
+            cleared = sum(count for _, count in assignments)
+
+            c.execute(
+                """
+                UPDATE fixtures
+                SET channel_id = NULL
+                WHERE tournament_id = ?
+                  AND is_played = 0
+                  AND channel_id IS NOT NULL
+                """,
+                (tournament_id,),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+        if assignments:
+            rounds = ", ".join(
+                "special round" if round_number == -1
+                else f"Round {round_number}"
+                for round_number, _ in assignments
+            )
+            details = f"\nCleared from: **{rounds}**"
+        else:
+            details = ""
+
+        await ctx.send(
+            f"✅ Reset **{cleared}** stadium assignment(s) in **{tournament_name}**."
+            f"{details}\n"
+            "Fixtures and match results were kept. Stadiums can now be selected again."
+        )
+
     @commands.command(name="fixturemake", aliases=["fm"], help="[ADMIN] Manually create a single fixture")
     @commands.has_permissions(administrator=True)
     async def fixturemake(self, ctx, team1: str, team2: str, *, special_round: str = None):
