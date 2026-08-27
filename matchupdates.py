@@ -761,7 +761,7 @@ def resolve_user_id_by_username(guild, username):
     return None
 
 
-def parse_embed_fields(embed, guild=None):
+def parse_embed_fields(embed, guild=None, previous_match_state=None):
     """Parse the embed fields to extract match data - FIXED VERSION"""
 
     data = {}
@@ -781,7 +781,14 @@ def parse_embed_fields(embed, guild=None):
         print(f"   📍 Innings: {innings}")
 
         # --- 2. EXTRACT ALL TEAM SCORES ---
-        team_pattern = r'([A-Za-z\s]+)\s*[^\:]*:\s*(\d+/\d+)\s*\((\d+\.\d+)\s*overs\)'
+        # Score fields are assembled one per line above.  Anchoring this
+        # pattern to a line prevents a preceding "Innings:" field from being
+        # consumed as part of the first team's name.
+        team_pattern = (
+            r'(?m)^\s*([A-Za-z][A-Za-z\s]*)\s*'
+            r'(?:[^:\n]*:\s*)?(\d+/\d+)\s*'
+            r'\((\d+\.\d+)\s*overs\)'
+        )
         all_teams = re.findall(team_pattern, full_text)
 
         if len(all_teams) < 2:
@@ -805,18 +812,40 @@ def parse_embed_fields(embed, guild=None):
 
                 data['team_a_score'] = batting_team_info['score']
                 data['overs'] = str(batting_team_info['overs'])
+                # Keep the innings-one identity so it remains stable when the
+                # chasing team's overs later become larger.  Sorting by overs
+                # is not safe once innings two is underway.
+                data['innings1_team_name'] = batting_team_name
                 print(f"   ✅ Innings 1: {batting_team_name} is batting: {batting_team_info['score']} ({batting_team_info['overs']})")
 
             elif innings == "TWO":
-                innings1_team_name = teams_sorted[0][0]
-                innings1_team_info = teams_sorted[0][1]
+                # The old implementation selected innings one by taking the
+                # team with the most overs.  That reverses the teams as soon
+                # as the chasing side passes innings one's over count.
+                innings1_team_name = (
+                    previous_match_state or {}
+                ).get('innings1_team_name')
 
-                batting_team_name = teams_sorted[1][0]
-                batting_team_info = teams_sorted[1][1]
+                if innings1_team_name in team_info:
+                    batting_team_name = next(
+                        team_name
+                        for team_name in team_info
+                        if team_name != innings1_team_name
+                    )
+                else:
+                    # This can happen after a bot restart if the first
+                    # innings update was not seen.  Preserve the previous
+                    # behavior as a best-effort fallback for that case.
+                    innings1_team_name = teams_sorted[0][0]
+                    batting_team_name = teams_sorted[1][0]
+
+                innings1_team_info = team_info[innings1_team_name]
+                batting_team_info = team_info[batting_team_name]
 
                 data['team_a_score'] = batting_team_info['score']
                 data['overs'] = str(batting_team_info['overs'])
 
+                data['innings1_team_name'] = innings1_team_name
                 data['innings2_batting_team'] = batting_team_name
                 data['innings2_opposition_team'] = innings1_team_name
 
@@ -1916,10 +1945,14 @@ class MatchUpdates(commands.Cog):
 
         # Parsing performs player lookups in SQLite.  Keep that blocking work
         # out of the event loop so uploads in other channels stay responsive.
+        channel_id = message.channel.id
+        previous_match_state = _live_match_states.get(channel_id)
+
         match_data = await asyncio.to_thread(
             parse_embed_fields,
             embed,
             message.guild,
+            previous_match_state,
         )
 
         if not match_data:
@@ -1929,8 +1962,6 @@ class MatchUpdates(commands.Cog):
         if 'timeline' not in match_data or not match_data['timeline']:
             print("❌ No timeline found")
             return
-
-        channel_id = message.channel.id
 
         current_timeline = '|'.join(match_data['timeline'])
         source_message_key = f"{message.id}|{full_message_text}"
