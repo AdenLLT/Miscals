@@ -2318,72 +2318,6 @@ class SameFixturesRepostView(View):
             old_channel_id = self.fixtures[self.selected_fixture_index][2]
             team1, team2 = self.fixtures[self.selected_fixture_index][:2]
 
-            if new_channel_id != old_channel_id:
-                # Keep the same uniqueness rules used during fixture creation.
-                if any(
-                    index != self.selected_fixture_index
-                    and fixture[2] == new_channel_id
-                    for index, fixture in enumerate(self.fixtures)
-                ):
-                    return await interaction.response.send_message(
-                        "❌ That stadium is already assigned to another fixture "
-                        "in this repost. Choose a different stadium.",
-                        ephemeral=True,
-                    )
-
-                conn = sqlite3.connect("players.db")
-                c = conn.cursor()
-                c.execute(
-                    """SELECT 1 FROM fixtures
-                       WHERE tournament_id = ? AND round_number = ?
-                         AND channel_id = ?
-                         AND NOT ((team1 = ? AND team2 = ?)
-                                  OR (team1 = ? AND team2 = ?))
-                       LIMIT 1""",
-                    (
-                        self.tournament_id,
-                        self.round_number,
-                        new_channel_id,
-                        team1,
-                        team2,
-                        team2,
-                        team1,
-                    ),
-                )
-                used_by_round_fixture = c.fetchone()
-                c.execute(
-                    """SELECT 1 FROM fixtures
-                       WHERE tournament_id = ? AND round_number != ?
-                         AND channel_id = ?
-                         AND ((team1 = ? AND team2 = ?)
-                              OR (team1 = ? AND team2 = ?))
-                       LIMIT 1""",
-                    (
-                        self.tournament_id,
-                        self.round_number,
-                        new_channel_id,
-                        team1,
-                        team2,
-                        team2,
-                        team1,
-                    ),
-                )
-                used_by_previous_match = c.fetchone()
-                conn.close()
-
-                if used_by_round_fixture:
-                    return await interaction.response.send_message(
-                        "❌ That stadium is already assigned to another fixture "
-                        "in this round. Choose a different stadium.",
-                        ephemeral=True,
-                    )
-                if used_by_previous_match:
-                    return await interaction.response.send_message(
-                        "❌ This matchup used that stadium in an earlier round. "
-                        "Choose a different stadium.",
-                        ephemeral=True,
-                    )
-
             self.fixtures[self.selected_fixture_index][2] = new_channel_id
             self.fixtures[self.selected_fixture_index][3] = MATCH_CHANNELS[
                 new_channel_id
@@ -2485,118 +2419,21 @@ class SameFixturesRepostView(View):
 
 def allocate_stadiums_for_matches(tournament_id, matchups, round_number):
     """
-    Assign a unique stadium to every pending matchup.
+    Assign a stadium to every pending matchup.
 
-    A stadium cannot be used twice in the same tournament round, and the
-    same matchup cannot return to a stadium it used in an earlier round.
-    Returns [(channel_id, stadium_name), ...] in the same order as matchups,
-    or None when the available stadiums cannot satisfy both rules.
+    Stadium reuse is allowed.  The assignment is still randomized for
+    automatically generated fixtures, while administrators can choose any
+    stadium manually in the fixture menus.
     """
-    if len(matchups) > len(MATCH_CHANNELS):
-        return None
-
-    conn = sqlite3.connect('players.db')
-    c = conn.cursor()
-
-    c.execute(
-        """SELECT channel_id FROM fixtures
-           WHERE tournament_id = ? AND round_number = ?""",
-        (tournament_id, round_number),
-    )
-    used_this_round = {row[0] for row in c.fetchall()}
-
-    c.execute(
-        """SELECT team1, team2, channel_id FROM fixtures
-           WHERE tournament_id = ?""",
-        (tournament_id,),
-    )
-    previous_stadiums = {}
-    for team1, team2, channel_id in c.fetchall():
-        matchup = frozenset((team1, team2))
-        previous_stadiums.setdefault(matchup, set()).add(channel_id)
-    conn.close()
-
     stadium_ids = list(MATCH_CHANNELS.keys())
-    candidates = []
-    for team1, team2 in matchups:
-        matchup = frozenset((team1, team2))
-        forbidden = previous_stadiums.get(matchup, set())
-        options = [
-            channel_id for channel_id in stadium_ids
-            if channel_id not in used_this_round and channel_id not in forbidden
-        ]
-        candidates.append(options)
-
-    # Assign the most constrained matchups first, then restore original order.
-    order = sorted(range(len(matchups)), key=lambda index: len(candidates[index]))
-    assignments = {}
-
-    def backtrack(position, used):
-        if position == len(order):
-            return True
-
-        fixture_index = order[position]
-        options = candidates[fixture_index].copy()
-        random.shuffle(options)
-        for channel_id in options:
-            if channel_id in used:
-                continue
-            assignments[fixture_index] = channel_id
-            if backtrack(position + 1, used | {channel_id}):
-                return True
-            assignments.pop(fixture_index, None)
-        return False
-
-    if not backtrack(0, set()):
-        return None
-
     return [
-        (assignments[index], MATCH_CHANNELS[assignments[index]])
-        for index in range(len(matchups))
+        (channel_id, MATCH_CHANNELS[channel_id])
+        for channel_id in random.choices(stadium_ids, k=len(matchups))
     ]
 
 
 def validate_fixture_stadiums(tournament_id, round_number, fixtures):
-    """Return an error string if pending fixtures violate stadium rules."""
-    channel_ids = [fixture[2] for fixture in fixtures]
-    duplicates = {
-        channel_id for channel_id in channel_ids
-        if channel_ids.count(channel_id) > 1
-    }
-    if duplicates:
-        duplicate_names = ", ".join(
-            MATCH_CHANNELS.get(channel_id, str(channel_id))
-            for channel_id in duplicates
-        )
-        return (
-            f"Stadiums must be unique within a round. Repeated: "
-            f"**{duplicate_names}**."
-        )
-
-    conn = sqlite3.connect('players.db')
-    c = conn.cursor()
-    c.execute(
-        """SELECT team1, team2, channel_id
-           FROM fixtures
-           WHERE tournament_id = ?""",
-        (tournament_id,),
-    )
-    previous = c.fetchall()
-    conn.close()
-
-    for team1, team2, channel_id, _ in fixtures:
-        matchup = frozenset((team1, team2))
-        if any(
-            frozenset((old_team1, old_team2)) == matchup
-            and old_channel_id == channel_id
-            for old_team1, old_team2, old_channel_id in previous
-        ):
-            return (
-                f"**{team1} vs {team2}** already used "
-                f"**{MATCH_CHANNELS.get(channel_id, channel_id)}** "
-                "in an earlier fixture. Choose a different stadium."
-            )
-
+    """Keep fixture validation compatible while allowing stadium reuse."""
     return None
 
 
@@ -3509,13 +3346,6 @@ class Tournament(commands.Cog):
         stadium_assignments = allocate_stadiums_for_matches(
             tournament_id, matches, target_round
         )
-        if stadium_assignments is None:
-            await ctx.send(
-                "❌ Could not assign unique stadiums for this round. "
-                "Every fixture needs a different stadium, and a matchup "
-                "cannot reuse a stadium from an earlier round."
-            )
-            return
 
         fixtures = [
             [t1, t2, channel_id, stadium]
@@ -3692,13 +3522,6 @@ class Tournament(commands.Cog):
         stadium_assignments = allocate_stadiums_for_matches(
             tournament_id, matchups, target_round
         )
-        if stadium_assignments is None:
-            await ctx.send(
-                "❌ Could not assign unique stadiums for this round. "
-                "Every fixture needs a different stadium, and a matchup "
-                "cannot reuse a stadium from an earlier round."
-            )
-            return
 
         fixtures = [
             [t1, t2, channel_id, stadium]
@@ -3942,56 +3765,6 @@ class Tournament(commands.Cog):
 
                 self.selected_channel_id = int(interaction.data['values'][0])
                 stadium = MATCH_CHANNELS[self.selected_channel_id]
-
-                # Prevent two fixtures in the same round from sharing a
-                # stadium, and prevent a repeated matchup from returning to
-                # a stadium it has already used.
-                conn = sqlite3.connect('players.db')
-                c = conn.cursor()
-                c.execute(
-                    """SELECT id FROM fixtures
-                       WHERE tournament_id = ? AND round_number = ?
-                         AND channel_id = ?""",
-                    (tournament_id, round_number, self.selected_channel_id),
-                )
-                duplicate_round_stadium = c.fetchone()
-                c.execute(
-                    """SELECT id FROM fixtures
-                       WHERE tournament_id = ?
-                         AND ((team1 = ? AND team2 = ?)
-                              OR (team1 = ? AND team2 = ?))
-                         AND channel_id = ?""",
-                    (
-                        tournament_id,
-                        team1,
-                        team2,
-                        team2,
-                        team1,
-                        self.selected_channel_id,
-                    ),
-                )
-                repeated_matchup_stadium = c.fetchone()
-                conn.close()
-
-                if duplicate_round_stadium and (
-                    not is_reserve or duplicate_round_stadium[0] != existing[0]
-                ):
-                    await interaction.response.send_message(
-                        "❌ That stadium is already assigned to another fixture "
-                        "in this round. Choose a different stadium.",
-                        ephemeral=True,
-                    )
-                    return
-
-                if repeated_matchup_stadium and (
-                    not is_reserve or repeated_matchup_stadium[0] != existing[0]
-                ):
-                    await interaction.response.send_message(
-                        "❌ This matchup has already used that stadium in an "
-                        "earlier fixture. Choose a different stadium.",
-                        ephemeral=True,
-                    )
-                    return
 
                 await interaction.response.defer()
 
@@ -4273,13 +4046,6 @@ class Tournament(commands.Cog):
             stadium_assignments = allocate_stadiums_for_matches(
                 tournament_id, matching_result, target_round
             )
-            if stadium_assignments is None:
-                await ctx.send(
-                    "❌ Could not assign unique stadiums for this round. "
-                    "Every fixture needs a different stadium, and a matchup "
-                    "cannot reuse a stadium from an earlier round."
-                )
-                return
 
             fixtures = [
                 [t1, t2, channel_id, stadium]
