@@ -194,6 +194,20 @@ ALLOWED_GUILD_ID = 1451591563078533292
 ALLOWED_GUILD_OBJ = discord.Object(id=ALLOWED_GUILD_ID)
 
 STAFF_ROLE_ID = 1452028308735922339
+AUCTION_CHANNEL_ID = 1543548415340843161
+AUCTION_ROLE_ID = 1543553601937350676
+AUCTION_THUMBNAIL_URL = "https://i.ibb.co/DfzTSsr9/FL.png"
+_auction_view_registered = False
+
+# Team names used by the tournament module's nation-role mapping.
+AUCTION_TEAM_NAMES = (
+    "India", "Pakistan", "Australia", "England", "New Zealand",
+    "South Africa", "West Indies", "Sri Lanka", "Bangladesh",
+    "Afghanistan", "Netherlands", "Scotland", "Ireland", "Zimbabwe",
+    "UAE", "Canada", "USA", "Italy", "Nepal", "Namibia", "Hong Kong",
+    "Oman", "Papua New Guinea", "Uganda", "Malaysia", "Spain", "Germany",
+    "Japan", "Portugal", "Denmark",
+)
 
 def is_staff_or_admin():
     """Passes if the user has administrator permission OR the staff role."""
@@ -228,9 +242,218 @@ async def only_allowed_guild_slash(interaction: discord.Interaction) -> bool:
 # during module initialization and ensures every slash command is checked.
 bot.tree.interaction_check = only_allowed_guild_slash
 
+
+class AuctionRegistrationView(discord.ui.View):
+    """Persistent Register/Exit controls for the franchise auction."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    async def _get_auction_role(self, interaction):
+        role = interaction.guild.get_role(AUCTION_ROLE_ID)
+        if role is None:
+            await interaction.response.send_message(
+                "❌ The auction registration role could not be found.",
+                ephemeral=True,
+            )
+        return role
+
+    @discord.ui.button(
+        label="Register",
+        emoji="✅",
+        style=discord.ButtonStyle.success,
+        custom_id="franchise_auction_register",
+    )
+    async def register_button(self, interaction, button):
+        role = await self._get_auction_role(interaction)
+        if role is None:
+            return
+
+        member = interaction.guild.get_member(interaction.user.id)
+        if member is None:
+            await interaction.response.send_message(
+                "❌ I could not find your server member profile.",
+                ephemeral=True,
+            )
+            return
+
+        if role in member.roles:
+            await interaction.response.send_message(
+                "You're already registered for this auction!",
+                ephemeral=True,
+            )
+            return
+
+        try:
+            await member.add_roles(role, reason="Franchise auction registration")
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                "❌ I do not have permission to give you the auction role.",
+                ephemeral=True,
+            )
+            return
+        except discord.HTTPException:
+            await interaction.response.send_message(
+                "❌ Discord could not update your auction registration. Please try again.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.send_message(
+            "✅ You're registered for this auction!",
+            ephemeral=True,
+        )
+
+    @discord.ui.button(
+        label="Exit",
+        emoji="❌",
+        style=discord.ButtonStyle.danger,
+        custom_id="franchise_auction_exit",
+    )
+    async def exit_button(self, interaction, button):
+        role = await self._get_auction_role(interaction)
+        if role is None:
+            return
+
+        member = interaction.guild.get_member(interaction.user.id)
+        if member is None:
+            await interaction.response.send_message(
+                "❌ I could not find your server member profile.",
+                ephemeral=True,
+            )
+            return
+
+        if role not in member.roles:
+            await interaction.response.send_message(
+                "You're not registered for this auction.",
+                ephemeral=True,
+            )
+            return
+
+        try:
+            await member.remove_roles(role, reason="Franchise auction exit")
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                "❌ I do not have permission to remove your auction role.",
+                ephemeral=True,
+            )
+            return
+        except discord.HTTPException:
+            await interaction.response.send_message(
+                "❌ Discord could not update your auction registration. Please try again.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.send_message(
+            "✅ You've exited this auction.",
+            ephemeral=True,
+        )
+
+
+@bot.command(
+    name="postalwaysbutton",
+    help="[ADMIN] Post the persistent franchise auction registration panel",
+)
+@commands.has_permissions(administrator=True)
+async def postalwaysbutton_command(ctx):
+    """Post the auction registration panel in the configured channel."""
+    auction_channel = ctx.guild.get_channel(AUCTION_CHANNEL_ID)
+    if auction_channel is None:
+        await ctx.send(
+            f"❌ Auction channel <#{AUCTION_CHANNEL_ID}> could not be found."
+        )
+        return
+
+    embed = discord.Embed(
+        title="Enter Franchise Auctions",
+        description="Ultimate Domestic League",
+        color=0x2ECC71,
+    )
+    embed.set_thumbnail(url=AUCTION_THUMBNAIL_URL)
+
+    try:
+        await auction_channel.send(
+            embed=embed,
+            view=AuctionRegistrationView(),
+        )
+    except discord.Forbidden:
+        await ctx.send(
+            "❌ I do not have permission to post in the auction channel."
+        )
+        return
+    except discord.HTTPException:
+        await ctx.send(
+            "❌ Discord could not post the auction registration panel."
+        )
+        return
+
+    await ctx.send(
+        f"✅ Auction registration panel posted in <#{AUCTION_CHANNEL_ID}>."
+    )
+
+
+@bot.command(
+    name="syncauctionrole",
+    help="[ADMIN] Give the auction role to members with a nation team role",
+)
+@commands.has_permissions(administrator=True)
+async def syncauctionrole_command(ctx):
+    """Give the auction role to members who have a nation/team role."""
+    auction_role = ctx.guild.get_role(AUCTION_ROLE_ID)
+    if auction_role is None:
+        await ctx.send(
+            f"❌ Auction role <@&{AUCTION_ROLE_ID}> could not be found."
+        )
+        return
+
+    from tournament import get_team_role_id
+
+    team_role_ids = {
+        role_id
+        for team_name in AUCTION_TEAM_NAMES
+        if (role_id := get_team_role_id(team_name)) is not None
+    }
+    eligible_members = [
+        member
+        for member in ctx.guild.members
+        if not member.bot
+        and any(role.id in team_role_ids for role in member.roles)
+    ]
+
+    added = 0
+    already_registered = 0
+    failed = 0
+    for member in eligible_members:
+        if auction_role in member.roles:
+            already_registered += 1
+            continue
+        try:
+            await member.add_roles(
+                auction_role,
+                reason="Sync franchise auction role from nation team role",
+            )
+            added += 1
+        except (discord.Forbidden, discord.HTTPException):
+            failed += 1
+
+    await ctx.send(
+        "✅ Auction role sync complete.\n"
+        f"**Added:** {added}\n"
+        f"**Already registered:** {already_registered}\n"
+        f"**Failed:** {failed}"
+    )
+
+
 @bot.event
 async def on_ready():
-    global elite_players
+    global elite_players, _auction_view_registered
+    if not _auction_view_registered:
+        # View construction needs Discord's running event loop, so register
+        # it after login rather than during module import.
+        bot.add_view(AuctionRegistrationView())
+        _auction_view_registered = True
+
     await restore_db_from_channel()
     init_db()
     init_nicknames_db()
