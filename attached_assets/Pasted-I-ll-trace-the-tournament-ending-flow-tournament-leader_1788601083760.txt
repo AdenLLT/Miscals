@@ -1,0 +1,71 @@
+I’ll trace the tournament-ending flow, tournament leaderboard storage, and -statsi generation first. Then I’ll update the end-of-tournament snapshot/aggregation logic and verify that winner trophies appear for every Discord user on the winning team without replacing existing international totals.
+
+
+
+5 actions
+I’m continuing with the tournament work. The codebase already has tournament IDs, team standings, and a trophy table, so I’m narrowing into the tournament end command and the -statsi embed builder to reuse those structures instead of introducing duplicate stats paths.
+
+
+
+5 actions
+The tournament code already has an archivetournament command and a player_trophies table, while -statsi currently reads only non-tournament rows. I’m reading those exact paths now to preserve the existing scope rules and make archived tournament snapshots additive rather than replacing international history.
+
+
+
+16 actions
+The current gaps are clear: archiving keeps live team rows but does not create an immutable final standings snapshot, trophies are awarded only to claimed roster players instead of Discord team-role members, and the international leaderboard excludes archived tournament rows. I’m fixing those three paths together.
+
+
+
+4 actions
+The archive now snapshots every final team standings field and awards trophies from the winning Discord team role. I’m adding trophy rendering to -statsi—including users who have no match rows but do have a trophy—and updating international leaderboard queries to include archived tournament rows cumulatively.
+
+
+
+13 actions
+I’ve added the archive snapshot, role-based trophies, and cumulative archived-stat query. Before testing behavior, I’m checking syntax because the existing archive callback had nested error handling that needed careful restructuring around the new transaction.
+
+
+
+2 actions
+The syntax check caught a real issue in the archive callback: the new transaction body had an unmatched except. I’m restructuring it into a small synchronous archive helper with explicit rollback/close handling, then the Discord callback will only handle confirmation and reporting.
+
+
+
+2 actions
+The archive transaction is now syntactically valid and isolated in a helper, so failures roll back cleanly. I’m running compilation and targeted tests for the snapshot schema, trophy rendering, archived-stat inclusion, and no-match trophy-only -statsi behavior.
+
+
+
+4 actions
+The compile check caught an indentation error in the archived-tournament display fallback, not in the archive transaction itself. I’m correcting that block’s indentation and rerunning the checks before restarting the bot.
+
+
+
+7 actions
+The code now compiles after the archive callback fix. I’m exercising the database logic in an isolated temporary SQLite file: final standings must remain unchanged, role members must receive one trophy each, duplicate archive attempts must not duplicate trophies, and international totals must combine non-tournament plus archived-tournament rows while excluding an active tournament.
+
+
+
+1 action
+The isolated test failed because its temporary-database monkeypatch recursively replaced Python’s shared sqlite3.connect; that is a test harness issue, not an application failure. I’m rerunning the same archive and cumulative-stat test with the native connector captured before patching.
+
+
+
+Ran a Python script
+The isolated regression test now passes for snapshot persistence, role-based trophies, idempotent retries, and cumulative international totals. I’m doing the final app-level verification now: review the workflow/release instructions, restart the Discord bot so the new table is created, then inspect fresh logs.
+
+
+
+5 actions
+The bot restarted successfully. I’m checking fresh startup logs and confirming the new archive table exists in the live SQLite database before wrapping up.
+
+
+
+3 actions
+The restart itself completed, but the live database check found that the new table was not created, and the workflow produced no startup output. I’m tracing the bot startup path and its latest log now; this is the remaining blocker to confirming the schema is initialized in the running environment.
+
+
+
+12 actions
+The startup trace explains the empty workflow: TOKEN is not exposed to one-off shell commands, so python main.py exits quietly in this shell context. The existing schema already has group_name; I’m applying the non-destructive table initialization directly so the new archive table is present even before the next authenticated bot start.

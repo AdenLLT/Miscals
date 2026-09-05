@@ -192,11 +192,16 @@ bot = commands.Bot(
 
 ALLOWED_GUILD_ID = 1451591563078533292
 ALLOWED_GUILD_OBJ = discord.Object(id=ALLOWED_GUILD_ID)
+_invite_cache: Dict[int, Dict[str, int]] = {}
+_invite_cache_lock = asyncio.Lock()
+_invite_detection_lock = asyncio.Lock()
+_invite_permission_warnings = set()
 
 STAFF_ROLE_ID = 1452028308735922339
 AUCTION_CHANNEL_ID = 1543548415340843161
 AUCTION_ROLE_ID = 1543553601937350676
 AUCTION_THUMBNAIL_URL = "https://i.ibb.co/DfzTSsr9/FL.png"
+AUCTION_MESSAGE_CHANNEL_ID = 1456986053238984779
 _auction_view_registered = False
 
 # Team names used by the tournament module's nation-role mapping.
@@ -351,6 +356,473 @@ class AuctionRegistrationView(discord.ui.View):
         )
 
 
+async def _fetch_invite_snapshot(guild):
+    """Fetch the guild's current invite use counts when permissions allow it."""
+    try:
+        invites = await guild.invites()
+    except discord.Forbidden:
+        if guild.id not in _invite_permission_warnings:
+            print(
+                f"[invites] Missing Manage Server permission in guild {guild.id}; "
+                "invite attribution is disabled there."
+            )
+            _invite_permission_warnings.add(guild.id)
+        return None
+    except discord.HTTPException as error:
+        print(f"[invites] Could not fetch invites for guild {guild.id}: {error}")
+        return None
+
+    return {
+        invite.code: max(0, int(invite.uses or 0))
+        for invite in invites
+        if invite.code
+    }
+
+
+async def _refresh_invite_cache(guild):
+    snapshot = await _fetch_invite_snapshot(guild)
+    if snapshot is not None:
+        async with _invite_cache_lock:
+            _invite_cache[guild.id] = snapshot
+    return snapshot
+
+
+async def _identify_used_invite(guild):
+    """Return (inviter_id, usage_delta), refreshing through brief Discord lag."""
+    async with _invite_detection_lock:
+        for attempt in range(3):
+            snapshot = await _fetch_invite_snapshot(guild)
+            if snapshot is None:
+                return None
+
+            async with _invite_cache_lock:
+                previous = _invite_cache.get(guild.id)
+                _invite_cache[guild.id] = snapshot
+
+            if previous is not None:
+                increases = [
+                    (code, uses - previous.get(code, 0))
+                    for code, uses in snapshot.items()
+                    if uses > previous.get(code, 0)
+                ]
+                if increases:
+                    largest_delta = max(delta for _, delta in increases)
+                    candidates = [
+                        code for code, delta in increases if delta == largest_delta
+                    ]
+                    if len(candidates) == 1:
+                        invite_code = candidates[0]
+                        try:
+                            invites = await guild.invites()
+                        except (discord.Forbidden, discord.HTTPException):
+                            invites = []
+                        matching_invite = next(
+                            (invite for invite in invites if invite.code == invite_code),
+                            None,
+                        )
+                        inviter = getattr(matching_invite, "inviter", None)
+                        if inviter is not None and not getattr(inviter, "bot", False):
+                            return inviter.id, largest_delta
+                    return None
+
+            if attempt < 2:
+                await asyncio.sleep(0.75)
+
+        return None
+
+
+def _record_invite_uses(guild_id, inviter_id, uses):
+    conn = sqlite3.connect("players.db")
+    try:
+        conn.execute(
+            """
+            INSERT INTO invite_counts (user_id, guild_id, invite_uses)
+            VALUES (?, ?, ?)
+            ON CONFLICT(user_id, guild_id) DO UPDATE SET
+                invite_uses = invite_counts.invite_uses + excluded.invite_uses
+            """,
+            (inviter_id, guild_id, uses),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _read_invite_count(guild_id, user_id):
+    conn = sqlite3.connect("players.db")
+    try:
+        row = conn.execute(
+            """
+            SELECT invite_uses
+            FROM invite_counts
+            WHERE guild_id = ? AND user_id = ?
+            """,
+            (guild_id, user_id),
+        ).fetchone()
+        return int(row[0] or 0) if row else 0
+    finally:
+        conn.close()
+
+
+def _read_invite_leaderboard(guild_id):
+    conn = sqlite3.connect("players.db")
+    try:
+        return [
+            (int(user_id), int(invite_uses or 0))
+            for user_id, invite_uses in conn.execute(
+                """
+                SELECT user_id, invite_uses
+                FROM invite_counts
+                WHERE guild_id = ? AND invite_uses > 0
+                ORDER BY invite_uses DESC, user_id ASC
+                """,
+                (guild_id,),
+            ).fetchall()
+        ]
+    finally:
+        conn.close()
+
+
+async def _prime_invite_cache():
+    guild = bot.get_guild(ALLOWED_GUILD_ID)
+    if guild is not None:
+        await _refresh_invite_cache(guild)
+
+
+class InvitesLeaderboardView(discord.ui.View):
+    """Short-lived, user-owned pagination controls for the invite leaderboard."""
+
+    def __init__(self, owner_id, guild, page, total_pages):
+        super().__init__(timeout=180)
+        self.owner_id = owner_id
+        self.guild = guild
+        self.page = page
+        self.total_pages = total_pages
+        self.previous_page.disabled = page <= 0
+        self.next_page.disabled = page >= total_pages - 1
+
+    async def _change_page(self, interaction, delta):
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message(
+                "Only the person who opened this leaderboard can change pages.",
+                ephemeral=True,
+            )
+            return
+
+        rows = await asyncio.to_thread(_read_invite_leaderboard, self.guild.id)
+        self.total_pages = max(1, math.ceil(len(rows) / 10))
+        self.page = max(0, min(self.page + delta, self.total_pages - 1))
+        self.previous_page.disabled = self.page <= 0
+        self.next_page.disabled = self.page >= self.total_pages - 1
+        embed = await _build_invites_leaderboard_embed(
+            self.guild, rows, self.page, self.total_pages
+        )
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(
+        label="Previous",
+        emoji="◀️",
+        style=discord.ButtonStyle.secondary,
+    )
+    async def previous_page(self, interaction, button):
+        await self._change_page(interaction, -1)
+
+    @discord.ui.button(
+        label="Next",
+        emoji="▶️",
+        style=discord.ButtonStyle.secondary,
+    )
+    async def next_page(self, interaction, button):
+        await self._change_page(interaction, 1)
+
+
+async def _build_invites_leaderboard_embed(guild, rows, page, total_pages):
+    start = page * 10
+    page_rows = rows[start:start + 10]
+    embed = discord.Embed(
+        title="🏆 Server Invites Leaderboard",
+        description="Top inviters ranked by tracked member joins.",
+        color=0x5865F2,
+    )
+
+    if not page_rows:
+        embed.description = "No invite joins have been tracked yet."
+    else:
+        lines = []
+        for index, (user_id, invite_uses) in enumerate(page_rows, start + 1):
+            member = guild.get_member(user_id)
+            if member is not None:
+                name = discord.utils.escape_markdown(member.display_name)
+                label = f"{member.mention} ({name})"
+            else:
+                label = f"<@{user_id}>"
+            medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(index, f"**{index}.**")
+            invite_word = "invite" if invite_uses == 1 else "invites"
+            lines.append(f"{medal} {label} — **{invite_uses:,}** {invite_word}")
+        embed.description = "\n".join(lines)
+
+    embed.set_footer(text=f"Page {page + 1} of {total_pages} • 10 inviters per page")
+    return embed
+
+
+@bot.command(
+    name="invites",
+    help="See your tracked invite count (or another member's count)",
+)
+async def invites_command(ctx, member: Optional[discord.Member] = None):
+    target = member or ctx.author
+    invite_count = await asyncio.to_thread(
+        _read_invite_count, ctx.guild.id, target.id
+    )
+    invite_word = "invite" if invite_count == 1 else "invites"
+    embed = discord.Embed(
+        title=f"📨 {target.display_name}'s Invites",
+        description=(
+            f"{target.mention} has brought **{invite_count:,}** "
+            f"tracked {invite_word} to the server."
+        ),
+        color=0x57F287,
+    )
+    embed.set_thumbnail(url=target.display_avatar.url)
+    embed.set_footer(text="Counts increase when the bot can identify the invite used.")
+    await ctx.send(embed=embed)
+
+
+@bot.command(
+    name="inviteslb",
+    help="View the server invite leaderboard, 10 inviters per page",
+)
+async def invites_leaderboard_command(ctx, page: int = 1):
+    if page < 1:
+        await ctx.send("❌ Page numbers start at **1**.")
+        return
+
+    rows = await asyncio.to_thread(_read_invite_leaderboard, ctx.guild.id)
+    total_pages = max(1, math.ceil(len(rows) / 10))
+    if page > total_pages:
+        await ctx.send(f"❌ There are only **{total_pages}** leaderboard page(s).")
+        return
+
+    page_index = page - 1
+    embed = await _build_invites_leaderboard_embed(
+        ctx.guild, rows, page_index, total_pages
+    )
+    await ctx.send(
+        embed=embed,
+        view=InvitesLeaderboardView(
+            ctx.author.id, ctx.guild, page_index, total_pages
+        ),
+    )
+
+
+def _save_auction_message(user_id, username, message):
+    conn = sqlite3.connect("players.db")
+    try:
+        conn.execute(
+            """
+            INSERT INTO auction_messages (user_id, username, message)
+            VALUES (?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                username = excluded.username,
+                message = excluded.message,
+                saved_at = CURRENT_TIMESTAMP
+            """,
+            (user_id, username, message),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _read_auction_message(user_id):
+    conn = sqlite3.connect("players.db")
+    try:
+        return conn.execute(
+            """
+            SELECT username, message, saved_at
+            FROM auction_messages
+            WHERE user_id = ?
+            """,
+            (user_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+
+async def _get_auction_message_channel():
+    channel = bot.get_channel(AUCTION_MESSAGE_CHANNEL_ID)
+    if channel is not None:
+        return channel
+    try:
+        return await bot.fetch_channel(AUCTION_MESSAGE_CHANNEL_ID)
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+        return None
+
+
+class AuctionMessageModal(discord.ui.Modal, title="Set Auction Message"):
+    message_input = discord.ui.TextInput(
+        label="Your auction message",
+        placeholder="Enter any text you want to submit for the auction.",
+        style=discord.TextStyle.paragraph,
+        required=True,
+        max_length=4000,
+    )
+
+    async def on_submit(self, interaction):
+        message_text = self.message_input.value
+        await asyncio.to_thread(
+            _save_auction_message,
+            interaction.user.id,
+            str(interaction.user),
+            message_text,
+        )
+
+        channel = await _get_auction_message_channel()
+        if channel is not None:
+            embed = discord.Embed(
+                title="Auction Message",
+                description=message_text,
+                color=0x5865F2,
+            )
+            embed.set_author(
+                name=f"Submitted by {interaction.user.display_name}",
+                icon_url=interaction.user.display_avatar.url,
+            )
+            embed.set_footer(text=f"User ID: {interaction.user.id}")
+            try:
+                await channel.send(
+                    embed=embed,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except (discord.Forbidden, discord.HTTPException) as error:
+                print(f"[auction-message] Could not post submission: {error}")
+        else:
+            print(
+                f"[auction-message] Target channel {AUCTION_MESSAGE_CHANNEL_ID} "
+                "could not be found."
+            )
+
+        await interaction.response.send_message("Text saved for auction")
+
+
+class AuctionMessageButtonView(discord.ui.View):
+    """Persistent DM button that opens the auction-message modal."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Set Auction Message",
+        emoji="📝",
+        style=discord.ButtonStyle.primary,
+        custom_id="auction_message_open_modal",
+    )
+    async def open_modal(self, interaction, button):
+        await interaction.response.send_modal(AuctionMessageModal())
+
+
+@bot.command(
+    name="setmessage",
+    help="Open the auction message form (requires at least one invite)",
+)
+async def setmessage_command(ctx):
+    invite_count = await asyncio.to_thread(
+        _read_invite_count, ctx.guild.id, ctx.author.id
+    )
+    if invite_count < 1:
+        await ctx.send(
+            "❌ You need at least **1 invite** before you can set an auction message."
+        )
+        return
+
+    try:
+        await ctx.author.send(
+            "📝 Click the button below to enter your auction message.",
+            view=AuctionMessageButtonView(),
+        )
+    except discord.Forbidden:
+        await ctx.send(
+            "❌ I couldn't DM you. Please enable direct messages for this server "
+            "and try again."
+        )
+        return
+    except discord.HTTPException:
+        await ctx.send("❌ Discord could not send the DM. Please try again.")
+        return
+
+    await ctx.send("✅ I sent a button for the auction message modal to your DMs.")
+
+
+@bot.command(
+    name="checkmessage",
+    help="[ADMIN] Check a user's saved auction message",
+)
+@commands.has_permissions(administrator=True)
+async def checkmessage_command(ctx, member: discord.Member):
+    saved_message = await asyncio.to_thread(
+        _read_auction_message, member.id
+    )
+    if saved_message is None:
+        await ctx.send(f"❌ {member.mention} has not saved an auction message.")
+        return
+
+    username, message_text, saved_at = saved_message
+    embed = discord.Embed(
+        title=f"Saved Auction Message — {member.display_name}",
+        description=message_text,
+        color=0x5865F2,
+    )
+    embed.set_author(
+        name=f"Submitted by {username}",
+        icon_url=member.display_avatar.url,
+    )
+    embed.set_footer(text=f"Saved at {saved_at}")
+    await ctx.send(embed=embed)
+
+
+@bot.listen("on_member_join")
+async def track_invite_join(member):
+    if member.guild.id != ALLOWED_GUILD_ID:
+        return
+
+    result = await _identify_used_invite(member.guild)
+    if result is None or member.bot:
+        return
+
+    inviter_id, usage_delta = result
+    await asyncio.to_thread(
+        _record_invite_uses, member.guild.id, inviter_id, usage_delta
+    )
+    print(
+        f"[invites] Attributed {usage_delta} invite use(s) in guild "
+        f"{member.guild.id} to user {inviter_id}."
+    )
+
+
+@bot.listen("on_invite_create")
+async def cache_created_invite(invite):
+    if invite.guild is None or invite.guild.id != ALLOWED_GUILD_ID:
+        return
+    async with _invite_cache_lock:
+        _invite_cache.setdefault(invite.guild.id, {})[invite.code] = int(
+            invite.uses or 0
+        )
+
+
+@bot.listen("on_invite_delete")
+async def remove_deleted_invite(invite):
+    if invite.guild is None or invite.guild.id != ALLOWED_GUILD_ID:
+        return
+    async with _invite_cache_lock:
+        _invite_cache.get(invite.guild.id, {}).pop(invite.code, None)
+
+
+@bot.listen("on_guild_join")
+async def cache_new_guild_invites(guild):
+    if guild.id == ALLOWED_GUILD_ID:
+        await _refresh_invite_cache(guild)
+
+
 @bot.command(
     name="postalwaysbutton",
     help="[ADMIN] Post the persistent franchise auction registration panel",
@@ -452,10 +924,12 @@ async def on_ready():
         # View construction needs Discord's running event loop, so register
         # it after login rather than during module import.
         bot.add_view(AuctionRegistrationView())
+        bot.add_view(AuctionMessageButtonView())
         _auction_view_registered = True
 
     await restore_db_from_channel()
     init_db()
+    await _prime_invite_cache()
     init_nicknames_db()
     _init_embeds_table()
     elite_players = load_elite_players()
@@ -904,6 +1378,11 @@ def init_db():
                   guild_id INTEGER,
                   invite_uses INTEGER DEFAULT 0,
                   PRIMARY KEY (user_id, guild_id))''')
+    c.execute('''CREATE TABLE IF NOT EXISTS auction_messages
+                 (user_id INTEGER PRIMARY KEY,
+                  username TEXT NOT NULL,
+                  message TEXT NOT NULL,
+                  saved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     c.execute('''CREATE TABLE IF NOT EXISTS stat_overrides
                  (user_id INTEGER PRIMARY KEY,
                   total_runs INTEGER,
@@ -2658,8 +3137,7 @@ class PlayerSelectView(View):
             child.disabled = True
 
 # Main represent command
-@bot.command(name="represent", aliases=["rep"], help="[ADMIN] Request to represent a cricket player")
-@is_staff_or_admin()
+@bot.command(name="represent", aliases=["rep"], help="Request to represent a cricket player")
 async def represent_command(ctx):
     # Check if user already represents a player
     conn = sqlite3.connect('players.db')
@@ -2690,8 +3168,7 @@ async def represent_command(ctx):
     view.message = await ctx.send(embed=embed, view=view)
 
 # Unrepresent command
-@bot.command(name="unrepresent", aliases=["unrep"], help="[ADMIN] Remove yourself as a player representative")
-@is_staff_or_admin()
+@bot.command(name="unrepresent", aliases=["unrep"], help="Remove yourself as a player representative")
 async def unrepresent_command(ctx):
     conn = sqlite3.connect('players.db')
     c = conn.cursor()

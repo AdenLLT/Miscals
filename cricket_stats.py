@@ -595,7 +595,31 @@ def get_user_stats(user_id, mode="career"):
             _ov = _cur.fetchone()
             _oc.close()
             if _ov and _ov[0] is not None:
-                return _ov  # same tuple shape as the normal query result
+                # stat_overrides is the imported non-tournament career
+                # baseline. Tournament rows are stored separately by scope,
+                # so add them instead of letting the baseline hide them.
+                _tc = sqlite3.connect('players.db')
+                try:
+                    _tournament_totals = _tc.execute(
+                        """SELECT
+                               COALESCE(SUM(runs), 0),
+                               COALESCE(SUM(balls_faced), 0),
+                               COALESCE(SUM(runs_conceded), 0),
+                               COALESCE(SUM(balls_bowled), 0),
+                               COALESCE(SUM(wickets), 0),
+                               COALESCE(SUM(not_out), 0),
+                               COUNT(*)
+                           FROM match_stats
+                           WHERE user_id = ? AND tournament_id IS NOT NULL""",
+                        (user_id,),
+                    ).fetchone()
+                finally:
+                    _tc.close()
+
+                return tuple(
+                    (base or 0) + (tournament or 0)
+                    for base, tournament in zip(_ov, _tournament_totals)
+                )
         except Exception:
             pass
 
@@ -648,6 +672,29 @@ def get_user_stats(user_id, mode="career"):
     conn.close()
     return result
 
+
+def get_user_trophies(user_id):
+    """Return tournament names won by this Discord user."""
+    conn = sqlite3.connect('players.db')
+    try:
+        rows = conn.execute(
+            """SELECT tournament_name
+               FROM player_trophies
+               WHERE user_id = ?
+               ORDER BY won_at ASC, id ASC""",
+            (user_id,),
+        ).fetchall()
+        return [row[0] for row in rows if row[0]]
+    except sqlite3.OperationalError as error:
+        # The tournament cog creates this table during startup. Keep stats
+        # rendering safe if a command is invoked during an unusual load order.
+        if "no such table" in str(error).lower():
+            return []
+        raise
+    finally:
+        conn.close()
+
+
 def get_leaderboard_data(
     stat_type,
     series_id=None,
@@ -693,15 +740,20 @@ def get_leaderboard_data(
         """
         source_params = [tournament_id]
     elif scope == "international":
-        # LBI uses the full overall/international history. Tournament rows must
-        # never be included here, even when a tournament is running.
+        # LBI uses the current international history plus every finalized
+        # tournament. Running-tournament rows remain isolated until archived.
+        # Once a tournament is archived, all of its tournament-scoped rows are
+        # included, including rows created by sync-only tournament commands.
         source_sql = """
             SELECT m.user_id, m.runs, m.balls_faced,
                    m.runs_conceded, m.balls_bowled,
                    m.wickets, m.not_out
             FROM match_stats AS m
-            WHERE m.tournament_id IS NULL
-              AND m.include_in_lbi = 1
+            LEFT JOIN tournaments AS t ON t.id = m.tournament_id
+            WHERE (
+                (m.tournament_id IS NULL AND m.include_in_lbi = 1)
+                OR (m.tournament_id IS NOT NULL AND t.is_archived = 1)
+            )
         """
         source_params = []
     else:
@@ -1931,6 +1983,16 @@ class PersonalStatsView(View):
         stats = get_user_stats(self.user_id, mode=self.mode)
         if not stats or stats[0] is None:
             embed = discord.Embed(title="📊 Statistics", description="No match data available yet!", color=0xFF0000)
+            if self.mode == "career":
+                trophy_names = get_user_trophies(self.user_id)
+                trophy_text = "\n".join(
+                    f"🏆 {tournament_name}" for tournament_name in trophy_names
+                ) or "None"
+                embed.add_field(
+                    name="🏆 Trophies",
+                    value=trophy_text,
+                    inline=False,
+                )
             return embed
 
         total_runs, total_balls_faced, total_runs_conceded, total_balls_bowled, total_wickets, times_not_out, matches_played = stats
@@ -2029,6 +2091,17 @@ class PersonalStatsView(View):
 
         ovr_text = f"**OVR:** {main_ovr}  •  **Bat OVR:** {bat_ovr_str}  •  **Bowl OVR:** {bowl_ovr_str}"
         embed.add_field(name="⭐ OVR Rating", value=ovr_text, inline=False)
+
+        if self.mode == "career":
+            trophy_names = get_user_trophies(self.user_id)
+            trophy_text = "\n".join(
+                f"🏆 {tournament_name}" for tournament_name in trophy_names
+            ) or "None"
+            embed.add_field(
+                name="🏆 Trophies",
+                value=trophy_text,
+                inline=False,
+            )
 
         career_stats = get_user_stats(self.user_id, mode="career")
         career_bat_unlocked = bool(career_stats and (career_stats[1] or 0) >= 60)
@@ -3855,7 +3928,8 @@ class CricketStats(commands.Cog):
             user_id = ctx.author.id
 
         stats = get_user_stats(user_id, mode="career")
-        if not stats or stats[0] is None:
+        trophy_names = get_user_trophies(user_id)
+        if (not stats or stats[0] is None) and not trophy_names:
             message = "You haven't" if user_id == ctx.author.id else f"This player hasn't"
             await ctx.send(f"❌ {message} played any matches yet!")
             return

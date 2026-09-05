@@ -804,11 +804,15 @@ def parse_embed_fields(embed, guild=None, previous_match_state=None):
                 }
                 print(f"   📊 {team_name_clean}: {score} ({overs} overs)")
 
-            teams_sorted = sorted(team_info.items(), key=lambda x: x[1]['overs'], reverse=True)
+            # The cricket bot lists the two teams in a stable match order.
+            # Keep that order for the restart fallback below. Overs are match
+            # progress, not team identity: during a successful chase innings
+            # two can legitimately have more overs than innings one.
+            team_names_in_embed_order = list(team_info)
 
             if innings == "ONE":
-                batting_team_name = teams_sorted[0][0]
-                batting_team_info = teams_sorted[0][1]
+                batting_team_name = team_names_in_embed_order[0]
+                batting_team_info = team_info[batting_team_name]
 
                 data['team_a_score'] = batting_team_info['score']
                 data['overs'] = str(batting_team_info['overs'])
@@ -834,10 +838,11 @@ def parse_embed_fields(embed, guild=None, previous_match_state=None):
                     )
                 else:
                     # This can happen after a bot restart if the first
-                    # innings update was not seen.  Preserve the previous
-                    # behavior as a best-effort fallback for that case.
-                    innings1_team_name = teams_sorted[0][0]
-                    batting_team_name = teams_sorted[1][0]
+                    # innings update was not seen. The embed's team order is
+                    # the only stable identity signal available here; never
+                    # infer innings from current overs.
+                    innings1_team_name = team_names_in_embed_order[0]
+                    batting_team_name = team_names_in_embed_order[1]
 
                 innings1_team_info = team_info[innings1_team_name]
                 batting_team_info = team_info[batting_team_name]

@@ -47,6 +47,23 @@ def init_tournament_db():
       won_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (tournament_id) REFERENCES tournaments(id))''')
 
+    c.execute('''CREATE TABLE IF NOT EXISTS tournament_leaderboard_archive
+     (id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tournament_id INTEGER NOT NULL,
+      rank INTEGER NOT NULL,
+      team_name TEXT NOT NULL,
+      points INTEGER DEFAULT 0,
+      matches_played INTEGER DEFAULT 0,
+      wins INTEGER DEFAULT 0,
+      losses INTEGER DEFAULT 0,
+      nrr REAL DEFAULT 0.0,
+      fpp INTEGER DEFAULT 0,
+      qualified INTEGER DEFAULT 0,
+      group_name TEXT DEFAULT NULL,
+      archived_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(tournament_id, team_name),
+      FOREIGN KEY (tournament_id) REFERENCES tournaments(id))''')
+
     # Participating teams
     c.execute('''CREATE TABLE IF NOT EXISTS tournament_teams
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1342,6 +1359,101 @@ def get_team_role_id(team_name):
         "Denmark": 1513238490723385466
     }
     return role_ids.get(team_name)
+
+
+def archive_tournament_records(tournament_id, tournament_name, winner, guild):
+    """Freeze standings and award winner trophies in one database transaction."""
+    conn = sqlite3.connect('players.db')
+    try:
+        c = conn.cursor()
+        c.execute(
+            """SELECT team_name, points, matches_played, wins, losses,
+                      nrr, fpp, qualified, group_name
+               FROM tournament_teams
+               WHERE tournament_id = ?
+               ORDER BY points DESC, nrr DESC, wins DESC, team_name ASC""",
+            (tournament_id,),
+        )
+        final_standings = c.fetchall()
+        c.execute(
+            "DELETE FROM tournament_leaderboard_archive WHERE tournament_id = ?",
+            (tournament_id,),
+        )
+        for rank, (
+            team_name,
+            points,
+            matches_played,
+            wins,
+            losses,
+            nrr,
+            fpp,
+            qualified,
+            group_name,
+        ) in enumerate(final_standings, 1):
+            c.execute(
+                """INSERT INTO tournament_leaderboard_archive
+                   (tournament_id, rank, team_name, points,
+                    matches_played, wins, losses, nrr, fpp,
+                    qualified, group_name)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    tournament_id,
+                    rank,
+                    team_name,
+                    points,
+                    matches_played,
+                    wins,
+                    losses,
+                    nrr,
+                    fpp,
+                    qualified,
+                    group_name,
+                ),
+            )
+
+        c.execute(
+            """UPDATE tournaments
+               SET is_active = 0, is_archived = 1,
+                   winner = ?, archived_at = CURRENT_TIMESTAMP
+               WHERE id = ?""",
+            (winner, tournament_id),
+        )
+
+        winning_role_id = get_team_role_id(winner)
+        winning_role = guild.get_role(winning_role_id) if winning_role_id else None
+        winning_members = (
+            [member for member in winning_role.members if not member.bot]
+            if winning_role
+            else []
+        )
+        trophy_count = 0
+        for member in winning_members:
+            c.execute(
+                """INSERT INTO player_trophies
+                   (user_id, tournament_id, tournament_name, team_name)
+                   SELECT ?, ?, ?, ?
+                   WHERE NOT EXISTS (
+                       SELECT 1 FROM player_trophies
+                       WHERE user_id = ? AND tournament_id = ?
+                   )""",
+                (
+                    member.id,
+                    tournament_id,
+                    tournament_name,
+                    winner,
+                    member.id,
+                    tournament_id,
+                ),
+            )
+            trophy_count += c.rowcount
+
+        conn.commit()
+        return len(final_standings), trophy_count, winning_role is not None
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def get_user_team(user_id):
@@ -5448,63 +5560,43 @@ class Tournament(commands.Cog):
 
                     await inter.response.defer()
 
-                    # Archive the tournament
-                    conn = sqlite3.connect('players.db')
-                    c = conn.cursor()
-
-                    # Mark tournament as archived
-                    c.execute("""UPDATE tournaments 
-                                SET is_active = 0, is_archived = 1, winner = ?, archived_at = CURRENT_TIMESTAMP
-                                WHERE id = ?""",
-                              (self.selected_winner, tournament_id))
-
-                    # Get all players from winning team
-                    import json
                     try:
-                        with open('players.json', 'r', encoding='utf-8') as f:
-                            teams_data = json.load(f)
-
-                        winning_players = []
-                        for team_data in teams_data:
-                            if team_data['team'] == self.selected_winner:
-                                winning_players = team_data['players']
-                                break
-
-                        # Award trophies to claimed players
-                        trophy_count = 0
-                        for player in winning_players:
-                            c.execute(
-                                "SELECT user_id FROM player_representatives WHERE player_name = ?",
-                                (player['name'],))
-                            result = c.fetchone()
-                            if result:
-                                user_id = result[0]
-                                c.execute("""INSERT INTO player_trophies 
-                                           (user_id, tournament_id, tournament_name, team_name)
-                                           VALUES (?, ?, ?, ?)""",
-                                          (user_id, tournament_id, tournament_name, self.selected_winner))
-                                trophy_count += 1
-
-                        conn.commit()
-                        conn.close()
-
-                        # Success message
-                        success_embed = discord.Embed(
-                            title="✅ Tournament Archived",
-                            description=f"**{tournament_name}**\n\n"
-                                        f"🏆 Winner: {flag} **{self.selected_winner}**\n"
-                                        f"🎖️ Trophies awarded: **{trophy_count}** players\n\n"
-                                        f"The tournament has been archived and can be viewed with `-oldtournaments`.",
-                            color=0xFFD700
+                        final_standing_count, trophy_count, winning_role_found = (
+                            archive_tournament_records(
+                                tournament_id,
+                                tournament_name,
+                                self.selected_winner,
+                                ctx.guild,
+                            )
                         )
+                    except Exception as error:
+                        await inter.followup.send(
+                            f"❌ Error archiving tournament: {error}",
+                            ephemeral=True,
+                        )
+                        return
 
-                        for item in confirm_view.children:
-                            item.disabled = True
+                    # Success message
+                    role_warning = (
+                        ""
+                        if winning_role_found
+                        else "\n⚠️ The winning team's Discord role was not found; no member trophies were added."
+                    )
+                    success_embed = discord.Embed(
+                        title="✅ Tournament Archived",
+                        description=f"**{tournament_name}**\n\n"
+                                    f"🏆 Winner: {flag} **{self.selected_winner}**\n"
+                                    f"📊 Final standings archived: **{final_standing_count}** teams\n"
+                                    f"🎖️ Trophies awarded: **{trophy_count}** members\n\n"
+                                    f"The tournament has been archived and can be viewed with `-oldtournaments`."
+                                    f"{role_warning}",
+                        color=0xFFD700
+                    )
 
-                        await inter.message.edit(embed=success_embed, view=None)
+                    for item in confirm_view.children:
+                        item.disabled = True
 
-                    except Exception as e:
-                        await inter.followup.send(f"❌ Error archiving tournament: {e}", ephemeral=True)
+                    await inter.message.edit(embed=success_embed, view=None)
 
                 async def cancel_final(inter: discord.Interaction):
                     if inter.user.id != ctx.author.id:
@@ -5593,12 +5685,23 @@ class Tournament(commands.Cog):
                 t_data = c.fetchone()
                 t_name, t_winner, t_archived = t_data
 
-                # Get team standings
-                c.execute("""SELECT team_name, points, matches_played, wins, losses, nrr, fpp
-                            FROM tournament_teams 
-                            WHERE tournament_id = ?
-                            ORDER BY points DESC, nrr DESC""", (selected_tid,))
+                # Read the immutable final snapshot. Fall back to the
+                # original team rows for tournaments archived before the
+                # snapshot table was introduced.
+                c.execute("""SELECT team_name, points, matches_played, wins,
+                                    losses, nrr, fpp, COALESCE(qualified, 0)
+                             FROM tournament_leaderboard_archive
+                             WHERE tournament_id = ?
+                             ORDER BY rank ASC""", (selected_tid,))
                 teams = c.fetchall()
+                if not teams:
+                    c.execute("""SELECT team_name, points, matches_played, wins,
+                                        losses, nrr, fpp
+                                 FROM tournament_teams
+                                 WHERE tournament_id = ?
+                                 ORDER BY points DESC, nrr DESC, wins DESC, team_name ASC""",
+                              (selected_tid,))
+                    teams = c.fetchall()
                 conn.close()
 
                 # Create points table image
